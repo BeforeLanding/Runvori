@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-本仓库已进入 M0 技术验证阶段。已建立 Python 探针、schema 基线和故障测试；Host 产品服务与 Android 尚未实现。以下 PRD/架构文档仍主要描述待实现目标，实际完成项以 [progress.md](../progress.md) 和 [验证证据](evidence/DEV-001.md) 为准。
+本仓库已进入 M0 技术验证阶段。已建立 Python 探针、schema 基线和故障测试；Host 产品服务与 Android 尚未实现。以下 PRD/架构文档仍主要描述待实现目标，实际完成项以 [progress.md](../progress.md) 和 [DEV-001](evidence/DEV-001.md)、[DEV-002](evidence/DEV-002.md)、[DEV-003](evidence/DEV-003.md) 验证证据为准。
 
 ## 阅读顺序
 

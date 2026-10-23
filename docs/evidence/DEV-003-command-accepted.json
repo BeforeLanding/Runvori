@@ -1,0 +1,65 @@
+{
+  "codex_version": "codex-cli 0.163.0-alpha.11.2",
+  "scenario": "disposable_workspace_read_only_command_approval_accepted",
+  "event_shapes": [
+    {
+      "index": 29,
+      "method": "item/commandExecution/requestApproval",
+      "params": {
+        "kind": "str",
+        "threadId": "str",
+        "turnId": "str",
+        "itemId": "str",
+        "startedAtMs": "int",
+        "environmentId": "str",
+        "command": "str",
+        "cwd": "str",
+        "commandActions": [{"type": "str", "command": "str"}],
+        "proposedExecpolicyAmendment": ["str", "str"],
+        "availableDecisions": ["str", {"unlisted_field_count": 1}, "str"]
+      }
+    },
+    {
+      "index": 30,
+      "method": "serverRequest/resolved",
+      "params": {"threadId": "str", "requestId": "int"}
+    },
+    {
+      "index": 33,
+      "method": "item/completed",
+      "params": {
+        "item": {
+          "type": "str",
+          "id": "str",
+          "command": "str",
+          "cwd": "str",
+          "status": "str",
+          "commandActions": [{"type": "str", "command": "str"}],
+          "exitCode": "int",
+          "durationMs": "int",
+          "unlisted_field_count": 5
+        },
+        "threadId": "str",
+        "turnId": "str",
+        "unlisted_field_count": 1
+      }
+    },
+    {
+      "index": 56,
+      "method": "turn/completed",
+      "params": {
+        "threadId": "str",
+        "turn": {"id": "str", "status": "str", "error": "NoneType"}
+      }
+    }
+  ],
+  "observed": {
+    "approval_count": 1,
+    "accepted_count": 1,
+    "decision": "accept",
+    "accepted_command_exit_zero": true,
+    "turn_status": "completed",
+    "resume": "recognized",
+    "file_match": false
+  }
+}

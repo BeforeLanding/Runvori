@@ -80,6 +80,39 @@ class TransportTests(unittest.TestCase):
             client.initialize()
         self.assertNotIn("SECRET", str(error.exception))
 
+    def test_explicit_approval_is_sent_once(self):
+        client = self.client("approval")
+        client.initialize()
+        self.assertEqual(client.request("turn/start", {})["turn"]["id"], "turn_demo")
+        event = client.next_event(1)
+        self.assertEqual(event["method"], "item/commandExecution/requestApproval")
+        with self.assertRaises(ValueError):
+            client.respond_approval(event["id"], "acceptForSession")
+        client.respond_approval(event["id"], "decline")
+        with self.assertRaisesRegex(TransportError, "approval_request_not_pending"):
+            client.respond_approval(event["id"], "accept")
+        self.assertEqual(client.next_event(1)["params"]["decision"], "decline")
+        self.assertEqual(client.next_event(1)["method"], "serverRequest/resolved")
+
+    def test_approval_before_turn_response_is_preserved(self):
+        client = self.client("approval_before_response")
+        client.initialize()
+        self.assertEqual(client.request("turn/start", {})["turn"]["id"], "turn_demo")
+        event = client.next_event(1)
+        self.assertEqual(event["method"], "item/fileChange/requestApproval")
+        client.respond_approval(event["id"], "accept")
+        self.assertEqual(client.next_event(1)["params"]["decision"], "accept")
+
+    def test_resolved_request_cannot_be_approved(self):
+        client = self.client("approval_resolved")
+        client.initialize()
+        client.request("turn/start", {})
+        event = client.next_event(1)
+        self.assertEqual(event["method"], "item/commandExecution/requestApproval")
+        self.assertEqual(client.next_event(1)["method"], "serverRequest/resolved")
+        with self.assertRaisesRegex(TransportError, "approval_request_not_pending"):
+            client.respond_approval(event["id"], "accept")
+
     def test_close_idempotent_and_stops_reader(self):
         client = self.client()
         client.initialize()

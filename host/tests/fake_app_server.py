@@ -13,6 +13,13 @@ def send(value):
 
 for raw in sys.stdin:
     request = json.loads(raw)
+    if "method" not in request:
+        if mode in ("approval", "approval_before_response"):
+            send({"method": "synthetic/approvalAnswered", "params": {
+                "id": request["id"], "decision": request["result"]["decision"]}})
+            send({"method": "serverRequest/resolved", "params": {
+                "threadId": "thread_demo", "requestId": request["id"]}})
+        continue
     if request["method"] == "initialized":
         if mode == "no_read_after_init":
             time.sleep(30)
@@ -40,6 +47,20 @@ for raw in sys.stdin:
         send({"id": request_id, "error": {"message": "SECRET_DIAGNOSTIC"}})
     elif mode == "server_request":
         send({"id": "approval_demo", "method": "unsupported/request", "params": {}})
+    elif mode == "approval" and request["method"] == "turn/start":
+        send({"id": request_id, "result": {"turn": {"id": "turn_demo"}}})
+        send({"id": "approval_demo", "method": "item/commandExecution/requestApproval",
+              "params": {"threadId": "thread_demo", "turnId": "turn_demo"}})
+    elif mode == "approval_before_response" and request["method"] == "turn/start":
+        send({"id": "approval_demo", "method": "item/fileChange/requestApproval",
+              "params": {"threadId": "thread_demo", "turnId": "turn_demo"}})
+        send({"id": request_id, "result": {"turn": {"id": "turn_demo"}}})
+    elif mode == "approval_resolved" and request["method"] == "turn/start":
+        send({"id": request_id, "result": {"turn": {"id": "turn_demo"}}})
+        send({"id": 23, "method": "item/commandExecution/requestApproval",
+              "params": {"threadId": "thread_demo", "turnId": "turn_demo"}})
+        send({"method": "serverRequest/resolved", "params": {
+            "threadId": "thread_demo", "requestId": 23}})
     else:
         if mode == "flood":
             for i in range(1000):

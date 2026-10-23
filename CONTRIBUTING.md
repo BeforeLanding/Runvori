@@ -34,6 +34,24 @@ python scripts/runvori.py doctor
 
 check 同时校验契约和运行 unittest，不访问模型/账号。doctor 需要该精确版本 Codex 在 PATH，先验证契约，再创建 `.dev` 临时 HOME 进行握手与 thread/list。只输出白名单诊断，退出码非零表示失败。它不会启动 turn 或更改用户 Codex 配置。非仓库目录调用时使用 `--workspace <仓库根目录>`。
 
+### DEV-003 真实执行探针（显式启用）
+
+`scripts/probe_execution.py` 与 doctor 分离。先在仓库内 `.dev/execution-fixture` 建立只含标记文件的可丢弃 Git 仓库：
+
+```powershell
+python scripts/probe_execution.py prepare
+```
+
+真实执行必须显式提供专用、已登录的 `CODEX_HOME` 目录及本次审批决定；不复制当前用户的认证文件。本机实验使用 `.dev/codex-home` 作为独立目录。需要重新登录时，在同一个 PowerShell 进程中设置 `$env:CODEX_HOME = (Resolve-Path .dev/codex-home).Path`，运行 `codex login`，再用 `codex login status` 核验；该目录被 `.gitignore` 排除，不要打开或提交其中的 `auth.json`。这不是修改全局用户环境变量。
+
+以下命令会发起模型回合，并可能在可丢弃仓库内创建文件；本机已用 `decline` 观察一次真实命令审批与回合终态，结果见 [DEV-003](docs/evidence/DEV-003.md)：
+
+```powershell
+python scripts/probe_execution.py run --account-home .dev/codex-home --approval decline
+```
+
+探针固定 `workspace-write`、`on-request`、`approvalsReviewer=user`，拒绝扩权型或未知控制请求。显式改为 `--approval accept` 时，只有测试仓库内预定的只读 `python --version`（含本机固定 Codex PowerShell 包装形式）可收到一次 `accept`；其他审批继续拒绝。真实单次允许与退出码 0 的证据见 [DEV-003](docs/evidence/DEV-003.md)。此模式不验证文件写入，不应用建议的 execpolicy 修订。超时或协议异常关闭受管进程，不自动重发；不把关闭进程写成上游已确认中断。成功时仅在被 Git 忽略的 `.dev/execution-probe-report.json` 保存事件字段名/类型、实际决定、终态和文件核对结果；不保存提示、输出或审批内容值。运行前检查测试仓库和账号目录，运行后人工核对报告并脱敏评审；这条探针不代替审批清理、中断竞争或生产 Host 验收。
+
 schema 已提交，通常不需要重新导出。`python scripts/runvori.py export-schema` 在基线存在时拒绝覆盖；仅经评审后使用 `--replace`。升级须更新版本常量、schema、测试及兼容记录。
 
 已安装 setuptools 81.0.0 的环境可离线构建探针 wheel（尚非独立部署的 Host）：

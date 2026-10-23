@@ -1,0 +1,78 @@
+{
+  "codex_version": "codex-cli 0.163.0-alpha.11.2",
+  "scenario": "disposable_workspace_command_approval_declined",
+  "event_shapes": [
+    {
+      "index": 34,
+      "method": "item/started",
+      "params": {
+        "item": {
+          "type": "str",
+          "id": "str",
+          "command": "str",
+          "cwd": "str",
+          "status": "str",
+          "exitCode": "NoneType"
+        },
+        "threadId": "str",
+        "turnId": "str"
+      }
+    },
+    {
+      "index": 35,
+      "method": "item/commandExecution/requestApproval",
+      "params": {
+        "kind": "str",
+        "threadId": "str",
+        "turnId": "str",
+        "itemId": "str",
+        "startedAtMs": "int",
+        "command": "str",
+        "cwd": "str"
+      }
+    },
+    {
+      "index": 36,
+      "method": "serverRequest/resolved",
+      "params": {
+        "threadId": "str",
+        "requestId": "int"
+      }
+    },
+    {
+      "index": 37,
+      "method": "item/completed",
+      "params": {
+        "item": {
+          "type": "str",
+          "id": "str",
+          "command": "str",
+          "cwd": "str",
+          "status": "str",
+          "exitCode": "NoneType"
+        },
+        "threadId": "str",
+        "turnId": "str"
+      }
+    },
+    {
+      "index": 90,
+      "method": "turn/completed",
+      "params": {
+        "threadId": "str",
+        "turn": {
+          "id": "str",
+          "status": "str",
+          "error": "NoneType"
+        }
+      }
+    }
+  ],
+  "observed": {
+    "approval_count": 1,
+    "decision": "decline",
+    "turn_status": "completed",
+    "resume": "recognized",
+    "file_match": false
+  }
+}

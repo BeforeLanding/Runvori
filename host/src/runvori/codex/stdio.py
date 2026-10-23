@@ -38,6 +38,8 @@ class StdioClient:
         self.max_line = max_line
         self._incoming: queue.Queue = queue.Queue(maxsize=max_messages)
         self.notifications: deque[dict] = deque(maxlen=max_messages)
+        self._events: deque[dict] = deque(maxlen=max_messages)
+        self._pending_server_requests: dict[str | int, str] = {}
         self._stop = threading.Event()
         self._fatal = threading.Event()
         self._broken = False
@@ -174,11 +176,9 @@ class StdioClient:
                     raise message
                 if "method" in message:
                     if "id" in message:
-                        # No approval response or generic acceptance is generated.
-                        raise TransportError("unsupported_server_request")
-                    if len(self.notifications) == self.notifications.maxlen:
-                        raise TransportError("notification_buffer_overflow")
-                    self.notifications.append(message)
+                        self._record_server_request(message)
+                        continue
+                    self._record_notification(message)
                     continue
                 if type(message.get("id")) is not int or message["id"] != request_id:
                     raise TransportError("unexpected_response_id")
@@ -192,6 +192,85 @@ class StdioClient:
         except TransportError:
             self._broken = True
             raise
+
+    def _record_server_request(self, message: dict) -> None:
+        if message.get("method") not in (
+            "item/commandExecution/requestApproval", "item/fileChange/requestApproval"
+        ):
+            raise TransportError("unsupported_server_request")
+        request_id = message.get("id")
+        if (type(request_id) not in (str, int) or request_id in self._pending_server_requests
+                or not isinstance(message.get("params"), dict)):
+            raise TransportError("invalid_server_request")
+        if len(self._pending_server_requests) == self._incoming.maxsize:
+            raise TransportError("server_request_buffer_overflow")
+        if len(self._events) == self._events.maxlen:
+            raise TransportError("event_buffer_overflow")
+        self._pending_server_requests[request_id] = message["method"]
+        self._events.append(message)
+
+    def _record_notification(self, message: dict) -> None:
+        if message.get("method") == "serverRequest/resolved":
+            params = message.get("params")
+            if not isinstance(params, dict) or type(params.get("requestId")) not in (str, int):
+                raise TransportError("invalid_request_resolved_notification")
+            # Request cleanup revokes the opportunity to reply; it does not
+            # prove that any prior decision took effect or a command succeeded.
+            self._pending_server_requests.pop(params["requestId"], None)
+        if len(self.notifications) == self.notifications.maxlen:
+            raise TransportError("notification_buffer_overflow")
+        if len(self._events) == self._events.maxlen:
+            raise TransportError("event_buffer_overflow")
+        self.notifications.append(message)
+        self._events.append(message)
+
+    def next_event(self, timeout: float) -> dict | None:
+        """Read a notification or approval request; None means no event yet."""
+        if self._closed or self._broken or not self._initialized:
+            raise TransportError("connection_unusable")
+        if timeout <= 0:
+            raise ValueError("invalid_event_timeout")
+        if self._fatal.is_set():
+            self._broken = True
+            raise TransportError("message_queue_overflow")
+        if self._events:
+            return self._take_event()
+        try:
+            message = self._incoming.get(timeout=timeout)
+            if self._fatal.is_set():
+                raise TransportError("message_queue_overflow")
+            if isinstance(message, Exception):
+                raise message
+            if "method" not in message:
+                raise TransportError("unexpected_response_id")
+            if "id" in message:
+                self._record_server_request(message)
+            else:
+                self._record_notification(message)
+            return self._take_event()
+        except queue.Empty:
+            return None
+        except TransportError:
+            self._broken = True
+            raise
+
+    def _take_event(self) -> dict:
+        event = self._events.popleft()
+        if "id" not in event and self.notifications and self.notifications[0] is event:
+            self.notifications.popleft()
+        return event
+
+    def respond_approval(self, request_id: str | int, decision: str) -> None:
+        """Explicit one-shot answer for a recorded approval; never auto-approves."""
+        if self._closed or self._broken or not self._initialized:
+            raise TransportError("connection_unusable")
+        if decision not in ("accept", "decline"):
+            raise ValueError("unsupported_approval_decision")
+        if type(request_id) not in (str, int) or request_id not in self._pending_server_requests:
+            raise TransportError("approval_request_not_pending")
+        # Consume before writing: a timeout leaves the outcome unknown, not retryable.
+        del self._pending_server_requests[request_id]
+        self._send({"id": request_id, "result": {"decision": decision}})
 
     def close(self) -> None:
         if self._closed:
