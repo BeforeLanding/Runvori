@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools==81.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "runvori-host"
+version = "0.0.1"
+description = "Runvori Host technical validation tools"
+requires-python = ">=3.12,<3.13"
+dependencies = []
+
+[project.scripts]
+runvori = "runvori.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["host/src"]
