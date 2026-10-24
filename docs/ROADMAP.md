@@ -26,6 +26,30 @@ DEV-003 失败命令补充：固定 `exit 7` 的真实结构化退出码为 7，
 
 DEV-003 Git 产物补充：本地可丢弃仓库的预先存在改动中，二进制和 128 KiB 文本文件获得大小/哈希与明确内容可用性，超过扫描上限的文件报告哈希不可用。该探针只有 Git 工作区来源，未验证 Codex 上游大差异事件或产品产物存储，见 [脱敏证据](evidence/DEV-003-artifact-boundaries.json)。
 
+DEV-003 重命名补充：本地 Git 夹具中，已暂存移动有 `R100` 证据，未暂存移动只呈现删除与未跟踪新增；相同字节不构成重命名或 Agent 归因证据。Codex 上游重命名项和 Host 存储仍待验证，见 [脱敏证据](evidence/DEV-003-rename.json)。
+
+DEV-003 上游移动拒绝补充：真实 Codex 文件改动项出现 `update` 与匹配 `move_path`，一次文件审批被明确拒绝，原文件保持、目标缺失；只覆盖拒绝路径，见 [脱敏证据](evidence/DEV-003-file-move-declined.json)。
+
+DEV-003 上游固定移动允许补充：对精确单文件补丁发送一次 `accept`，真实上游 item 完成，源文件消失、目标字节与 Git 状态均核对；通用移动和 Host 存储仍开放，见 [脱敏证据](evidence/DEV-003-file-move-accepted.json)。
+
+DEV-003 二进制命令补充：固定命令获真实一次审批、退出码 0，二进制文件字节和 Git 标记均核对；该场景没有独立文件修改审批，见 [脱敏证据](evidence/DEV-003-binary-command.json)。
+
+DEV-003 Windows 路径边界补充：一次性夹具中的真实 junction 父目录被 Git 产物读取和未知审批文件核对拒绝，目标字节未变；符号链接创建、文件检查与打开之间的并发替换仍开放，见 [复验](evidence/DEV-003-windows-junction.md)。
+
+Q-04 当前包复验：当前 Host 探针 wheel 离线构建、一次性虚拟环境安装及仓库外 CLI 入口校验通过；单实例锁集成、业务服务与独立部署仍开放，见 [证据](evidence/DEV-001-package-recheck.md)。
+
+Q-04 单实例锁前提：Windows 文件句柄锁的跨进程竞争、正常关闭与持锁进程退出后重取已实测；尚未接入产品 Host 启动和 SQLite 活动槽，见 [证据](evidence/M0-Q04-instance-lock.md)。
+
+Q-04 启动顺序补充：最小切片已验证先持锁再打开审批 SQLite、失败释放锁以及进程异常退出后重开不自动推进 epoch；旧 app-server 隔离、产品 Host 生命周期和活动槽仍开放，见 [证据](evidence/M0-Q04-locked-journal.md)。
+
+Q-05 TLS 身份前提：本机回环握手已验证信任链、主机名及本地 SPKI 指纹，换公钥时不自动接受；Android 信任实现、配对秘密及产品证书轮换仍开放，见 [证据](evidence/M0-Q05-tls-identity.md)。
+
+Q-05 配对持久边界：独立 SQLite 切片已验证短时一次性秘密、唯一有效设备、重放拒绝、并发兑换与本地撤销；HTTPS API、限流、Android 凭据和证书绑定仍开放，见 [证据](evidence/M0-Q05-pairing-journal.md)。
+
+Q-05 HTTPS 联动补充：一次性回环夹具已验证指纹错误时不发 HTTP 请求、已提交兑换但响应丢失后不重发令牌、本地撤销后重新配对；正式 Host API、限流和 Android 联调仍开放，见 [证据](evidence/M0-Q05-https-pairing.md)。
+
+DEV-004 工具链基线：已加入 Gradle 8.13 wrapper、Android 占位工程并在本机生成 Debug APK；API 37 模拟器安装和启动已核对。Q-03 的实机、产品最低版本与干净环境验证尚未关闭，见 [记录](evidence/DEV-004-toolchain.md)。
+
 交付：
 
 - 固定首发 Host OS、Python 和 Android 构建组合；提交真实构建/检查命令与版本记录。

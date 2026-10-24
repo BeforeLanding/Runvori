@@ -1,0 +1,8 @@
+{
+  "status": "observed",
+  "source": "git_worktree_snapshot",
+  "attribution": "unknown",
+  "staged_move": "git_rename_100",
+  "unstaged_move": "deletion_plus_untracked",
+  "unstaged_rename_confirmed": false
+}

@@ -73,6 +73,29 @@ class ArtifactProbeTests(unittest.TestCase):
             self.assertEqual(rejected.returncode, 1)
             self.assertEqual(json.loads(rejected.stdout)["code"], "invalid_artifact_fixture")
 
+    def test_rename_probe_distinguishes_index_evidence_from_untracked_move(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / ".dev") as temp:
+            fixture = Path(temp) / "fixture"
+            script = ROOT / "scripts/probe_artifacts.py"
+
+            def run(action):
+                return subprocess.run(
+                    [sys.executable, str(script), action, "--fixture", str(fixture)],
+                    cwd=ROOT, capture_output=True, text=True, timeout=30, check=False)
+
+            self.assertEqual(run("prepare-rename").returncode, 0)
+            inspected = run("inspect-rename")
+            self.assertEqual(inspected.returncode, 0, inspected.stdout)
+            report = json.loads(inspected.stdout)
+            self.assertEqual(report["staged_move"], "git_rename_100")
+            self.assertEqual(report["unstaged_move"], "deletion_plus_untracked")
+            self.assertFalse(report["unstaged_rename_confirmed"])
+            self.assertEqual(report["attribution"], "unknown")
+            (fixture / "worktree-new.txt").write_bytes(b"tampered")
+            rejected = run("inspect-rename")
+            self.assertEqual(rejected.returncode, 1)
+            self.assertEqual(json.loads(rejected.stdout)["code"], "invalid_rename_fixture")
+
 
 if __name__ == "__main__":
     unittest.main()

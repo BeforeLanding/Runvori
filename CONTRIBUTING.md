@@ -1,6 +1,6 @@
 # 贡献、环境与评审约定
 
-日期：2026-10-23。已建立 M0 Python 验证工具、包配置和离线测试；尚无业务 Host、Gradle wrapper、Android 或 CI。本文区分当前可执行命令和未来开发计划，进度见 [progress.md](progress.md)。
+日期：2026-10-24。已建立 M0 Python 验证工具、包配置、离线测试和可构建的 Android 占位工程；尚无业务 Host 或 CI。本文区分当前可执行命令和未来开发计划，进度见 [progress.md](progress.md)。
 
 ## 1. 开始前
 
@@ -21,6 +21,22 @@ git diff --stat
 ```
 
 新增未跟踪文件也需单独检查；`git diff --check` 本身不覆盖未跟踪内容。当前没有已通过的产品 Host/Android 验收，探针的故障测试可执行如下。
+
+Android Debug APK 已在本机完成构建。配置 JDK 17 或更高版本及 Android SDK，并在当前 PowerShell 会话设置 `ANDROID_HOME` 为 SDK 根目录，然后执行：
+
+```powershell
+cd android
+.\gradlew.bat --no-daemon :app:assembleDebug
+```
+
+输出位于 `android/app/build/outputs/apk/debug/app-debug.apk`。目前只显示静态占位界面；最低 API 26 是暂定构建值，尚无实机安装和产品功能验收。版本、构建证据及限制见 [DEV-004](docs/evidence/DEV-004-toolchain.md)。
+连接一台测试设备或启动 AVD 后，可在仓库根目录运行固定包名的安装/启动冒烟检查：
+
+```powershell
+.\scripts\smoke_android.ps1 -Serial emulator-5554
+```
+
+省略 `-Serial` 时须恰好连接一台设备。脚本核对安装返回、进程和前台 Activity；它不验证 Host 连接或业务功能。模拟器实测见 [DEV-004](docs/evidence/DEV-004-toolchain.md)。
 
 本地 Git 产物边界探针无需模型和账号，只能在 `.dev` 内准备全新夹具。它生成预先存在的跟踪文本/二进制改动和未跟踪文件，检查大小、哈希、内容截断与 Git 二进制标记；报告只含固定夹具的元信息，不包含文件正文。结果不能归因于 Codex 回合；见 [脱敏证据](docs/evidence/DEV-003-artifact-boundaries.json)：
 
@@ -88,6 +104,13 @@ python scripts/probe_execution.py run --fixture .dev/execution-write-fixture --a
 ```
 
 写入场景只允许固定 `Set-Content` 命令及已审查的本机 Codex PowerShell 包装，结果须同时满足命令退出码 0、目标文件 16 字节完全匹配；运行一次后测试仓库不再为空，重新运行需另建新的 `.dev` 测试目录。此场景出现的是**命令执行审批**，不是独立的文件修改审批。已观察结果与限制见 [DEV-003](docs/evidence/DEV-003.md)。
+
+固定二进制命令探针同样使用新的可丢弃仓库，先提交固定二进制基线，只允许精确的单文件写入命令。结果分别核对命令 item 退出码、2,048 字节目标内容、Git 二进制标记和产物正文不可用；它不验证上游二进制文件修改审批。真实记录见 [脱敏证据](docs/evidence/DEV-003-binary-command.json)：
+
+```powershell
+python scripts/probe_execution.py prepare --fixture .dev/execution-binary-fixture --scenario binary_command
+python scripts/probe_execution.py run --fixture .dev/execution-binary-fixture --account-home .dev/codex-home --approval accept --scenario binary_command --timeout 120
+```
 
 主动中断场景另用空的可丢弃仓库，固定命令先输出标记再等待 60 秒。探针在看到标记后发送 `turn/interrupt`；RPC 返回只记为请求已响应，只有真实回合终态为 `interrupted` 才记录中断已确认。若输出标记未出现，探针在允许命令两秒后发送请求，并标注较弱的触发依据。已观察的真实终态与缺失的命令退出码见 [DEV-003](docs/evidence/DEV-003.md)：
 
@@ -158,18 +181,24 @@ python scripts/probe_execution.py run --fixture .dev/execution-command-completio
 
 同一离线检查命令还运行独立 SQLite 审批派发验证切片：以 `.dev` 临时数据库模拟决定已记录、派发已领取、数据库重开及新 epoch；核对未知结果不重发、文件只读快照不充当上游确认。此模块没有接入真实 Codex 或 Host API，验证范围见 [审批持久边界记录](docs/evidence/DEV-003-approval-journal.md)。
 
+同一命令还在 Windows 运行独立的单实例锁跨进程测试：第二进程不能获取锁，持锁进程被终止后可重新获取。锁尚未接入产品 Host 启动顺序，见 [M0/Q-04 证据](docs/evidence/M0-Q04-instance-lock.md)。
+另有持锁打开审批记录的最小启动测试：锁失败时不打开 SQLite，数据库失败时释放锁，进程异常退出后重开不自动推进 epoch；见 [启动切片证据](docs/evidence/M0-Q04-locked-journal.md)。
+
+M0 TLS 身份探针需要本机 OpenSSL CLI 和可用回环端口，不使用真实凭据或远端 Host。执行 `python scripts/probe_tls_identity.py`；通过与拒绝路径见 [Q-05 证据](docs/evidence/M0-Q05-tls-identity.md)。普通受限沙箱可能禁止回环连接，此时完整检查会将该用例标记跳过，需在获准的本地环境复验。
+
+同一离线检查还运行独立的一次性配对 SQLite 测试，覆盖 5 分钟到期、并发单次兑换、响应丢失后的重放拒绝和本地撤销；没有网络配对接口或真实设备凭据。见 [Q-05 配对记录](docs/evidence/M0-Q05-pairing-journal.md)。
+
+定向 HTTPS 联动夹具可用 `python scripts/probe_https_pairing.py` 运行：仅监听本机回环临时端口，使用一次性测试证书、秘密和数据库；需 OpenSSL CLI 与可用回环连接。结果和限制见 [Q-05 联动证据](docs/evidence/M0-Q05-https-pairing.md)。
+
 schema 已提交，通常不需要重新导出。`python scripts/runvori.py export-schema` 在基线存在时拒绝覆盖；仅经评审后使用 `--replace`。升级须更新版本常量、schema、测试及兼容记录。
 
-已安装 setuptools 81.0.0 的环境可离线构建探针 wheel（尚非独立部署的 Host）：
+已安装 setuptools 81.0.0 的环境可复验当前探针 wheel、隔离安装和真实命令入口（尚非独立部署的 Host）：
 
 ```powershell
-New-Item -ItemType Directory -Force .dev/tmp | Out-Null
-$env:TMPDIR = (Resolve-Path .dev/tmp).Path
-$env:PIP_DISABLE_PIP_VERSION_CHECK = '1'
-python -m pip wheel . --no-build-isolation --no-deps --no-index --wheel-dir .dev/wheels
+.\scripts\smoke_package.ps1
 ```
 
-这些环境变量仅作用于当前终端；受限沙箱优先使用 `.dev` 临时路径。构建后 wheel 仍需要仓库契约文件，安装入口通过 `--workspace` 指向 checkout。普通源代码检查无须构建或安装包。
+脚本将 `TEMP/TMP` 局限在仓库 `.dev`，离线构建 wheel，在一次性虚拟环境安装，并从仓库外调用已安装的 `runvori.exe` 校验 16 份契约和模块导入；结束后清理夹具。wheel 仍需要仓库契约文件，安装入口通过 `--workspace` 指向 checkout；`pip install --target` 的命令入口不作为安装成功证据。结果见 [包复验](docs/evidence/DEV-001-package-recheck.md)。普通源代码检查无须构建或安装包。
 
 ### M0 必须建立的可复现环境
 

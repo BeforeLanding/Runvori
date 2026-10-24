@@ -13,7 +13,8 @@ sys.path.insert(0, str(ROOT / "host/src"))
 
 from runvori.cli import run_metadata, verify_contracts  # noqa: E402
 from runvori.codex.execution_probe import (  # noqa: E402
-    prepare_dirty_fixture, prepare_fixture, run_probe, write_report,
+    prepare_binary_fixture, prepare_dirty_fixture, prepare_fixture,
+    prepare_move_fixture, run_probe, write_report,
 )
 from runvori.codex.stdio import TransportError  # noqa: E402
 
@@ -26,9 +27,11 @@ def main() -> int:
     parser.add_argument("--approval", choices=["accept", "decline", "defer"])
     parser.add_argument("--scenario", choices=[
         "read_only", "verify_command", "verify_two_commands", "verify_nonzero",
+        "binary_command",
         "write_file", "interrupt", "interrupt_pending",
         "interrupt_on_approval", "file_change_decline", "file_change_accept",
-        "file_change_accept_dirty",
+        "file_change_accept_dirty", "file_change_move_decline",
+        "file_change_move_accept",
         "file_change_cut_after_accept", "interrupt_after_turn_completed",
         "interrupt_after_command_completed",
         "interrupt_after_command_completed_delayed"],
@@ -40,6 +43,10 @@ def main() -> int:
         if args.action == "prepare":
             if args.scenario == "file_change_accept_dirty":
                 prepare_dirty_fixture(ROOT, args.fixture)
+            elif args.scenario == "binary_command":
+                prepare_binary_fixture(ROOT, args.fixture)
+            elif args.scenario in ("file_change_move_decline", "file_change_move_accept"):
+                prepare_move_fixture(ROOT, args.fixture)
             else:
                 prepare_fixture(ROOT, args.fixture)
             result = {"status": "prepared"}
@@ -84,6 +91,17 @@ def main() -> int:
                       "pending_request_allowlisted": report["pending_request_allowlisted"],
                       "accepted_file_change_status": report["accepted_file_change_status"],
                       "file_change_item_allowlisted": report["file_change_item_allowlisted"],
+                      "move_item_observed": report["move_item_observed"],
+                      "move_kind_paths_matched": report["move_kind_paths_matched"],
+                      "move_source_unchanged": report["move_source_unchanged"],
+                      "move_destination_absent": report["move_destination_absent"],
+                      "move_source_absent": report["move_source_absent"],
+                      "move_destination_match": report["move_destination_match"],
+                      "binary_match": report["binary_match"],
+                      "binary_git_marker": report["binary_git_marker"],
+                      "binary_representation": report["binary_representation"],
+                      "binary_content_available": report["binary_content_available"],
+                      "binary_size_bytes": report["binary_size_bytes"],
                       "fixture_only_expected_file": report["fixture_only_expected_file"],
                       "fixture_entries_within_allowlist": report["fixture_entries_within_allowlist"],
                       "preexisting_files_unchanged": report["preexisting_files_unchanged"],

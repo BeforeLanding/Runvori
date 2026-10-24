@@ -83,6 +83,30 @@ DEV-001 更新：实验环境已确认 Windows、Python 3.12.10、Codex CLI 0.16
 2026-10-24 失败路径补充：Q-07 的固定 `exit 7` 真实退出码为 7，回合 `completed` 与验证 `failed` 同时成立；该单一固定命令只证明非零路径，见 [观察](evidence/DEV-003-nonzero-verification.json)。
 
 2026-10-24 Git 产物补充：Q-07 的本地夹具表明，128 KiB UTF-8 改动可报告大小/哈希而不暴露内容，二进制改动有 Git 标记并只保留元信息；超过 4 MiB 的文件不计算哈希且显式报告限制。来源只能写 `git_worktree_snapshot`，归因仍为 `unknown`。上游大差异/二进制、重命名及 Host 产物存储仍开放，见 [观察](evidence/DEV-003-artifact-boundaries.json)。
+
+2026-10-24 重命名补充：Q-07 本地 Git 夹具中，已暂存移动有明确 `R100`；未暂存移动只有删除和未跟踪新增，即使内容相同也不能确认重命名。两者均不能归因于 Agent。Codex 上游改动项与 Host 存储仍开放，见 [观察](evidence/DEV-003-rename.json)。
+
+2026-10-24 上游移动拒绝补充：Q-02/Q-07 的真实只读回合出现匹配的 `fileChange` `update`/`move_path` 和一次文件审批；拒绝后原文件未变、目标不存在。仅确认当前 CLI 的提案与拒绝路径，移动允许、实际内容、通用路径映射及 Host 归因仍开放，见 [观察](evidence/DEV-003-file-move-declined.json)。
+
+2026-10-24 固定移动允许补充：Q-02/Q-07 的当前 CLI 在精确补丁和路径白名单后接受一次文件审批，文件改动 item 完成，源文件缺失、目标字节和 Git 状态均符合预期。允许范围限于该固定案例；通用移动策略、进程重启竞争和 Host 产物归因仍开放，见 [观察](evidence/DEV-003-file-move-accepted.json)。
+
+2026-10-24 二进制命令补充：Q-07 的当前 CLI 通过一次固定命令审批写入 2 KiB 二进制文件，退出码、目标字节与 Git 二进制标记相符；来源标为 Git 工作区快照，归因仍须区分。上游二进制 `fileChange` 与 Host 存储仍开放，见 [观察](evidence/DEV-003-binary-command.json)。
+
+2026-10-24 Windows junction 补充：Q-01/Q-07 的本地文件读取边界已在实际 junction 父目录上复验拒绝，未知审批核对仅记录 `unsafe_path`，见 [证据](evidence/DEV-003-windows-junction.md)。符号链接创建与检查/读取竞态未验证，Q-01 不因此关闭。
+
+2026-10-24 包复验补充：Q-04 的当前探针 wheel 离线构建、正常虚拟环境安装及仓库外已安装 CLI 入口校验通过；旧 `pip --target` 不能验证入口，见 [证据](evidence/DEV-001-package-recheck.md)。业务 Host、单实例锁集成和可部署包仍未决。
+
+2026-10-24 单实例锁补充：Q-04 的 Windows 文件句柄锁已在真实跨进程竞争和持锁进程终止后复验；锁文件是否存在不作为当前所有权证据。锁尚未连接 Host 启动、SQLite 活动槽和受管进程恢复，见 [证据](evidence/M0-Q04-instance-lock.md)。
+
+2026-10-24 启动顺序补充：Q-04 最小切片在持锁后打开审批 SQLite，争锁失败不会建库；崩溃后重开保持既有 epoch，不把 Host 锁当成旧 app-server 已隔离的证据。产品启动和恢复仍待实现，见 [证据](evidence/M0-Q04-locked-journal.md)。
+
+2026-10-24 TLS 身份补充：Q-05 的回环测试证书在保留信任链与主机名校验时完成本地 SPKI 指纹核对；不同公钥即使在测试信任集合中也不能沿用旧指纹发送应用数据，见 [证据](evidence/M0-Q05-tls-identity.md)。Android 自签名信任、配对载荷及轮换流程仍未决。
+
+2026-10-24 配对记录补充：Q-05 的独立 SQLite 切片已验证 32 字节秘密、5 分钟到期、摘要保存、单次消费及唯一有效设备；失去兑换响应后同一秘密不可再发令牌，见 [证据](evidence/M0-Q05-pairing-journal.md)。尚未确定 HTTP 限流、Android 凭据保存和产品证书绑定。
+
+2026-10-24 HTTPS 联动补充：Q-05 的一次性回环夹具先完成 TLS 链/主机名与本地 SPKI 核对，才发送携带秘密的 POST body；已提交但响应丢失后重放被拒，见 [证据](evidence/M0-Q05-https-pairing.md)。仅为测试路径，不决定生产 HTTP 框架或配对限流实现。
+
+2026-10-24 工具链基线：Q-03 本机有 JDK/Javac 21.0.12、Android Studio、SDK 和 adb；已加入 Gradle 8.13 wrapper 与 Android 占位工程，完成本机 Debug APK 构建及 API 37 模拟器安装启动。实机、干净环境复现和产品最低版本决策待验证，见 [记录](evidence/DEV-004-toolchain.md)。
 - **Q-08，公开发布前**：许可证、第三方依赖/素材声明、发布包分发与私密问题报告入口。由维护者选择，不擅自补默认许可证。
 
 ## 更新方式

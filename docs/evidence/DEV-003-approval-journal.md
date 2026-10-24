@@ -8,10 +8,15 @@
 - 数据库重开后，调用方必须确认旧受管进程已停止或隔离，才可开启新 epoch。旧 `pending/decision_recorded` 变为 `expired`，旧 `dispatching` 变为 `unknown`，决定仍保留，均不自动派发。
 - 同一客户端请求标识重复提交返回原决定；相反决定、跨审批复用标识及过期版本被拒绝。两个数据库连接同时提交相反决定时，只有一个成功。
 - 上游请求结束单独记录为 `resolution_kind=request_closed`，不填充文件结果。对 `unknown` 的目标文件只读核对仅记录当时的 `absent/matches/different/unsafe_path` 快照，不改变 `unknown`，也不重新授予派发机会。该快照不能证明改动来源，读取与记录之间也不构成原子文件快照。
+- 后续边界修复：文件核对先确认审批为 `unknown`，再要求显式工作区与相对路径；拒绝绝对/上级路径，逐段拒绝符号链接或 junction，读取长度限于预期字节数加一。路径或状态不合格时不读取目标文件。该检查仍不能消除文件系统检查与读取之间的并发替换风险。
 
 ## 验证
 
 `python scripts/check.py`：14 份 Codex schema 完整性通过，47 项测试通过。新增 6 项 SQLite 行为测试覆盖数据库重开、领取后崩溃、HTTP 确认丢失时的幂等查询、冲突决定、双连接竞争、上游 ID 跨 epoch 复用以及未知结果的文件核对。测试使用仓库 `.dev` 内临时数据库，不读取真实账号、不启动模型。
+
+后续回归：`python scripts/check.py` 校验 16 份 schema，运行 75 项测试（73 通过、2 项因本机无法创建符号链接而跳过）。新增路径越界、非 `unknown` 先拒绝读取及链接父目录的行为用例；链接父目录用例在本机仅确认了权限限制，需在支持创建链接的 Host 环境复验。
+
+2026-10-24 后续复验：在获准的本地执行环境使用实际 Windows junction 父目录核对，`inspect_unknown_file` 记录 `unsafe_path`，未读取外部目标；完整检查更新为 80 项运行（78 通过、2 项符号链接创建限制跳过）。见 [junction 证据](DEV-003-windows-junction.md)。
 
 ## 尚未验证
 

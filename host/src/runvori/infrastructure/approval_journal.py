@@ -180,20 +180,39 @@ class ApprovalJournal:
             raise
         return self.get(approval_id)
 
-    def inspect_unknown_file(self, *, approval_id: str, path: Path,
-                             expected_bytes: bytes) -> dict:
+    def inspect_unknown_file(self, *, approval_id: str, workspace: Path,
+                             relative_path: str, expected_bytes: bytes) -> dict:
         if not isinstance(expected_bytes, bytes) or not expected_bytes:
             raise JournalError("invalid_expected_bytes")
-        if path.is_symlink():
-            snapshot = "unsafe_path"
-        elif not path.exists():
-            snapshot = "absent"
-        elif not path.is_file():
-            snapshot = "unsafe_path"
-        elif path.stat().st_size != len(expected_bytes):
-            snapshot = "different"
+        if self._row(approval_id)["status"] != "unknown":
+            raise JournalError("reconciliation_unavailable")
+        if not isinstance(relative_path, str) or not relative_path:
+            raise JournalError("invalid_relative_path")
+        root = workspace.resolve(strict=True)
+        if not root.is_dir():
+            raise JournalError("invalid_workspace")
+        relative = Path(relative_path)
+        if (relative.is_absolute() or relative.drive or not relative.parts
+                or any(part in ("..", "") for part in relative.parts)):
+            raise JournalError("invalid_relative_path")
+        path = root
+        snapshot = "absent"
+        for part in relative.parts:
+            path = path / part
+            if path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction()):
+                snapshot = "unsafe_path"
+                break
+            if not path.exists():
+                break
         else:
-            snapshot = ("matches" if path.read_bytes() == expected_bytes else "different")
+            if not path.resolve(strict=True).is_relative_to(root) or not path.is_file():
+                snapshot = "unsafe_path"
+            elif path.stat().st_size != len(expected_bytes):
+                snapshot = "different"
+            else:
+                with path.open("rb") as stream:
+                    snapshot = ("matches" if stream.read(len(expected_bytes) + 1)
+                                == expected_bytes else "different")
         self._begin()
         try:
             row = self._row(approval_id)

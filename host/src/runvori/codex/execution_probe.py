@@ -12,6 +12,7 @@ from pathlib import Path
 
 from runvori.codex.stdio import RpcError, StdioClient, TransportError
 from runvori.codex.verification import RequiredCommandEvidence, RequiredVerificationSet
+from runvori.infrastructure.artifact_probe import capture_worktree_file
 
 MARKER = ".runvori-disposable-fixture"
 SAFE_KEYS = frozenset({
@@ -20,6 +21,7 @@ SAFE_KEYS = frozenset({
     "method", "params", "result", "error", "items", "itemType", "delta",
     "message", "content", "output", "exitCode", "durationMs", "completedAt",
     "startedAt", "fileChanges", "changes", "path", "kind", "decision",
+    "move_path",
     "approvalId", "availableDecisions", "commandActions", "environmentId",
     "networkApprovalContext", "proposedExecpolicyAmendment",
     "proposedNetworkPolicyAmendments", "grantRoot",
@@ -35,6 +37,17 @@ SECOND_VERIFY_COMMAND = "git --version"
 NONZERO_VERIFY_COMMAND = "exit 7"
 WRITE_COMMAND = (
     "Set-Content -LiteralPath probe-result.txt -Value RUNVORI_PROBE_OK -NoNewline"
+)
+BINARY_COMMAND = (
+    'python -c "from pathlib import Path; '
+    "Path('binary.bin').write_bytes(bytes.fromhex('00ff') * 1024)\""
+)
+BINARY_BYTES = bytes.fromhex("00ff") * 1024
+BINARY_BASELINE = b"baseline\0"
+BINARY_PROMPT = (
+    "This is a disposable Runvori protocol probe. In this workspace, run only "
+    f"the exact command {BINARY_COMMAND}. Do not use other commands, other "
+    "tools, other paths, or the network."
 )
 INTERRUPT_MARKER = "RUNVORI_SLEEP_STARTED"
 INTERRUPT_COMMAND = f"Write-Output {INTERRUPT_MARKER}; Start-Sleep -Seconds 60"
@@ -80,6 +93,14 @@ FILE_CHANGE_APPROVAL_KEYS = frozenset({
     "threadId", "turnId", "itemId", "startedAtMs", "reason", "grantRoot",
 })
 FILE_CHANGE_BYTES = b"RUNVORI_PROBE_OK\n"
+MOVE_SOURCE_BYTES = b"RUNVORI_MOVE_OLD\n"
+MOVE_DESTINATION_BYTES = b"RUNVORI_MOVE_NEW\n"
+MOVE_PROMPT = (
+    "This is a disposable Runvori protocol probe. Use only apply_patch to move "
+    "move-source.txt to move-destination.txt, changing its single line from "
+    "RUNVORI_MOVE_OLD to RUNVORI_MOVE_NEW. Try the patch once even if approval "
+    "is required. Do not use shell commands, other tools, other paths, or the network."
+)
 DIRTY_TRACKED_BASE = b"tracked baseline\n"
 DIRTY_TRACKED_BEFORE = b"tracked preexisting edit\n"
 DIRTY_UNTRACKED_BEFORE = b"preexisting untracked\n"
@@ -98,9 +119,11 @@ def is_safe_command(command: object, expected: str = SAFE_COMMAND) -> bool:
     if not executable.is_file():
         return False
     quoted_executable = f'"{str(executable).replace(chr(92), chr(92) * 2)}"'
+    double_quoted_command = expected.replace('"', '\\"')
     return command in (
         f"{quoted_executable} -Command '{expected}'",
         f"{quoted_executable} -NoProfile -Command '{expected}'",
+        f'{quoted_executable} -Command "{double_quoted_command}"',
     )
 
 
@@ -255,8 +278,10 @@ def _git_status_entries(target: Path) -> set[bytes]:
         ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
         cwd=target, capture_output=True, timeout=15, check=False,
     )
-    if result.returncode or not result.stdout.endswith(b"\0"):
+    if result.returncode or (result.stdout and not result.stdout.endswith(b"\0")):
         raise TransportError("fixture_git_status_failed")
+    if not result.stdout:
+        return set()
     entries = result.stdout.split(b"\0")
     if entries[-1] != b"" or len(entries[:-1]) != len(set(entries[:-1])):
         raise TransportError("fixture_git_status_invalid")
@@ -281,6 +306,108 @@ def prepare_dirty_fixture(root: Path, fixture: Path) -> Path:
     (target / "existing-untracked.txt").write_bytes(DIRTY_UNTRACKED_BEFORE)
     validate_dirty_fixture(root, target)
     return target
+
+
+def prepare_move_fixture(root: Path, fixture: Path) -> Path:
+    target = prepare_fixture(root, fixture)
+    (target / "move-source.txt").write_bytes(MOVE_SOURCE_BYTES)
+    for command in (
+        ["git", "add", "--", MARKER, "move-source.txt"],
+        ["git", "-c", "user.name=RunvoriProbe",
+         "-c", "user.email=probe@invalid.local", "-c", "commit.gpgsign=false",
+         "commit", "--quiet", "-m", "move baseline"],
+    ):
+        result = subprocess.run(command, cwd=target, capture_output=True,
+                                timeout=15, check=False)
+        if result.returncode:
+            raise TransportError("fixture_git_baseline_failed")
+    return validate_move_fixture(root, target)
+
+
+def prepare_binary_fixture(root: Path, fixture: Path) -> Path:
+    target = prepare_fixture(root, fixture)
+    (target / "binary.bin").write_bytes(BINARY_BASELINE)
+    for command in (
+        ["git", "add", "--", MARKER, "binary.bin"],
+        ["git", "-c", "user.name=RunvoriProbe",
+         "-c", "user.email=probe@invalid.local", "-c", "commit.gpgsign=false",
+         "commit", "--quiet", "-m", "binary baseline"],
+    ):
+        result = subprocess.run(command, cwd=target, capture_output=True,
+                                timeout=15, check=False)
+        if result.returncode:
+            raise TransportError("fixture_git_baseline_failed")
+    return validate_binary_fixture(root, target)
+
+
+def validate_binary_fixture(root: Path, fixture: Path) -> Path:
+    target = fixture_path(root, fixture)
+    expected = {MARKER, ".git", "binary.bin"}
+    if (not target.is_dir() or {path.name for path in target.iterdir()} != expected
+            or any((target / name).is_symlink() or
+                   (hasattr(target / name, "is_junction") and
+                    (target / name).is_junction()) for name in expected)
+            or not (target / ".git").is_dir()
+            or (target / MARKER).read_text(encoding="utf-8") !=
+            "Runvori disposable execution probe\n"
+            or (target / "binary.bin").read_bytes() != BINARY_BASELINE
+            or _git_status_entries(target)):
+        raise TransportError("invalid_binary_fixture")
+    return target
+
+
+def validate_move_fixture(root: Path, fixture: Path) -> Path:
+    target = fixture_path(root, fixture)
+    expected = {MARKER, ".git", "move-source.txt"}
+    if (not target.is_dir() or {path.name for path in target.iterdir()} != expected
+            or any((target / name).is_symlink() or
+                   (hasattr(target / name, "is_junction") and
+                    (target / name).is_junction()) for name in expected)
+            or not (target / ".git").is_dir()
+            or (target / MARKER).read_text(encoding="utf-8") !=
+            "Runvori disposable execution probe\n"
+            or (target / "move-source.txt").read_bytes() != MOVE_SOURCE_BYTES
+            or _git_status_entries(target)):
+        raise TransportError("invalid_move_fixture")
+    return target
+
+
+def move_item_matches(item: object, target: Path) -> bool:
+    if not isinstance(item, dict) or item.get("type") != "fileChange":
+        return False
+    changes = item.get("changes")
+    if not isinstance(changes, list) or len(changes) != 1:
+        return False
+    change = changes[0]
+    if not isinstance(change, dict) or not isinstance(change.get("kind"), dict):
+        return False
+    kind = change["kind"]
+    if kind.get("type") != "update" or not isinstance(kind.get("move_path"), str):
+        return False
+    try:
+        return (Path(change.get("path")).resolve() == target / "move-source.txt"
+                and Path(kind["move_path"]).resolve() == target / "move-destination.txt")
+    except (TypeError, OSError, ValueError):
+        return False
+
+
+def exact_move_item(item: object, target: Path) -> bool:
+    if (not move_item_matches(item, target) or not isinstance(item, dict)
+            or set(item) != {"type", "id", "status", "changes"}
+            or not isinstance(item.get("id"), str) or not item["id"]):
+        return False
+    change = item["changes"][0]
+    destination = target / "move-destination.txt"
+    expected_diff = ("@@ -1 +1 @@\n-RUNVORI_MOVE_OLD\n+RUNVORI_MOVE_NEW\n\n\n"
+                     f"Moved to: {destination}")
+    return (set(change) == {"path", "kind", "diff"}
+            and change["path"] == str(target / "move-source.txt")
+            and change["kind"] == {"type": "update", "move_path": str(destination)}
+            and change["diff"] == expected_diff
+            and (target / "move-source.txt").is_file()
+            and not (target / "move-source.txt").is_symlink()
+            and (target / "move-source.txt").read_bytes() == MOVE_SOURCE_BYTES
+            and not destination.exists())
 
 
 def validate_dirty_fixture(root: Path, fixture: Path) -> Path:
@@ -348,16 +475,18 @@ def run_probe(*, root: Path, fixture: Path, account_home: Path,
     if decision not in ("accept", "decline", "defer"):
         raise ValueError("invalid_approval_decision")
     if scenario not in ("read_only", "verify_command", "verify_two_commands",
-                        "verify_nonzero",
+                        "verify_nonzero", "binary_command",
                         "write_file", "interrupt", "interrupt_pending",
                         "interrupt_on_approval", "file_change_decline",
                         "file_change_accept", "file_change_accept_dirty",
-                        "file_change_cut_after_accept",
+                        "file_change_cut_after_accept", "file_change_move_decline",
+                        "file_change_move_accept",
                         "interrupt_after_turn_completed",
                         "interrupt_after_command_completed",
                         "interrupt_after_command_completed_delayed"):
         raise ValueError("invalid_probe_scenario")
-    if scenario in ("verify_command", "verify_two_commands", "verify_nonzero", "write_file",
+    if scenario in ("verify_command", "verify_two_commands", "verify_nonzero",
+                    "binary_command", "write_file",
                     "interrupt", "interrupt_on_approval",
                     "interrupt_after_turn_completed",
                     "interrupt_after_command_completed",
@@ -365,15 +494,19 @@ def run_probe(*, root: Path, fixture: Path, account_home: Path,
         raise ValueError("scenario_requires_accept_mode")
     if (scenario == "interrupt_pending") != (decision == "defer"):
         raise ValueError("pending_scenario_requires_defer_mode")
-    if scenario == "file_change_decline" and decision != "decline":
+    if scenario in ("file_change_decline", "file_change_move_decline") and decision != "decline":
         raise ValueError("file_change_scenario_requires_decline_mode")
     if scenario in ("file_change_accept", "file_change_accept_dirty",
-                    "file_change_cut_after_accept") and decision != "accept":
+                    "file_change_cut_after_accept", "file_change_move_accept") and decision != "accept":
         raise ValueError("file_change_scenario_requires_accept_mode")
     if timeout <= 0 or timeout > 600:
         raise ValueError("invalid_probe_timeout")
     target = (validate_dirty_fixture(root, fixture)
               if scenario == "file_change_accept_dirty" else
+              validate_binary_fixture(root, fixture)
+              if scenario == "binary_command" else
+              validate_move_fixture(root, fixture)
+              if scenario in ("file_change_move_decline", "file_change_move_accept") else
               validate_fixture(root, fixture))
     home = account_home.resolve(strict=True)
     if not home.is_dir() or home == target or home.is_relative_to(target):
@@ -383,6 +516,7 @@ def run_probe(*, root: Path, fixture: Path, account_home: Path,
         if any(word in key.upper() for word in ("TOKEN", "API_KEY", "SECRET", "PASSWORD")):
             del env[key]
     expected_command = (NONZERO_VERIFY_COMMAND if scenario == "verify_nonzero" else
+                        BINARY_COMMAND if scenario == "binary_command" else
                         WRITE_COMMAND if scenario == "write_file" else
                         INTERRUPT_COMMAND if scenario in ("interrupt", "interrupt_on_approval")
                         else SAFE_COMMAND)
@@ -390,7 +524,9 @@ def run_probe(*, root: Path, fixture: Path, account_home: Path,
         "file_change_decline", "file_change_accept", "file_change_accept_dirty",
         "file_change_cut_after_accept")
               else
+              MOVE_PROMPT if scenario in ("file_change_move_decline", "file_change_move_accept") else
               PROMPT if decision == "decline" else
+              BINARY_PROMPT if scenario == "binary_command" else
               WRITE_PROMPT if scenario == "write_file" else
               INTERRUPT_PROMPT if scenario in ("interrupt", "interrupt_on_approval")
               else TWO_VERIFY_PROMPT if scenario == "verify_two_commands"
@@ -414,6 +550,17 @@ def run_probe(*, root: Path, fixture: Path, account_home: Path,
                     "pending_request_allowlisted": None,
                     "accepted_file_change_status": "not_observed",
                     "file_change_item_allowlisted": None,
+                    "move_item_observed": False,
+                    "move_kind_paths_matched": False,
+                    "move_source_unchanged": None,
+                    "move_destination_absent": None,
+                    "move_source_absent": None,
+                    "move_destination_match": None,
+                    "binary_match": None,
+                    "binary_git_marker": None,
+                    "binary_representation": None,
+                    "binary_content_available": None,
+                    "binary_size_bytes": None,
                     "fixture_only_expected_file": None,
                     "fixture_entries_within_allowlist": None,
                     "preexisting_files_unchanged": None,
@@ -438,6 +585,7 @@ def run_probe(*, root: Path, fixture: Path, account_home: Path,
             "approvalsReviewer": "user",
             "sandbox": ("read-only" if scenario in (
                 "file_change_decline", "file_change_accept", "file_change_accept_dirty",
+                "file_change_move_decline", "file_change_move_accept",
                 "file_change_cut_after_accept")
                         else "workspace-write"),
             "ephemeral": False,
@@ -477,8 +625,17 @@ def run_probe(*, root: Path, fixture: Path, account_home: Path,
             method = record_event_shape(report, event)
             if verification_group is not None:
                 verification_group.observe(method, event.get("params"))
+            if scenario in ("file_change_move_decline", "file_change_move_accept") and method in ("item/started", "item/updated"):
+                params = event.get("params")
+                item = params.get("item") if isinstance(params, dict) else None
+                if isinstance(item, dict) and item.get("type") == "fileChange":
+                    report["move_item_observed"] = True
+                    if (params.get("threadId") == thread_id
+                            and params.get("turnId") == turn_id
+                            and move_item_matches(item, target)):
+                        report["move_kind_paths_matched"] = True
             if scenario in ("file_change_accept", "file_change_accept_dirty",
-                            "file_change_cut_after_accept") and method in ("item/started", "item/updated"):
+                            "file_change_cut_after_accept", "file_change_move_accept") and method in ("item/started", "item/updated"):
                 params = event.get("params", {})
                 item = params.get("item", {}) if isinstance(params, dict) else {}
                 if isinstance(item, dict) and item.get("type") == "fileChange":
@@ -492,10 +649,14 @@ def run_probe(*, root: Path, fixture: Path, account_home: Path,
                     elif file_change_candidate_id is None and method != "item/started":
                         file_change_candidate_valid = False
                     elif file_change_candidate_id is None:
-                        file_change_candidate_valid = exact_file_change_item(item, target)
+                        file_change_candidate_valid = (
+                            exact_move_item(item, target) if scenario == "file_change_move_accept"
+                            else exact_file_change_item(item, target))
                     else:
-                        file_change_candidate_valid = (file_change_candidate_valid
-                                                       and exact_file_change_item(item, target))
+                        file_change_candidate_valid = (
+                            file_change_candidate_valid and
+                            (exact_move_item(item, target) if scenario == "file_change_move_accept"
+                             else exact_file_change_item(item, target)))
                     if file_change_candidate_id is None and isinstance(item_id, str):
                         file_change_candidate_id = item_id
             if "id" in event:
@@ -527,7 +688,7 @@ def run_probe(*, root: Path, fixture: Path, account_home: Path,
                         and report["interrupt_rpc"] != "not_requested"):
                     raise TransportError("unexpected_approval_after_interrupt")
                 if scenario in ("file_change_accept", "file_change_accept_dirty",
-                                "file_change_cut_after_accept"):
+                                "file_change_cut_after_accept", "file_change_move_accept"):
                     report["file_change_item_allowlisted"] = file_change_candidate_valid
                     actual, reason = (safe_file_change_decision(
                         event, thread_id=thread_id, turn_id=turn_id,
@@ -557,6 +718,7 @@ def run_probe(*, root: Path, fixture: Path, account_home: Path,
                         expected=expected_command)
                         if decision == "accept" and not (
                             scenario in ("verify_command", "verify_nonzero",
+                                         "binary_command",
                                          "interrupt_after_turn_completed",
                                          "interrupt_after_command_completed",
                                          "interrupt_after_command_completed_delayed")
@@ -574,7 +736,7 @@ def run_probe(*, root: Path, fixture: Path, account_home: Path,
                 client.respond_approval(event["id"], actual)
                 if actual == "accept":
                     if scenario in ("file_change_accept", "file_change_accept_dirty",
-                                    "file_change_cut_after_accept"):
+                                    "file_change_cut_after_accept", "file_change_move_accept"):
                         accepted_file_change_id = event["params"]["itemId"]
                         if scenario == "file_change_cut_after_accept":
                             report["cutoff"] = "after_approval_write"
@@ -608,7 +770,7 @@ def run_probe(*, root: Path, fixture: Path, account_home: Path,
             if method == "item/completed":
                 item = event.get("params", {}).get("item", {})
                 if (scenario in ("file_change_accept", "file_change_accept_dirty",
-                                 "file_change_cut_after_accept") and isinstance(item, dict)
+                                 "file_change_cut_after_accept", "file_change_move_accept") and isinstance(item, dict)
                         and item.get("id") == accepted_file_change_id):
                     status = item.get("status")
                     report["accepted_file_change_status"] = (
@@ -686,9 +848,48 @@ def run_probe(*, root: Path, fixture: Path, account_home: Path,
     result = target / "probe-result.txt"
     expected_bytes = (b"RUNVORI_PROBE_OK" if scenario == "write_file"
                       else FILE_CHANGE_BYTES)
-    report["file_match"] = (result.is_file() and not result.is_symlink()
-                            and result.resolve().is_relative_to(target)
-                            and result.read_bytes() == expected_bytes)
+    report["file_match"] = (
+        None if scenario in ("file_change_move_decline", "file_change_move_accept",
+                             "binary_command")
+        else result.is_file() and not result.is_symlink()
+        and result.resolve().is_relative_to(target)
+        and result.read_bytes() == expected_bytes)
+    if scenario in ("file_change_move_decline", "file_change_move_accept"):
+        source = target / "move-source.txt"
+        destination = target / "move-destination.txt"
+        report["move_source_unchanged"] = (
+            source.is_file() and not source.is_symlink()
+            and source.read_bytes() == MOVE_SOURCE_BYTES)
+        report["move_destination_absent"] = not destination.exists()
+        report["move_source_absent"] = not source.exists()
+        report["move_destination_match"] = (
+            destination.is_file() and not destination.is_symlink()
+            and destination.read_bytes() == MOVE_DESTINATION_BYTES)
+        if scenario == "file_change_move_decline":
+            if (not report["move_source_unchanged"] or not report["move_destination_absent"]
+                    or _git_status_entries(target)):
+                raise TransportError("move_decline_fixture_changed")
+        else:
+            report["git_status_expected_transition"] = _git_status_entries(target) == {
+                b" D move-source.txt", b"?? move-destination.txt"}
+    if scenario == "binary_command":
+        binary = target / "binary.bin"
+        report["binary_match"] = (
+            binary.is_file() and not binary.is_symlink()
+            and binary.read_bytes() == BINARY_BYTES)
+        report["git_status_expected_transition"] = _git_status_entries(target) == {
+            b" M binary.bin"}
+        if report["binary_match"]:
+            captured = capture_worktree_file(target, "binary.bin")
+            report["binary_representation"] = captured["representation"]
+            report["binary_content_available"] = captured["content_available"]
+            report["binary_size_bytes"] = captured["size_bytes"]
+        diff = subprocess.run(
+            ["git", "diff", "--no-ext-diff", "--no-textconv", "--numstat", "-z",
+             "--", "binary.bin"], cwd=target, capture_output=True, timeout=15,
+            check=False)
+        report["binary_git_marker"] = (
+            diff.returncode == 0 and diff.stdout == b"-\t-\tbinary.bin\0")
     if verification_group is not None:
         snapshot = verification_group.snapshot(report["turn_status"])
         report["required_verification_items"] = snapshot["items"]

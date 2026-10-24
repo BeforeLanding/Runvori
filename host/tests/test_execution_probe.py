@@ -6,12 +6,15 @@ from unittest.mock import patch
 
 from runvori.cli import ROOT
 from runvori.codex.execution_probe import (
-    DIRTY_TRACKED_BEFORE, FILE_CHANGE_BYTES, INTERRUPT_COMMAND,
+    BINARY_BYTES, BINARY_COMMAND, DIRTY_TRACKED_BEFORE,
+    FILE_CHANGE_BYTES, INTERRUPT_COMMAND,
     INTERRUPT_MARKER, SAFE_COMMAND, WRITE_COMMAND,
-    NONZERO_VERIFY_COMMAND, SECOND_VERIFY_COMMAND,
-    is_safe_command, prepare_dirty_fixture, prepare_fixture, run_probe,
+    NONZERO_VERIFY_COMMAND, SECOND_VERIFY_COMMAND, MOVE_DESTINATION_BYTES,
+    exact_move_item, is_safe_command, move_item_matches, prepare_dirty_fixture,
+    prepare_binary_fixture, prepare_fixture, prepare_move_fixture, run_probe,
     safe_accept_decision,
-    shape, validate_dirty_fixture, validate_fixture,
+    shape, validate_binary_fixture, validate_dirty_fixture,
+    validate_fixture, validate_move_fixture,
 )
 from runvori.codex.stdio import RpcError, TransportError
 
@@ -28,6 +31,8 @@ class FakeClient:
         self.answers = []
         self.interrupts = []
         self.write_on_accept = False
+        self.move_on_accept = False
+        self.binary_on_accept = False
         self.write_content = b"RUNVORI_PROBE_OK"
         self.expected_sandbox = "workspace-write"
         self.closed = False
@@ -72,9 +77,49 @@ class FakeClient:
         self.answers.append((request_id, decision))
         if decision == "accept" and self.write_on_accept:
             (self.fixture / "probe-result.txt").write_bytes(self.write_content)
+        if decision == "accept" and self.move_on_accept:
+            (self.fixture / "move-source.txt").rename(
+                self.fixture / "move-destination.txt")
+            (self.fixture / "move-destination.txt").write_bytes(MOVE_DESTINATION_BYTES)
+        if decision == "accept" and self.binary_on_accept:
+            (self.fixture / "binary.bin").write_bytes(BINARY_BYTES)
 
 
 class ExecutionProbeTests(unittest.TestCase):
+    def test_binary_command_uses_real_exit_and_metadata_only(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / ".dev") as temp:
+            fixture = prepare_binary_fixture(ROOT, Path(temp) / "fixture")
+            account_home = Path(temp) / "account"
+            account_home.mkdir()
+            fake = FakeClient(fixture)
+            fake.binary_on_accept = True
+            fake.events = iter([
+                {"id": 53, "method": "item/commandExecution/requestApproval",
+                 "params": {"threadId": "thread_1", "turnId": "turn_1",
+                            "itemId": "binary_1", "kind": "command",
+                            "command": BINARY_COMMAND, "cwd": str(fixture)}},
+                {"method": "item/completed", "params": {"item": {
+                    "id": "binary_1", "exitCode": 0}}},
+                {"method": "turn/completed", "params": {
+                    "threadId": "thread_1", "turn": {"id": "turn_1", "status": "completed"}}},
+            ])
+            with patch("runvori.codex.execution_probe.StdioClient", return_value=fake):
+                report = run_probe(root=ROOT, fixture=fixture, account_home=account_home,
+                                   executable="fake", decision="accept",
+                                   scenario="binary_command")
+            self.assertEqual(fake.answers, [(53, "accept")])
+            self.assertTrue(report["accepted_command_exit_zero"])
+            self.assertTrue(report["binary_match"])
+            self.assertTrue(report["binary_git_marker"])
+            self.assertEqual(report["binary_representation"], "binary_or_non_utf8")
+            self.assertFalse(report["binary_content_available"])
+            self.assertEqual(report["binary_size_bytes"], len(BINARY_BYTES))
+            self.assertTrue(report["git_status_expected_transition"])
+            self.assertIsNone(report["file_match"])
+            (fixture / "binary.bin").write_bytes(b"tampered")
+            with self.assertRaisesRegex(TransportError, "invalid_binary_fixture"):
+                validate_binary_fixture(ROOT, fixture)
+
     def test_fixture_boundary_and_occupied_directory(self):
         with tempfile.TemporaryDirectory(dir=ROOT / ".dev") as temp:
             fixture = Path(temp) / "fixture"
@@ -264,6 +309,13 @@ class ExecutionProbeTests(unittest.TestCase):
             write_wrapped = wrapped.replace(SAFE_COMMAND, WRITE_COMMAND).replace(
                 " -Command ", " -NoProfile -Command ")
             self.assertTrue(is_safe_command(write_wrapped, WRITE_COMMAND))
+            quoted = f'"{str(executable).replace(chr(92), chr(92) * 2)}"'
+            binary_wrapped = (f'{quoted} -Command "'
+                              f'{BINARY_COMMAND.replace(chr(34), chr(92) + chr(34))}"')
+            self.assertTrue(is_safe_command(binary_wrapped, BINARY_COMMAND))
+            self.assertFalse(is_safe_command(binary_wrapped + "; whoami", BINARY_COMMAND))
+            self.assertFalse(is_safe_command(binary_wrapped.replace("binary.bin", "other.bin"),
+                                             BINARY_COMMAND))
             self.assertFalse(is_safe_command(write_wrapped + "; Get-ChildItem", WRITE_COMMAND))
             self.assertFalse(is_safe_command(wrapped + "; whoami"))
             self.assertFalse(is_safe_command(wrapped.replace("pwsh.exe", "other.exe")))
@@ -560,6 +612,96 @@ class ExecutionProbeTests(unittest.TestCase):
             self.assertEqual(report["approval_checks"][0]["review"]["grant_root_kind"],
                              "NoneType")
             self.assertFalse(report["file_match"])
+
+    def test_move_probe_declines_and_preserves_source(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / ".dev") as temp:
+            fixture = prepare_move_fixture(ROOT, Path(temp) / "fixture")
+            account_home = Path(temp) / "account"
+            account_home.mkdir()
+            fake = FakeClient(fixture)
+            fake.expected_sandbox = "read-only"
+            item = {"type": "fileChange", "id": "move_1", "status": "inProgress",
+                    "changes": [{"path": str(fixture / "move-source.txt"),
+                                 "kind": {"type": "update", "move_path": str(
+                                     fixture / "move-destination.txt")},
+                                 "diff": "redacted test diff"}]}
+            fake.events = iter([
+                {"method": "item/started", "params": {
+                    "threadId": "thread_1", "turnId": "turn_1", "item": item}},
+                {"id": 51, "method": "item/fileChange/requestApproval", "params": {
+                    "threadId": "thread_1", "turnId": "turn_1", "itemId": "move_1",
+                    "startedAtMs": 1, "grantRoot": None}},
+                {"method": "turn/completed", "params": {
+                    "threadId": "thread_1", "turn": {"id": "turn_1", "status": "completed"}}},
+            ])
+            with self.assertRaisesRegex(ValueError, "file_change_scenario_requires_decline_mode"):
+                run_probe(root=ROOT, fixture=fixture, account_home=account_home,
+                          executable="fake", decision="accept",
+                          scenario="file_change_move_decline")
+            with patch("runvori.codex.execution_probe.StdioClient", return_value=fake):
+                report = run_probe(root=ROOT, fixture=fixture, account_home=account_home,
+                                   executable="fake", decision="decline",
+                                   scenario="file_change_move_decline")
+            self.assertEqual(fake.answers, [(51, "decline")])
+            self.assertTrue(report["move_item_observed"])
+            self.assertTrue(report["move_kind_paths_matched"])
+            self.assertTrue(report["move_source_unchanged"])
+            self.assertTrue(report["move_destination_absent"])
+            self.assertNotIn(str(fixture), json.dumps(report))
+            altered = dict(item, changes=[dict(item["changes"][0],
+                                               kind={"type": "update", "move_path": str(
+                                                   account_home / "outside.txt")})])
+            self.assertFalse(move_item_matches(altered, fixture))
+            (fixture / "move-source.txt").write_bytes(b"tampered")
+            with self.assertRaisesRegex(TransportError, "invalid_move_fixture"):
+                validate_move_fixture(ROOT, fixture)
+
+    def test_move_accept_requires_exact_diff_and_checks_result(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / ".dev") as temp:
+            fixture = prepare_move_fixture(ROOT, Path(temp) / "fixture")
+            account_home = Path(temp) / "account"
+            account_home.mkdir()
+            fake = FakeClient(fixture)
+            fake.expected_sandbox = "read-only"
+            fake.move_on_accept = True
+            destination = fixture / "move-destination.txt"
+            diff = ("@@ -1 +1 @@\n-RUNVORI_MOVE_OLD\n+RUNVORI_MOVE_NEW\n\n\n"
+                    f"Moved to: {destination}")
+            change = {"path": str(fixture / "move-source.txt"),
+                      "kind": {"type": "update", "move_path": str(destination)},
+                      "diff": diff}
+            item = {"type": "fileChange", "id": "move_1", "status": "inProgress",
+                    "changes": [change]}
+            self.assertTrue(exact_move_item(item, fixture))
+            for bad_change in (dict(change, diff=diff + "unexpected"),
+                               dict(change, kind={"type": "update", "move_path": str(
+                                   account_home / "outside.txt")}),
+                               dict(change, extra="unexpected")):
+                self.assertFalse(exact_move_item(dict(item, changes=[bad_change]), fixture))
+            request = {"threadId": "thread_1", "turnId": "turn_1", "itemId": "move_1",
+                       "startedAtMs": 1, "grantRoot": None}
+            fake.events = iter([
+                {"method": "item/started", "params": {
+                    "threadId": "thread_1", "turnId": "turn_1", "item": item}},
+                {"id": 52, "method": "item/fileChange/requestApproval", "params": request},
+                {"method": "item/completed", "params": {
+                    "threadId": "thread_1", "turnId": "turn_1",
+                    "item": dict(item, status="completed")}},
+                {"method": "turn/completed", "params": {
+                    "threadId": "thread_1", "turn": {"id": "turn_1", "status": "completed"}}},
+            ])
+            with patch("runvori.codex.execution_probe.StdioClient", return_value=fake):
+                report = run_probe(root=ROOT, fixture=fixture, account_home=account_home,
+                                   executable="fake", decision="accept",
+                                   scenario="file_change_move_accept")
+            self.assertEqual(fake.answers, [(52, "accept")])
+            self.assertTrue(report["file_change_item_allowlisted"])
+            self.assertEqual(report["accepted_file_change_status"], "completed")
+            self.assertTrue(report["move_item_observed"])
+            self.assertTrue(report["move_kind_paths_matched"])
+            self.assertTrue(report["move_source_absent"])
+            self.assertTrue(report["move_destination_match"])
+            self.assertTrue(report["git_status_expected_transition"])
 
     def test_file_change_accept_requires_matching_item_and_exact_bytes(self):
         with tempfile.TemporaryDirectory(dir=ROOT / ".dev") as temp:

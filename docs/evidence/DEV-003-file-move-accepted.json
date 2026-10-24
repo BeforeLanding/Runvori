@@ -1,0 +1,22 @@
+{
+  "scenario": "file_change_move_accept",
+  "status": "observed",
+  "cli_version": "0.164.0-alpha.11.1",
+  "event_count": 73,
+  "move_item_started_index": 25,
+  "file_change_approval_index": 27,
+  "request_resolved_index": 28,
+  "move_item_completed_index": 30,
+  "turn_completed_index": 72,
+  "file_change_approval_count": 1,
+  "command_approval_count": 0,
+  "approval_decision": "accept",
+  "approval_sent_count": 1,
+  "file_change_item_allowlisted": true,
+  "accepted_file_change_status": "completed",
+  "move_source_absent": true,
+  "move_destination_match": true,
+  "git_status_expected_transition": true,
+  "turn_status": "completed",
+  "thread_resume": "recognized"
+}

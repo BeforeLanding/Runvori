@@ -11,7 +11,7 @@ sys.path.insert(0, str(ROOT / "host/src"))
 
 from runvori.codex.execution_probe import (  # noqa: E402
     DIRTY_TRACKED_BEFORE, DIRTY_UNTRACKED_BEFORE, MARKER,
-    _git_status_entries, fixture_path, prepare_dirty_fixture,
+    _git_status_entries, fixture_path, prepare_dirty_fixture, prepare_fixture,
 )
 from runvori.codex.stdio import TransportError  # noqa: E402
 from runvori.infrastructure.artifact_probe import capture_worktree_file  # noqa: E402
@@ -22,6 +22,64 @@ EXPECTED_NAMES = {MARKER, ".git", "tracked.txt", "existing-untracked.txt",
                   "large.txt", "binary.bin"}
 EXPECTED_STATUS = {b" M tracked.txt", b" M large.txt", b" M binary.bin",
                    b"?? existing-untracked.txt"}
+RENAME_BYTES = b"runvori rename fixture\n"
+RENAME_NAMES = {MARKER, ".git", "staged-new.txt", "worktree-new.txt"}
+
+
+def _git_output(target: Path, args: list[str]) -> bytes:
+    result = subprocess.run(["git", *args], cwd=target, capture_output=True,
+                            timeout=15, check=False)
+    if result.returncode:
+        raise TransportError("artifact_git_query_failed")
+    return result.stdout
+
+
+def prepare_rename(fixture: Path) -> Path:
+    target = prepare_fixture(ROOT, fixture)
+    for name in ("staged-old.txt", "worktree-old.txt"):
+        (target / name).write_bytes(RENAME_BYTES)
+    for args in (
+        ["add", "--", MARKER, "staged-old.txt", "worktree-old.txt"],
+        ["-c", "user.name=RunvoriProbe", "-c", "user.email=probe@invalid.local",
+         "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "rename baseline"],
+        ["mv", "--", "staged-old.txt", "staged-new.txt"],
+    ):
+        _git_output(target, args)
+    (target / "worktree-old.txt").rename(target / "worktree-new.txt")
+    validate_rename(target)
+    return target
+
+
+def validate_rename(fixture: Path) -> Path:
+    target = fixture_path(ROOT, fixture)
+    if (not target.is_dir() or {entry.name for entry in target.iterdir()} != RENAME_NAMES
+            or any((target / name).is_symlink() for name in RENAME_NAMES)
+            or not (target / ".git").is_dir()
+            or (target / MARKER).read_text(encoding="utf-8") !=
+            "Runvori disposable execution probe\n"
+            or any((target / name).read_bytes() != RENAME_BYTES for name in
+                   ("staged-new.txt", "worktree-new.txt"))):
+        raise TransportError("invalid_rename_fixture")
+    return target
+
+
+def inspect_rename(fixture: Path) -> dict:
+    target = validate_rename(fixture)
+    staged = _git_output(target, ["diff", "--cached", "--name-status", "-z",
+                                  "--find-renames=100%"])
+    worktree = _git_output(target, ["diff", "--name-status", "-z",
+                                    "--find-renames=100%"])
+    untracked = _git_output(target, ["ls-files", "--others", "--exclude-standard", "-z"])
+    if (staged != b"R100\0staged-old.txt\0staged-new.txt\0"
+            or worktree != b"D\0worktree-old.txt\0"
+            or untracked != b"worktree-new.txt\0"):
+        raise TransportError("artifact_rename_evidence_unexpected")
+    return {
+        "status": "observed", "source": "git_worktree_snapshot",
+        "attribution": "unknown", "staged_move": "git_rename_100",
+        "unstaged_move": "deletion_plus_untracked",
+        "unstaged_rename_confirmed": False,
+    }
 
 
 def prepare(fixture: Path) -> Path:
@@ -89,7 +147,8 @@ def inspect(fixture: Path) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("prepare", "inspect"))
+    parser.add_argument("action", choices=("prepare", "inspect",
+                                           "prepare-rename", "inspect-rename"))
     parser.add_argument("--fixture", type=Path,
                         default=ROOT / ".dev" / "artifact-fixture")
     args = parser.parse_args()
@@ -97,8 +156,13 @@ def main() -> int:
         if args.action == "prepare":
             prepare(args.fixture)
             result = {"status": "prepared"}
-        else:
+        elif args.action == "inspect":
             result = inspect(args.fixture)
+        elif args.action == "prepare-rename":
+            prepare_rename(args.fixture)
+            result = {"status": "prepared"}
+        else:
+            result = inspect_rename(args.fixture)
     except (OSError, ValueError, subprocess.SubprocessError, TransportError) as error:
         result = {"status": "failed", "code": (str(error) if isinstance(error, TransportError)
                                                 else type(error).__name__)}

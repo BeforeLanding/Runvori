@@ -1,0 +1,21 @@
+{
+  "scenario": "file_change_move_decline",
+  "status": "observed",
+  "cli_version": "0.164.0-alpha.11.1",
+  "event_count": 62,
+  "move_item_started_index": 26,
+  "file_change_approval_index": 28,
+  "request_resolved_index": 29,
+  "move_item_completed_index": 31,
+  "turn_completed_index": 61,
+  "file_change_approval_count": 1,
+  "command_approval_count": 0,
+  "approval_decision": "decline",
+  "approval_sent_count": 1,
+  "move_item_observed": true,
+  "move_kind_paths_matched": true,
+  "move_source_unchanged": true,
+  "move_destination_absent": true,
+  "turn_status": "completed",
+  "thread_resume": "recognized"
+}

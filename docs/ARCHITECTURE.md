@@ -31,7 +31,7 @@ Android 负责视图、缓存、同步、阅读位置和受限操作。Host 负�
 - `host/src/runvori/api/`：HTTPS API、认证、请求校验、错误映射。
 - `host/src/runvori/application/`：启动/中断/审批/同步用例与操作幂等。
 - `host/src/runvori/domain/`：状态机、活动槽、审批和验证规则，不依赖 FastAPI。
-- `host/src/runvori/infrastructure/`：SQLite、文件、TLS/凭据存储和进程管理。当前仅有独立的审批派发 SQLite 验证切片，尚未接入业务服务、事件事务或进程所有权核对。
+- `host/src/runvori/infrastructure/`：SQLite、文件、TLS/凭据存储和进程管理。当前有审批派发、一次性配对的独立 SQLite 切片，Windows 单实例锁及先锁后开审批记录的最小启动切片；尚未接入业务服务、事件事务或进程所有权核对。
 - `host/src/runvori/codex/`：初始化、RPC 路由、schema 校验及上游事件映射。
 - `host/tests/`：领域、数据库事务、API、故障注入和适配器夹具测试。
 
@@ -39,7 +39,7 @@ API 层不得自己改表或直接写 app-server stdin。每个外部副作用�
 
 ### Android
 
-计划在 `android/` 建立单应用，先按包划分 `ui / domain / data`，不提前拆分大量 Gradle 模块。
+`android/` 已建立可构建的单应用占位工程；以下 `ui / domain / data` 包划分和业务功能仍是后续计划，不提前拆分大量 Gradle 模块。
 
 - Compose 订阅不可变 UI 状态；ViewModel 组合状态并响应动作。
 - 领域逻辑负责游标、事件归并、审批显示与阅读模式，不依赖 UI 框架。

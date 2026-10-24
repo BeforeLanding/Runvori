@@ -1,0 +1,23 @@
+{
+  "scenario": "binary_command",
+  "status": "observed",
+  "cli_version": "0.164.0-alpha.11.1",
+  "event_count": 40,
+  "command_approval_index": 22,
+  "request_resolved_index": 23,
+  "command_item_completed_index": 25,
+  "turn_completed_index": 39,
+  "command_approval_count": 1,
+  "file_change_approval_count": 0,
+  "approval_decision": "accept",
+  "approval_sent_count": 1,
+  "command_exit_kind": "zero",
+  "binary_match": true,
+  "binary_size_bytes": 2048,
+  "git_binary_marker": true,
+  "artifact_representation": "binary_or_non_utf8",
+  "artifact_content_available": false,
+  "git_status_expected_transition": true,
+  "turn_status": "completed",
+  "thread_resume": "recognized"
+}

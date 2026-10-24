@@ -98,16 +98,67 @@ class ApprovalJournalTests(unittest.TestCase):
             with ApprovalJournal(database) as journal:
                 journal.start_epoch_after_isolation(old_process_isolated=True)
                 absent = journal.inspect_unknown_file(
-                    approval_id="a", path=target, expected_bytes=b"expected\n")
+                    approval_id="a", workspace=folder,
+                    relative_path=target.name, expected_bytes=b"expected\n")
                 self.assertEqual(absent["file_snapshot"], "absent")
                 target.write_bytes(b"expected\n")
                 present = journal.inspect_unknown_file(
-                    approval_id="a", path=target, expected_bytes=b"expected\n")
+                    approval_id="a", workspace=folder,
+                    relative_path=target.name, expected_bytes=b"expected\n")
                 self.assertEqual(present["file_snapshot"], "matches")
                 self.assertEqual(present["status"], "unknown")
                 self.assertIsNone(present["resolution_kind"])
                 with self.assertRaisesRegex(JournalError, "dispatch_unavailable"):
                     journal.claim_dispatch(approval_id="a", epoch=journal.current_epoch())
+
+    def test_file_reconciliation_stays_inside_workspace(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / ".dev") as temp:
+            folder = Path(temp)
+            workspace = folder / "workspace"
+            workspace.mkdir()
+            outside = folder / "outside.txt"
+            outside.write_bytes(b"secret")
+            with ApprovalJournal(folder / "journal.db") as journal:
+                epoch = journal.start_epoch_after_isolation(old_process_isolated=True)
+                journal.record_request(approval_id="a", epoch=epoch,
+                                       upstream_request_id="upstream_a", kind="file_change")
+                with self.assertRaisesRegex(JournalError, "reconciliation_unavailable"):
+                    journal.inspect_unknown_file(approval_id="a", workspace=folder / "missing",
+                                                 relative_path="outside.txt", expected_bytes=b"secret")
+                journal.record_decision(approval_id="a", request_id="req_a",
+                                        decision="accept", expected_version=1)
+                journal.claim_dispatch(approval_id="a", epoch=epoch)
+                journal.start_epoch_after_isolation(old_process_isolated=True)
+                for candidate in ("../outside.txt", str(outside)):
+                    with self.assertRaisesRegex(JournalError, "invalid_relative_path"):
+                        journal.inspect_unknown_file(approval_id="a", workspace=workspace,
+                                                     relative_path=candidate, expected_bytes=b"secret")
+                self.assertIsNone(journal.get("a")["file_snapshot"])
+
+    def test_file_reconciliation_rejects_linked_parent_when_supported(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / ".dev") as temp:
+            folder = Path(temp)
+            workspace = folder / "workspace"
+            workspace.mkdir()
+            outside = folder / "outside.txt"
+            outside.write_bytes(b"secret")
+            link = workspace / "linked"
+            with ApprovalJournal(folder / "journal.db") as journal:
+                epoch = journal.start_epoch_after_isolation(old_process_isolated=True)
+                journal.record_request(approval_id="a", epoch=epoch,
+                                       upstream_request_id="upstream_a", kind="file_change")
+                journal.record_decision(approval_id="a", request_id="req_a",
+                                        decision="accept", expected_version=1)
+                journal.claim_dispatch(approval_id="a", epoch=epoch)
+                journal.start_epoch_after_isolation(old_process_isolated=True)
+                try:
+                    link.symlink_to(folder, target_is_directory=True)
+                except OSError:
+                    self.skipTest("symlink creation unavailable on this host")
+                result = journal.inspect_unknown_file(
+                    approval_id="a", workspace=workspace,
+                    relative_path="linked/outside.txt", expected_bytes=b"secret")
+                self.assertEqual(result["file_snapshot"], "unsafe_path")
 
     def test_two_connections_accept_only_one_decision(self):
         with tempfile.TemporaryDirectory(dir=ROOT / ".dev") as temp:
