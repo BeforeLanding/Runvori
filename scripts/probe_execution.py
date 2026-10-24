@@ -23,7 +23,14 @@ def main() -> int:
     parser.add_argument("action", choices=["prepare", "run"])
     parser.add_argument("--fixture", type=Path, default=ROOT / ".dev" / "execution-fixture")
     parser.add_argument("--account-home", type=Path)
-    parser.add_argument("--approval", choices=["accept", "decline"])
+    parser.add_argument("--approval", choices=["accept", "decline", "defer"])
+    parser.add_argument("--scenario", choices=[
+        "read_only", "write_file", "interrupt", "interrupt_pending",
+        "interrupt_on_approval", "file_change_decline", "file_change_accept",
+        "file_change_cut_after_accept", "interrupt_after_turn_completed",
+        "interrupt_after_command_completed",
+        "interrupt_after_command_completed_delayed"],
+                        default="read_only")
     parser.add_argument("--codex", default="codex")
     parser.add_argument("--timeout", type=float, default=120)
     args = parser.parse_args()
@@ -47,14 +54,31 @@ def main() -> int:
             run_metadata(executable, env, home)
             report = run_probe(root=ROOT, fixture=args.fixture, account_home=home,
                                executable=executable, decision=args.approval,
+                               scenario=args.scenario,
                                timeout=args.timeout)
             write_report(ROOT, report)
-            result = {"status": report["status"], "turn_status": report["turn_status"],
+            result = {"status": report["status"], "scenario": report["scenario"],
+                      "turn_status": report["turn_status"],
                       "approval_count": report["approval_count"], "resume": report["resume"],
+                      "file_change_approval_count": report["file_change_approval_count"],
+                      "command_approval_count": report["command_approval_count"],
                       "accepted_count": sum(check["decision"] == "accept"
                                             for check in report["approval_checks"]),
                       "file_match": report["file_match"],
                       "accepted_command_exit_zero": report["accepted_command_exit_zero"],
+                      "accepted_command_exit_kind": report["accepted_command_exit_kind"],
+                      "interrupt_rpc": report["interrupt_rpc"],
+                      "interrupt_trigger": report["interrupt_trigger"],
+                      "interrupt_marker_seen": report["interrupt_marker_seen"],
+                      "interrupt_delay_ms": report["interrupt_delay_ms"],
+                      "pending_request_resolved": report["pending_request_resolved"],
+                      "pending_request_allowlisted": report["pending_request_allowlisted"],
+                      "accepted_file_change_status": report["accepted_file_change_status"],
+                      "file_change_item_allowlisted": report["file_change_item_allowlisted"],
+                      "fixture_only_expected_file": report["fixture_only_expected_file"],
+                      "fixture_entries_within_allowlist": report["fixture_entries_within_allowlist"],
+                      "cutoff": report["cutoff"],
+                      "managed_process_close_returned": report["managed_process_close_returned"],
                       "report": "workspace/.dev/execution-probe-report.json"}
     except (OSError, ValueError, KeyError, subprocess.SubprocessError, TransportError) as error:
         code = str(error) if isinstance(error, TransportError) else type(error).__name__

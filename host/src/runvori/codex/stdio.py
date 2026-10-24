@@ -23,7 +23,7 @@ class RpcError(TransportError):
 
 
 class StdioClient:
-    """One caller/one outstanding request; errors require closing the connection.
+    """One caller/one outstanding request; transport faults require closing.
 
     Windows targets start behind a gate and belong to a kill-on-close job.
     This is process lifecycle containment, not an execution sandbox.
@@ -189,6 +189,10 @@ class StdioClient:
                 if not isinstance(message["result"], dict):
                     raise TransportError("invalid_rpc_result")
                 return message["result"]
+        except RpcError:
+            # A matched, well-formed error response completes this RPC. It does
+            # not invalidate the stream or authorize retrying the operation.
+            raise
         except TransportError:
             self._broken = True
             raise
@@ -261,7 +265,7 @@ class StdioClient:
         return event
 
     def respond_approval(self, request_id: str | int, decision: str) -> None:
-        """Explicit one-shot answer for a recorded approval; never auto-approves."""
+        """Flush one answer; return is not upstream confirmation, and failure is not retryable."""
         if self._closed or self._broken or not self._initialized:
             raise TransportError("connection_unusable")
         if decision not in ("accept", "decline"):

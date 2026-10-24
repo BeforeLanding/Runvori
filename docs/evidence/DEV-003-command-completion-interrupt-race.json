@@ -1,0 +1,98 @@
+{
+  "codex_version": "codex-cli 0.163.0-alpha.11.2",
+  "scenario": "disposable_workspace_interrupt_after_command_item_completed",
+  "event_shape_sample": [
+    {
+      "method": "item/commandExecution/requestApproval",
+      "params": {
+        "kind": "str",
+        "threadId": "str",
+        "turnId": "str",
+        "itemId": "str",
+        "startedAtMs": "int",
+        "environmentId": "str",
+        "command": "str",
+        "cwd": "str",
+        "commandActions": [{"type": "str", "command": "str"}],
+        "proposedExecpolicyAmendment": ["str", "str"],
+        "availableDecisions": ["str", {"unlisted_field_count": 1}, "str"]
+      }
+    },
+    {
+      "method": "item/completed",
+      "params": {
+        "item": {
+          "type": "str",
+          "id": "str",
+          "command": "str",
+          "cwd": "str",
+          "status": "str",
+          "commandActions": [{"type": "str", "command": "str"}],
+          "exitCode": "int",
+          "durationMs": "int",
+          "unlisted_field_count": 5
+        },
+        "threadId": "str",
+        "turnId": "str",
+        "unlisted_field_count": 1
+      }
+    },
+    {
+      "method": "turn/completed",
+      "params": {
+        "threadId": "str",
+        "turn": {
+          "id": "str",
+          "items": [],
+          "status": "str",
+          "error": "NoneType",
+          "startedAt": "int",
+          "completedAt": "int",
+          "durationMs": "int",
+          "unlisted_field_count": 2
+        }
+      }
+    }
+  ],
+  "observed_runs": [
+    {
+      "delay_ms": 0,
+      "approval_index": 26,
+      "command_item_completed_index": 30,
+      "turn_completed_index": 34,
+      "approval_count": 1,
+      "accepted_count": 1,
+      "command_exit_kind": "zero",
+      "interrupt_rpc": "responded",
+      "turn_status": "interrupted",
+      "resume": "recognized",
+      "fixture_only_initial_entries": true
+    },
+    {
+      "delay_ms": 1000,
+      "approval_index": 29,
+      "command_item_completed_index": 33,
+      "turn_completed_index": 39,
+      "approval_count": 1,
+      "accepted_count": 1,
+      "command_exit_kind": "zero",
+      "interrupt_rpc": "responded",
+      "turn_status": "interrupted",
+      "resume": "recognized",
+      "fixture_only_initial_entries": true
+    },
+    {
+      "delay_ms": 5000,
+      "approval_index": 26,
+      "command_item_completed_index": 30,
+      "turn_completed_index": 59,
+      "approval_count": 1,
+      "accepted_count": 1,
+      "command_exit_kind": "zero",
+      "interrupt_rpc": "rejected",
+      "turn_status": "completed",
+      "resume": "recognized",
+      "fixture_only_initial_entries": true
+    }
+  ]
+}

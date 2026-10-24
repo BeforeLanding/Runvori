@@ -1,0 +1,73 @@
+{
+  "codex_version": "codex-cli 0.163.0-alpha.11.2",
+  "scenario": "disposable_workspace_interrupt_after_completed_turn",
+  "event_shapes": [
+    {
+      "index": 29,
+      "method": "item/commandExecution/requestApproval",
+      "params": {
+        "kind": "str",
+        "threadId": "str",
+        "turnId": "str",
+        "itemId": "str",
+        "startedAtMs": "int",
+        "environmentId": "str",
+        "command": "str",
+        "cwd": "str",
+        "commandActions": [{"type": "str", "command": "str"}],
+        "proposedExecpolicyAmendment": ["str", "str"],
+        "availableDecisions": ["str", {"unlisted_field_count": 1}, "str"]
+      }
+    },
+    {
+      "index": 33,
+      "method": "item/completed",
+      "params": {
+        "item": {
+          "type": "str",
+          "id": "str",
+          "command": "str",
+          "cwd": "str",
+          "status": "str",
+          "commandActions": [{"type": "str", "command": "str"}],
+          "exitCode": "int",
+          "durationMs": "int",
+          "unlisted_field_count": 5
+        },
+        "threadId": "str",
+        "turnId": "str",
+        "unlisted_field_count": 1
+      }
+    },
+    {
+      "index": 57,
+      "method": "turn/completed",
+      "params": {
+        "threadId": "str",
+        "turn": {
+          "id": "str",
+          "items": [{"type": "str", "id": "str", "unlisted_field_count": 5}],
+          "status": "str",
+          "error": "NoneType",
+          "startedAt": "int",
+          "completedAt": "int",
+          "durationMs": "int",
+          "unlisted_field_count": 2
+        }
+      }
+    }
+  ],
+  "observed": {
+    "approval_count": 1,
+    "command_approval_count": 1,
+    "file_change_approval_count": 0,
+    "approval_decision": "accept",
+    "accepted_command_exit_kind": "zero",
+    "turn_status_before_interrupt_rpc": "completed",
+    "interrupt_trigger": "completed_turn",
+    "interrupt_rpc": "rejected",
+    "resume": "not_attempted",
+    "file_match": false,
+    "fixture_only_initial_entries": true
+  }
+}

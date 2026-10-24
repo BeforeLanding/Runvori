@@ -14,6 +14,13 @@ def send(value):
 for raw in sys.stdin:
     request = json.loads(raw)
     if "method" not in request:
+        if mode in ("approval_ack_lost_before_effect", "approval_ack_lost_after_effect"):
+            with open(sys.argv[2], "a", encoding="utf-8") as received:
+                received.write("answer_received\n")
+            if mode == "approval_ack_lost_after_effect":
+                with open(sys.argv[3], "w", encoding="utf-8") as effect:
+                    effect.write("effect_applied\n")
+            sys.exit(0)
         if mode in ("approval", "approval_before_response"):
             send({"method": "synthetic/approvalAnswered", "params": {
                 "id": request["id"], "decision": request["result"]["decision"]}})
@@ -43,6 +50,10 @@ for raw in sys.stdin:
         send({"id": request_id, "result": {}, "error": {}})
     elif mode == "scalar_result":
         send({"id": request_id, "result": "secret should not be logged"})
+    elif mode == "recoverable_rpc_error" and request["method"] == "turn/interrupt":
+        send({"id": request_id, "error": {"message": "SECRET_DIAGNOSTIC"}})
+        send({"method": "turn/completed", "params": {
+            "threadId": "thread_demo", "turn": {"id": "turn_demo", "status": "completed"}}})
     elif mode == "error":
         send({"id": request_id, "error": {"message": "SECRET_DIAGNOSTIC"}})
     elif mode == "server_request":
@@ -55,6 +66,12 @@ for raw in sys.stdin:
         send({"id": "approval_demo", "method": "item/fileChange/requestApproval",
               "params": {"threadId": "thread_demo", "turnId": "turn_demo"}})
         send({"id": request_id, "result": {"turn": {"id": "turn_demo"}}})
+    elif mode in ("approval_ack_lost_before_effect", "approval_ack_lost_after_effect") \
+            and request["method"] == "turn/start":
+        send({"id": request_id, "result": {"turn": {"id": "turn_demo"}}})
+        send({"id": "approval_demo", "method": "item/fileChange/requestApproval",
+              "params": {"threadId": "thread_demo", "turnId": "turn_demo",
+                         "itemId": "patch_demo", "startedAtMs": 1}})
     elif mode == "approval_resolved" and request["method"] == "turn/start":
         send({"id": request_id, "result": {"turn": {"id": "turn_demo"}}})
         send({"id": 23, "method": "item/commandExecution/requestApproval",

@@ -1,0 +1,57 @@
+{
+  "codex_version": "codex-cli 0.163.0-alpha.11.2",
+  "scenario": "disposable_workspace_pending_command_approval_interrupted",
+  "event_shapes": [
+    {
+      "index": 30,
+      "method": "item/commandExecution/requestApproval",
+      "params": {
+        "kind": "str",
+        "threadId": "str",
+        "turnId": "str",
+        "itemId": "str",
+        "startedAtMs": "int",
+        "environmentId": "str",
+        "command": "str",
+        "cwd": "str",
+        "commandActions": [{"type": "str", "command": "str"}],
+        "proposedExecpolicyAmendment": ["str", "str"],
+        "availableDecisions": ["str", {"unlisted_field_count": 1}, "str"]
+      }
+    },
+    {
+      "index": 34,
+      "method": "turn/completed",
+      "params": {
+        "threadId": "str",
+        "turn": {
+          "id": "str",
+          "items": [],
+          "status": "str",
+          "error": "NoneType",
+          "startedAt": "int",
+          "completedAt": "int",
+          "durationMs": "int",
+          "unlisted_field_count": 2
+        }
+      }
+    },
+    {
+      "index": 35,
+      "method": "serverRequest/resolved",
+      "params": {"threadId": "str", "requestId": "int"}
+    }
+  ],
+  "observed": {
+    "approval_count": 1,
+    "pending_request_allowlisted": true,
+    "approval_decision": "defer",
+    "accepted_count": 0,
+    "interrupt_trigger": "pending_approval",
+    "interrupt_rpc": "responded",
+    "turn_status": "interrupted",
+    "matching_request_resolved_after_terminal": true,
+    "resume": "recognized",
+    "file_match": false
+  }
+}

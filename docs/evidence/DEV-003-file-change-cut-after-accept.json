@@ -1,0 +1,50 @@
+{
+  "codex_version": "codex-cli 0.163.0-alpha.11.2",
+  "scenario": "disposable_read_only_workspace_file_change_cut_after_accept",
+  "event_shapes": [
+    {
+      "index": 30,
+      "method": "item/started",
+      "params": {
+        "item": {
+          "type": "str",
+          "id": "str",
+          "changes": [{"path": "str", "kind": {"type": "depth_limit"},
+                       "unlisted_field_count": 1}],
+          "status": "str"
+        },
+        "threadId": "str",
+        "turnId": "str",
+        "startedAtMs": "int"
+      }
+    },
+    {
+      "index": 32,
+      "method": "item/fileChange/requestApproval",
+      "params": {
+        "threadId": "str",
+        "turnId": "str",
+        "itemId": "str",
+        "startedAtMs": "int",
+        "reason": "NoneType",
+        "grantRoot": "NoneType"
+      }
+    }
+  ],
+  "observed": {
+    "approval_count": 1,
+    "file_change_approval_count": 1,
+    "command_approval_count": 0,
+    "file_change_item_allowlisted": true,
+    "approval_decision": "accept",
+    "cutoff": "after_approval_write",
+    "managed_process_close_returned": true,
+    "last_observed_event": "item/fileChange/requestApproval",
+    "accepted_file_change_status": "not_observed",
+    "turn_status": "unknown",
+    "resume": "not_attempted",
+    "file_match": false,
+    "fixture_entries_within_allowlist": true,
+    "fixture_only_expected_file": false
+  }
+}

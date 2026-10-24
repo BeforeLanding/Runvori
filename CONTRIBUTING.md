@@ -50,7 +50,78 @@ python scripts/probe_execution.py prepare
 python scripts/probe_execution.py run --account-home .dev/codex-home --approval decline
 ```
 
-探针固定 `workspace-write`、`on-request`、`approvalsReviewer=user`，拒绝扩权型或未知控制请求。显式改为 `--approval accept` 时，只有测试仓库内预定的只读 `python --version`（含本机固定 Codex PowerShell 包装形式）可收到一次 `accept`；其他审批继续拒绝。真实单次允许与退出码 0 的证据见 [DEV-003](docs/evidence/DEV-003.md)。此模式不验证文件写入，不应用建议的 execpolicy 修订。超时或协议异常关闭受管进程，不自动重发；不把关闭进程写成上游已确认中断。成功时仅在被 Git 忽略的 `.dev/execution-probe-report.json` 保存事件字段名/类型、实际决定、终态和文件核对结果；不保存提示、输出或审批内容值。运行前检查测试仓库和账号目录，运行后人工核对报告并脱敏评审；这条探针不代替审批清理、中断竞争或生产 Host 验收。
+探针固定 `workspace-write`、`on-request`、`approvalsReviewer=user`，拒绝扩权型或未知控制请求。显式改为 `--approval accept` 时，默认只允许测试仓库内预定的只读 `python --version`（含本机固定 Codex PowerShell 包装形式）；其他审批继续拒绝。真实单次允许与退出码 0 的证据见 [DEV-003](docs/evidence/DEV-003.md)。它不应用建议的 execpolicy 修订。超时或协议异常关闭受管进程，不自动重发；不把关闭进程写成上游已确认中断。成功时仅在被 Git 忽略的 `.dev/execution-probe-report.json` 保存事件字段名/类型、实际决定、终态和文件核对结果；不保存提示、输出或审批内容值。运行前检查测试仓库和账号目录，运行后人工核对报告并脱敏评审；这条探针不代替审批清理、中断竞争或生产 Host 验收。
+
+受控写入使用全新的可丢弃测试仓库，避免覆盖上次探针结果：
+
+```powershell
+python scripts/probe_execution.py prepare --fixture .dev/execution-write-fixture
+python scripts/probe_execution.py run --fixture .dev/execution-write-fixture --account-home .dev/codex-home --approval accept --scenario write_file
+```
+
+写入场景只允许固定 `Set-Content` 命令及已审查的本机 Codex PowerShell 包装，结果须同时满足命令退出码 0、目标文件 16 字节完全匹配；运行一次后测试仓库不再为空，重新运行需另建新的 `.dev` 测试目录。此场景出现的是**命令执行审批**，不是独立的文件修改审批。已观察结果与限制见 [DEV-003](docs/evidence/DEV-003.md)。
+
+主动中断场景另用空的可丢弃仓库，固定命令先输出标记再等待 60 秒。探针在看到标记后发送 `turn/interrupt`；RPC 返回只记为请求已响应，只有真实回合终态为 `interrupted` 才记录中断已确认。若输出标记未出现，探针在允许命令两秒后发送请求，并标注较弱的触发依据。已观察的真实终态与缺失的命令退出码见 [DEV-003](docs/evidence/DEV-003.md)：
+
+```powershell
+python scripts/probe_execution.py prepare --fixture .dev/execution-interrupt-fixture
+python scripts/probe_execution.py run --fixture .dev/execution-interrupt-fixture --account-home .dev/codex-home --approval accept --scenario interrupt --timeout 180
+```
+
+待审批中断场景使用新的空测试仓库，固定只读命令审批先经白名单核对，再保持未答复并请求中断；不执行命令、不发送允许。探针在回合终态与 thread 恢复后短暂接收迟到的请求结束通知。没有观察到通知时仅记录“未观察到”，不推断它永久不会到达。真实事件顺序见 [DEV-003](docs/evidence/DEV-003.md)：
+
+```powershell
+python scripts/probe_execution.py prepare --fixture .dev/execution-pending-interrupt-fixture
+python scripts/probe_execution.py run --fixture .dev/execution-pending-interrupt-fixture --account-home .dev/codex-home --approval defer --scenario interrupt_pending --timeout 120
+```
+
+审批后立即中断使用另一个空测试仓库，探针只对固定长命令发送一次 `accept`，随后立即请求 `turn/interrupt`，不等待命令输出。它只观察这一种时序，不能凭中断响应推断终态或命令是否启动。真实结果见 [DEV-003](docs/evidence/DEV-003.md)：
+
+```powershell
+python scripts/probe_execution.py prepare --fixture .dev/execution-approval-interrupt-fixture
+python scripts/probe_execution.py run --fixture .dev/execution-approval-interrupt-fixture --account-home .dev/codex-home --approval accept --scenario interrupt_on_approval --timeout 180
+```
+
+独立文件修改审批拒绝使用新的空测试仓库，线程沙箱固定为 `read-only`，提示模型仅尝试 `apply_patch`，并对收到的审批显式回复 `decline`。真实运行已观察到 `item/fileChange/requestApproval`，但其参数不直接提供补丁内容或目标路径；不能仅凭请求允许文件写入。脱敏证据及边界见 [DEV-003](docs/evidence/DEV-003.md)：
+
+```powershell
+python scripts/probe_execution.py prepare --fixture .dev/execution-file-change-decline-fixture
+python scripts/probe_execution.py run --fixture .dev/execution-file-change-decline-fixture --account-home .dev/codex-home --approval decline --scenario file_change_decline --timeout 180
+```
+
+独立文件修改单次允许也在全新的只读测试仓库中运行。探针要求文件改动 item 与审批请求 ID 关联，唯一变更的绝对路径、`add` 类型、完整内容和空 `grantRoot` 均精确匹配后才发送一次 `accept`；完成后核对 item 状态、文件 17 字节及仓库文件清单。真实结果见 [DEV-003](docs/evidence/DEV-003.md)：
+
+```powershell
+python scripts/probe_execution.py prepare --fixture .dev/execution-file-change-accept-fixture
+python scripts/probe_execution.py run --fixture .dev/execution-file-change-accept-fixture --account-home .dev/codex-home --approval accept --scenario file_change_accept --timeout 180
+```
+
+审批答复后受控进程切断使用另一个全新测试仓库，沿用上述精确文件修改白名单。探针在单次 `accept` 写入返回后立即关闭受管 app-server，不继续读事件或恢复 thread；报告将文件 item 和回合终态保持为未观察到，并在关闭后核对目标文件及目录内容。它用于验证未知结果的表示，不能证明上游收到答复、通知确实丢失或 Host 重启可恢复。真实切点记录见 [DEV-003](docs/evidence/DEV-003.md)：
+
+```powershell
+python scripts/probe_execution.py prepare --fixture .dev/execution-file-change-cutoff-fixture
+python scripts/probe_execution.py run --fixture .dev/execution-file-change-cutoff-fixture --account-home .dev/codex-home --approval accept --scenario file_change_cut_after_accept --timeout 180
+```
+
+完成后迟到中断使用新的空测试仓库，先完成固定只读命令且核对退出码 0，再等待真实 `turn/completed: completed`，随后仅为技术探针发送一次迟到的 `turn/interrupt`。即使 RPC 返回错误，先观察到的终态也不改变；真实结果和限制见 [DEV-003](docs/evidence/DEV-003.md)。产品 Host 在已知终态时应直接返回当前状态，不需要发送该 RPC。
+
+```powershell
+python scripts/probe_execution.py prepare --fixture .dev/execution-late-interrupt-fixture
+python scripts/probe_execution.py run --fixture .dev/execution-late-interrupt-fixture --account-home .dev/codex-home --approval accept --scenario interrupt_after_turn_completed --timeout 180
+```
+
+命令完成切点使用固定只读命令，只有对应命令 item 退出码为 0 才请求中断。`interrupt_after_command_completed` 立即请求；`interrupt_after_command_completed_delayed` 固定等待 5 秒再请求，期间不读取回合终态。两者随后都继续接收真实终态、尝试恢复 thread。匹配的 RPC 错误不损坏 stdio 连接，也不授权重试原请求；真实不同切点的结果见 [DEV-003](docs/evidence/DEV-003.md)。每次运行必须使用新的可丢弃仓库：
+
+```powershell
+python scripts/probe_execution.py prepare --fixture .dev/execution-command-completion-race-fixture
+python scripts/probe_execution.py run --fixture .dev/execution-command-completion-race-fixture --account-home .dev/codex-home --approval accept --scenario interrupt_after_command_completed --timeout 180
+python scripts/probe_execution.py prepare --fixture .dev/execution-command-completion-delayed-5s-fixture
+python scripts/probe_execution.py run --fixture .dev/execution-command-completion-delayed-5s-fixture --account-home .dev/codex-home --approval accept --scenario interrupt_after_command_completed_delayed --timeout 180
+```
+
+不使用真实账号的确认丢失故障测试由 `python scripts/check.py` 执行。合成 peer 在收到审批答复后于模拟副作用前或后关闭连接，均不发请求结束通知；测试核对答复只发送一次、后续操作被禁用。它用于验证传输边界，不能替代真实 Codex 或持久化 Host 的恢复验收，见 [DEV-003](docs/evidence/DEV-003.md)。
+
+同一离线检查命令还运行独立 SQLite 审批派发验证切片：以 `.dev` 临时数据库模拟决定已记录、派发已领取、数据库重开及新 epoch；核对未知结果不重发、文件只读快照不充当上游确认。此模块没有接入真实 Codex 或 Host API，验证范围见 [审批持久边界记录](docs/evidence/DEV-003-approval-journal.md)。
 
 schema 已提交，通常不需要重新导出。`python scripts/runvori.py export-schema` 在基线存在时拒绝覆盖；仅经评审后使用 `--replace`。升级须更新版本常量、schema、测试及兼容记录。
 

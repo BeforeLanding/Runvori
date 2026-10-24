@@ -1,0 +1,85 @@
+{
+  "codex_version": "codex-cli 0.163.0-alpha.11.2",
+  "scenario": "disposable_read_only_workspace_file_change_declined",
+  "event_shapes": [
+    {
+      "index": 30,
+      "method": "item/started",
+      "params": {
+        "item": {
+          "type": "str",
+          "id": "str",
+          "changes": [{"path": "str", "kind": {"type": "depth_limit"},
+                       "unlisted_field_count": 1}],
+          "status": "str"
+        },
+        "threadId": "str",
+        "turnId": "str",
+        "startedAtMs": "int"
+      }
+    },
+    {
+      "index": 32,
+      "method": "item/fileChange/requestApproval",
+      "params": {
+        "threadId": "str",
+        "turnId": "str",
+        "itemId": "str",
+        "startedAtMs": "int",
+        "reason": "NoneType",
+        "grantRoot": "NoneType"
+      }
+    },
+    {
+      "index": 33,
+      "method": "serverRequest/resolved",
+      "params": {"threadId": "str", "requestId": "int"}
+    },
+    {
+      "index": 35,
+      "method": "item/completed",
+      "params": {
+        "item": {
+          "type": "str",
+          "id": "str",
+          "changes": [{"path": "str", "kind": {"type": "depth_limit"},
+                       "unlisted_field_count": 1}],
+          "status": "str"
+        },
+        "threadId": "str",
+        "turnId": "str",
+        "unlisted_field_count": 1
+      }
+    },
+    {
+      "index": 63,
+      "method": "turn/completed",
+      "params": {
+        "threadId": "str",
+        "turn": {
+          "id": "str",
+          "items": [{"type": "str", "id": "str", "unlisted_field_count": 5}],
+          "status": "str",
+          "error": "NoneType",
+          "startedAt": "int",
+          "completedAt": "int",
+          "durationMs": "int",
+          "unlisted_field_count": 2
+        }
+      }
+    }
+  ],
+  "observed": {
+    "approval_count": 1,
+    "file_change_approval_count": 1,
+    "command_approval_count": 0,
+    "approval_decision": "decline",
+    "grant_root_kind": "NoneType",
+    "thread_and_turn_matched": true,
+    "accepted_count": 0,
+    "turn_status": "completed",
+    "resume": "recognized",
+    "file_match": false,
+    "fixture_contains_only_initial_marker_and_git": true
+  }
+}

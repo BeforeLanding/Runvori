@@ -1,6 +1,6 @@
 # Host—Android 接口与状态协议
 
-协议：`runvori.v1`。日期：2026-10-23。状态：首版拟定契约，无已部署服务。这里定义的是 Runvori 自有 HTTPS API，不是 Codex 的原生接口。
+协议：`runvori.v1`。更新日期：2026-10-24。状态：首版拟定契约，无已部署服务。这里定义的是 Runvori 自有 HTTPS API，不是 Codex 的原生接口。
 
 ## 1. 公共约定
 
@@ -160,6 +160,8 @@ stateDiagram-v2
 若操作查询返回 `404 operation_not_found`，只有确认 host_id、配对代次和资源版本仍一致后，用户才可显式使用原 request_id 重试原请求；不能换 key 自动补发。Host 必须坚持“先持久受理、后派发”，以使未登记请求不会已经执行。
 
 派发过程中 Host 与上游之间不存在原子提交。重启后未领取的旧操作也不自动发送；旧回合被中断，操作按证据标 failed/unknown。首版保证不因 HTTP 重试重复派发，不承诺上游副作用在崩溃下恰好执行一次。
+
+审批派发的持久边界如下：决定与客户端 `request_id` 在同一事务记录；发送上游答复前，先将该审批从 `decision_recorded` 原子领取为 `dispatching` 并提交。领取成功只授予当前进程一次发送机会；领取后的任何写入异常或 Host 退出均视为可能已发送。启动新进程 epoch 前须确认旧受管进程已停止或隔离；旧 epoch 的 `pending/decision_recorded` 失效，`dispatching` 转为 `unknown`，均不自动发送。只读核对可记录文件现状，但不能仅凭文件存在或缺失把 unknown 改写为批准成功、失败或可重试；上游请求结束证据也须与副作用证据分开记录。
 
 ## 5. 事件种类与投影
 

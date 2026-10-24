@@ -1,0 +1,21 @@
+{
+  "kind": "synthetic_transport_fault_injection",
+  "scenario": "approval_answer_received_then_connection_closed_without_resolution",
+  "cases": [
+    {
+      "peer_effect": "not_applied",
+      "answer_receive_count": 1,
+      "resolution_notification_count": 0,
+      "client_next_event": "upstream_closed",
+      "second_approval_attempt": "connection_unusable"
+    },
+    {
+      "peer_effect": "applied",
+      "answer_receive_count": 1,
+      "resolution_notification_count": 0,
+      "client_next_event": "upstream_closed",
+      "second_approval_attempt": "connection_unusable"
+    }
+  ],
+  "interpretation": "confirmation_missing_outcome_unknown_no_automatic_retry"
+}

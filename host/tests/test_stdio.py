@@ -1,8 +1,10 @@
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
+from runvori.cli import ROOT
 from runvori.codex.stdio import RpcError, StdioClient, TransportError
 
 PEER = Path(__file__).with_name("fake_app_server.py")
@@ -80,6 +82,17 @@ class TransportTests(unittest.TestCase):
             client.initialize()
         self.assertNotIn("SECRET", str(error.exception))
 
+    def test_valid_rpc_error_keeps_stream_available_without_retry(self):
+        client = self.client("recoverable_rpc_error")
+        client.initialize()
+        with self.assertRaisesRegex(RpcError, "upstream_rpc_error"):
+            client.request("turn/interrupt", {"threadId": "thread_demo",
+                                              "turnId": "turn_demo"})
+        event = client.next_event(1)
+        self.assertEqual(event["method"], "turn/completed")
+        self.assertEqual(event["params"]["turn"]["status"], "completed")
+        self.assertEqual(client.request("thread/resume", {})["method"], "thread/resume")
+
     def test_explicit_approval_is_sent_once(self):
         client = self.client("approval")
         client.initialize()
@@ -112,6 +125,35 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(client.next_event(1)["method"], "serverRequest/resolved")
         with self.assertRaisesRegex(TransportError, "approval_request_not_pending"):
             client.respond_approval(event["id"], "accept")
+
+    def test_lost_approval_confirmation_never_retries_with_or_without_effect(self):
+        for mode, effect_expected in (("approval_ack_lost_before_effect", False),
+                                      ("approval_ack_lost_after_effect", True)):
+            with self.subTest(mode=mode):
+                with tempfile.TemporaryDirectory(dir=ROOT / ".dev") as temp:
+                    received = Path(temp) / "received.txt"
+                    effect = Path(temp) / "effect.txt"
+                    client = StdioClient([sys.executable, "-u", str(PEER), mode,
+                                          str(received), str(effect)],
+                                         cwd=PEER.parent, env=dict(os.environ), timeout=2)
+                    try:
+                        client.initialize()
+                        client.request("turn/start", {})
+                        event = client.next_event(1)
+                        self.assertEqual(event["method"], "item/fileChange/requestApproval")
+                        client.respond_approval(event["id"], "accept")
+                        with self.assertRaisesRegex(TransportError, "upstream_closed"):
+                            client.next_event(2)
+                        with self.assertRaisesRegex(TransportError, "connection_unusable"):
+                            client.respond_approval(event["id"], "accept")
+                    finally:
+                        client.close()
+                    self.assertEqual(received.read_text(encoding="utf-8"),
+                                     "answer_received\n")
+                    self.assertEqual(effect.exists(), effect_expected)
+                    if effect_expected:
+                        self.assertEqual(effect.read_text(encoding="utf-8"),
+                                         "effect_applied\n")
 
     def test_close_idempotent_and_stops_reader(self):
         client = self.client()

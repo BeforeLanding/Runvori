@@ -26,12 +26,12 @@ Android 负责视图、缓存、同步、阅读位置和受限操作。Host 负�
 
 首版使用单 Host 进程、单 API worker、一个受管 app-server，以及一个 SQLite 数据库。启动时获取本机单实例锁；没有可靠获得锁就拒绝启动。不得用多个 FastAPI worker 绕过内存进程所有权和活动槽约束。
 
-完整模块规划如下；当前仅 `codex` 探针及 CLI 已建立，其余业务模块待 M0 退出后按 M1 建立：
+完整模块规划如下；当前有 `codex` 探针、CLI 和独立 SQLite 审批派发验证切片，其余业务模块待 M0 退出后按 M1 建立：
 
 - `host/src/runvori/api/`：HTTPS API、认证、请求校验、错误映射。
 - `host/src/runvori/application/`：启动/中断/审批/同步用例与操作幂等。
 - `host/src/runvori/domain/`：状态机、活动槽、审批和验证规则，不依赖 FastAPI。
-- `host/src/runvori/infrastructure/`：SQLite、文件、TLS/凭据存储和进程管理。
+- `host/src/runvori/infrastructure/`：SQLite、文件、TLS/凭据存储和进程管理。当前仅有独立的审批派发 SQLite 验证切片，尚未接入业务服务、事件事务或进程所有权核对。
 - `host/src/runvori/codex/`：初始化、RPC 路由、schema 校验及上游事件映射。
 - `host/tests/`：领域、数据库事务、API、故障注入和适配器夹具测试。
 
