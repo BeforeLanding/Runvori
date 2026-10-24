@@ -13,7 +13,7 @@ sys.path.insert(0, str(ROOT / "host/src"))
 
 from runvori.cli import run_metadata, verify_contracts  # noqa: E402
 from runvori.codex.execution_probe import (  # noqa: E402
-    prepare_fixture, run_probe, write_report,
+    prepare_dirty_fixture, prepare_fixture, run_probe, write_report,
 )
 from runvori.codex.stdio import TransportError  # noqa: E402
 
@@ -25,8 +25,10 @@ def main() -> int:
     parser.add_argument("--account-home", type=Path)
     parser.add_argument("--approval", choices=["accept", "decline", "defer"])
     parser.add_argument("--scenario", choices=[
-        "read_only", "write_file", "interrupt", "interrupt_pending",
+        "read_only", "verify_command", "verify_two_commands", "verify_nonzero",
+        "write_file", "interrupt", "interrupt_pending",
         "interrupt_on_approval", "file_change_decline", "file_change_accept",
+        "file_change_accept_dirty",
         "file_change_cut_after_accept", "interrupt_after_turn_completed",
         "interrupt_after_command_completed",
         "interrupt_after_command_completed_delayed"],
@@ -36,7 +38,10 @@ def main() -> int:
     args = parser.parse_args()
     try:
         if args.action == "prepare":
-            prepare_fixture(ROOT, args.fixture)
+            if args.scenario == "file_change_accept_dirty":
+                prepare_dirty_fixture(ROOT, args.fixture)
+            else:
+                prepare_fixture(ROOT, args.fixture)
             result = {"status": "prepared"}
         else:
             if args.account_home is None or args.approval is None:
@@ -67,6 +72,10 @@ def main() -> int:
                       "file_match": report["file_match"],
                       "accepted_command_exit_zero": report["accepted_command_exit_zero"],
                       "accepted_command_exit_kind": report["accepted_command_exit_kind"],
+                      "fixed_nonzero_exit_seven": report["fixed_nonzero_exit_seven"],
+                      "required_verification_status": report["required_verification_status"],
+                      "required_verification_items": report["required_verification_items"],
+                      "required_verification_summary": report["required_verification_summary"],
                       "interrupt_rpc": report["interrupt_rpc"],
                       "interrupt_trigger": report["interrupt_trigger"],
                       "interrupt_marker_seen": report["interrupt_marker_seen"],
@@ -77,6 +86,9 @@ def main() -> int:
                       "file_change_item_allowlisted": report["file_change_item_allowlisted"],
                       "fixture_only_expected_file": report["fixture_only_expected_file"],
                       "fixture_entries_within_allowlist": report["fixture_entries_within_allowlist"],
+                      "preexisting_files_unchanged": report["preexisting_files_unchanged"],
+                      "git_status_expected_transition": report["git_status_expected_transition"],
+                      "git_diff_excludes_untracked": report["git_diff_excludes_untracked"],
                       "cutoff": report["cutoff"],
                       "managed_process_close_returned": report["managed_process_close_returned"],
                       "report": "workspace/.dev/execution-probe-report.json"}

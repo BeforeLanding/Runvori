@@ -1,0 +1,26 @@
+{
+  "date": "2026-10-24",
+  "environment": "Windows, Python 3.12.10, local disposable Git fixture",
+  "probe": "python scripts/probe_artifacts.py inspect --fixture .dev/artifact-fixture-20261024",
+  "source": "git_worktree_snapshot",
+  "attribution": "unknown",
+  "preexisting_changes": true,
+  "limits_bytes": {
+    "inline_text": 65536,
+    "scan_and_hash": 4194304
+  },
+  "observed": {
+    "git_binary_marker": true,
+    "large_text_bytes": 131072,
+    "large_text_representation": "utf8_text",
+    "large_text_content_available": false,
+    "large_text_truncated": true,
+    "binary_bytes": 2048,
+    "binary_representation": "binary_or_non_utf8",
+    "binary_content_available": false,
+    "binary_truncated": false,
+    "small_text_content_available": true,
+    "bounded_hashes_present": true
+  },
+  "scope_limit": "Git-only preexisting worktree changes; no Codex file-change item or production artifact storage was exercised."
+}

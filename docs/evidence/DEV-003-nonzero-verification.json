@@ -1,0 +1,18 @@
+{
+  "codex_version": "codex-cli 0.164.0-alpha.11.1",
+  "scenario": "verify_nonzero",
+  "fixture": "disposable_empty_git_workspace",
+  "registered_command": "exit 7",
+  "observed": {
+    "command_approval_count": 1,
+    "one_shot_accept_count": 1,
+    "matching_structured_command_item": true,
+    "exit_code_exactly_seven": true,
+    "turn_status": "completed",
+    "required_verification_status": "failed",
+    "required_verification_summary": "failed",
+    "thread_resume": "recognized",
+    "no_new_fixture_files": true
+  },
+  "limits": "One fixed PowerShell command in a disposable workspace; arbitrary registered commands and Host persistence remain unverified."
+}

@@ -16,6 +16,16 @@ DEV-003 中断顺序补充：固定只读命令完成且回合 `completed` 后�
 
 DEV-003 命令完成切点补充：命令 item 退出码 0 后立即或延迟 1 秒中断，回合为 `interrupted`；延迟 5 秒时中断 RPC 返回错误，随后读到 `completed`。这覆盖两种可观察结局，但没有上游精确并发时间；命令成功不得替代回合终态，见 [脱敏证据](evidence/DEV-003-command-completion-interrupt-race.json)。
 
+DEV-003 脏工作区补充：已在预先修改跟踪文件且存在未跟踪文件的可丢弃仓库中，完成精确新增文件的真实单次审批、回合终态和字节核对。普通 Git diff 未显示两个未跟踪文件，Git 前后态不得单独用于归因；大差异、二进制和多命令验证汇总仍待验证，见 [脱敏证据](evidence/DEV-003-dirty-workspace.json)。CLI 升级的契约审查见 [记录](evidence/DEV-003-schema-review.md)。
+
+DEV-003 首次验证命令补充：单条预登记固定只读命令的上游结构化开始/完成项、命令、cwd、时间和真实退出码已关联，真实结果为 `passed`；缺失及重复匹配的保守判定有合成测试。当时多项汇总尚未实现；Host 持久化及任意命令登记仍待后续实现，见 [脱敏证据](evidence/DEV-003-required-verification.json)。
+
+DEV-003 双命令补充：两条固定只读命令分别获得真实结构化执行项和退出码 0，逐项与汇总均 `passed`；重复 item 与混合状态优先级由本地行为测试验证。Host 持久化、任意命令登记及真实失败命令仍待验证，见 [脱敏证据](evidence/DEV-003-two-required-verifications.json)。
+
+DEV-003 失败命令补充：固定 `exit 7` 的真实结构化退出码为 7，上游回合为 `completed`、必需验证汇总为 `failed`。这验证了二者分离的失败路径；任意命令登记及 Host 持久化仍待验证，见 [脱敏证据](evidence/DEV-003-nonzero-verification.json)。
+
+DEV-003 Git 产物补充：本地可丢弃仓库的预先存在改动中，二进制和 128 KiB 文本文件获得大小/哈希与明确内容可用性，超过扫描上限的文件报告哈希不可用。该探针只有 Git 工作区来源，未验证 Codex 上游大差异事件或产品产物存储，见 [脱敏证据](evidence/DEV-003-artifact-boundaries.json)。
+
 交付：
 
 - 固定首发 Host OS、Python 和 Android 构建组合；提交真实构建/检查命令与版本记录。

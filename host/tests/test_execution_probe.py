@@ -6,10 +6,12 @@ from unittest.mock import patch
 
 from runvori.cli import ROOT
 from runvori.codex.execution_probe import (
-    FILE_CHANGE_BYTES, INTERRUPT_COMMAND, INTERRUPT_MARKER, SAFE_COMMAND, WRITE_COMMAND,
-    is_safe_command, prepare_fixture, run_probe,
+    DIRTY_TRACKED_BEFORE, FILE_CHANGE_BYTES, INTERRUPT_COMMAND,
+    INTERRUPT_MARKER, SAFE_COMMAND, WRITE_COMMAND,
+    NONZERO_VERIFY_COMMAND, SECOND_VERIFY_COMMAND,
+    is_safe_command, prepare_dirty_fixture, prepare_fixture, run_probe,
     safe_accept_decision,
-    shape, validate_fixture,
+    shape, validate_dirty_fixture, validate_fixture,
 )
 from runvori.codex.stdio import RpcError, TransportError
 
@@ -146,6 +148,110 @@ class ExecutionProbeTests(unittest.TestCase):
                     availableDecisions=["accept", "decline"])},
                 target=fixture, thread_id="thread_1", turn_id="turn_1")
             self.assertEqual(decision, "accept")
+
+    def test_registered_verification_requires_correlated_structured_events(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / ".dev") as temp:
+            fixture = prepare_fixture(ROOT, Path(temp) / "fixture")
+            account_home = Path(temp) / "account"
+            account_home.mkdir()
+            fake = FakeClient(fixture)
+            item = {"type": "commandExecution", "id": "check_1",
+                    "command": SAFE_COMMAND, "cwd": str(fixture),
+                    "status": "inProgress", "exitCode": None}
+            fake.events = iter([
+                {"method": "item/started", "params": {
+                    "threadId": "thread_1", "turnId": "turn_1", "item": item,
+                    "startedAtMs": 100}},
+                {"id": 70, "method": "item/commandExecution/requestApproval", "params": {
+                    "threadId": "thread_1", "turnId": "turn_1", "itemId": "check_1",
+                    "kind": "command", "command": SAFE_COMMAND, "cwd": str(fixture)}},
+                {"method": "item/completed", "params": {
+                    "threadId": "thread_1", "turnId": "turn_1",
+                    "item": dict(item, status="completed", exitCode=0),
+                    "completedAtMs": 200}},
+                {"method": "turn/completed", "params": {
+                    "threadId": "thread_1", "turn": {"id": "turn_1", "status": "completed"}}},
+            ])
+            with patch("runvori.codex.execution_probe.StdioClient", return_value=fake):
+                report = run_probe(root=ROOT, fixture=fixture, account_home=account_home,
+                                   executable="fake", decision="accept",
+                                   scenario="verify_command")
+            self.assertEqual(fake.answers, [(70, "accept")])
+            self.assertEqual(report["required_verification_status"], "passed")
+            self.assertNotIn(str(fixture), json.dumps(report))
+
+    def test_two_registered_commands_need_separate_approvals_and_items(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / ".dev") as temp:
+            fixture = prepare_fixture(ROOT, Path(temp) / "fixture")
+            account_home = Path(temp) / "account"
+            account_home.mkdir()
+            fake = FakeClient(fixture)
+            events = []
+            for request_id, item_id, command in (
+                    (71, "python_1", SAFE_COMMAND),
+                    (72, "git_1", SECOND_VERIFY_COMMAND)):
+                item = {"type": "commandExecution", "id": item_id,
+                        "command": command, "cwd": str(fixture),
+                        "status": "inProgress", "exitCode": None}
+                events.extend([
+                    {"method": "item/started", "params": {
+                        "threadId": "thread_1", "turnId": "turn_1",
+                        "item": item, "startedAtMs": request_id}},
+                    {"id": request_id, "method": "item/commandExecution/requestApproval",
+                     "params": {"threadId": "thread_1", "turnId": "turn_1",
+                                "itemId": item_id, "kind": "command",
+                                "command": command, "cwd": str(fixture)}},
+                    {"method": "item/completed", "params": {
+                        "threadId": "thread_1", "turnId": "turn_1",
+                        "item": dict(item, status="completed", exitCode=0),
+                        "completedAtMs": request_id + 1}},
+                ])
+            events.append({"method": "turn/completed", "params": {
+                "threadId": "thread_1", "turn": {"id": "turn_1", "status": "completed"}}})
+            fake.events = iter(events)
+            with patch("runvori.codex.execution_probe.StdioClient", return_value=fake):
+                report = run_probe(root=ROOT, fixture=fixture, account_home=account_home,
+                                   executable="fake", decision="accept",
+                                   scenario="verify_two_commands")
+            self.assertEqual(fake.answers, [(71, "accept"), (72, "accept")])
+            self.assertEqual(report["required_verification_items"], {
+                "python": "passed", "git": "passed"})
+            self.assertEqual(report["required_verification_summary"], "passed")
+            self.assertIsNone(report["accepted_command_exit_zero"])
+
+    def test_completed_turn_does_not_hide_failed_required_command(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / ".dev") as temp:
+            fixture = prepare_fixture(ROOT, Path(temp) / "fixture")
+            account_home = Path(temp) / "account"
+            account_home.mkdir()
+            fake = FakeClient(fixture)
+            item = {"type": "commandExecution", "id": "failure_1",
+                    "command": NONZERO_VERIFY_COMMAND, "cwd": str(fixture),
+                    "status": "inProgress", "exitCode": None}
+            fake.events = iter([
+                {"method": "item/started", "params": {
+                    "threadId": "thread_1", "turnId": "turn_1",
+                    "item": item, "startedAtMs": 100}},
+                {"id": 73, "method": "item/commandExecution/requestApproval",
+                 "params": {"threadId": "thread_1", "turnId": "turn_1",
+                            "itemId": "failure_1", "kind": "command",
+                            "command": NONZERO_VERIFY_COMMAND, "cwd": str(fixture)}},
+                {"method": "item/completed", "params": {
+                    "threadId": "thread_1", "turnId": "turn_1",
+                    "item": dict(item, status="failed", exitCode=7),
+                    "completedAtMs": 200}},
+                {"method": "turn/completed", "params": {
+                    "threadId": "thread_1", "turn": {"id": "turn_1", "status": "completed"}}},
+            ])
+            with patch("runvori.codex.execution_probe.StdioClient", return_value=fake):
+                report = run_probe(root=ROOT, fixture=fixture, account_home=account_home,
+                                   executable="fake", decision="accept",
+                                   scenario="verify_nonzero")
+            self.assertEqual(fake.answers, [(73, "accept")])
+            self.assertEqual(report["turn_status"], "completed")
+            self.assertEqual(report["required_verification_status"], "failed")
+            self.assertEqual(report["required_verification_summary"], "failed")
+            self.assertTrue(report["fixed_nonzero_exit_seven"])
 
     def test_only_pinned_shell_wrapper_is_allowed(self):
         executable = (Path.home() / ".cache/codex-runtimes/codex-primary-runtime"
@@ -492,6 +598,45 @@ class ExecutionProbeTests(unittest.TestCase):
             self.assertTrue(report["file_match"])
             self.assertTrue(report["fixture_only_expected_file"])
             self.assertTrue(report["fixture_entries_within_allowlist"])
+
+    def test_dirty_fixture_preserves_preexisting_changes_and_labels_git_view(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / ".dev") as temp:
+            fixture = prepare_dirty_fixture(ROOT, Path(temp) / "fixture")
+            self.assertEqual(validate_dirty_fixture(ROOT, fixture), fixture)
+            (fixture / "tracked.txt").write_bytes(b"unexpected edit\n")
+            with self.assertRaisesRegex(TransportError, "invalid_dirty_fixture"):
+                validate_dirty_fixture(ROOT, fixture)
+            (fixture / "tracked.txt").write_bytes(DIRTY_TRACKED_BEFORE)
+            account_home = Path(temp) / "account"
+            account_home.mkdir()
+            fake = FakeClient(fixture)
+            fake.expected_sandbox = "read-only"
+            fake.write_on_accept = True
+            fake.write_content = FILE_CHANGE_BYTES
+            item = {"type": "fileChange", "id": "patch_1", "status": "inProgress",
+                    "changes": [{"path": str(fixture / "probe-result.txt"),
+                                 "kind": {"type": "add"},
+                                 "diff": FILE_CHANGE_BYTES.decode("ascii")}]}
+            fake.events = iter([
+                {"method": "item/started", "params": {
+                    "threadId": "thread_1", "turnId": "turn_1", "item": item}},
+                {"id": 40, "method": "item/fileChange/requestApproval", "params": {
+                    "threadId": "thread_1", "turnId": "turn_1", "itemId": "patch_1",
+                    "startedAtMs": 1, "grantRoot": None}},
+                {"method": "item/completed", "params": {"item": dict(item, status="completed")}},
+                {"method": "turn/completed", "params": {
+                    "threadId": "thread_1", "turn": {"id": "turn_1", "status": "completed"}}},
+            ])
+            with patch("runvori.codex.execution_probe.StdioClient", return_value=fake):
+                report = run_probe(root=ROOT, fixture=fixture, account_home=account_home,
+                                   executable="fake", decision="accept",
+                                   scenario="file_change_accept_dirty")
+            self.assertEqual(fake.answers, [(40, "accept")])
+            self.assertTrue(report["file_match"])
+            self.assertTrue(report["preexisting_files_unchanged"])
+            self.assertTrue(report["git_status_expected_transition"])
+            self.assertTrue(report["git_diff_excludes_untracked"])
+            self.assertTrue(report["fixture_only_expected_file"])
 
     def test_file_change_cut_after_accept_preserves_unknown_terminal_state(self):
         with tempfile.TemporaryDirectory(dir=ROOT / ".dev") as temp:

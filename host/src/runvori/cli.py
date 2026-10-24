@@ -17,13 +17,14 @@ from pathlib import Path
 
 from runvori.codex.stdio import StdioClient, TransportError
 
-PINNED_CODEX = "codex-cli 0.163.0-alpha.11.2"
+PINNED_CODEX = "codex-cli 0.164.0-alpha.11.1"
 ROOT = Path(__file__).resolve().parents[3]
 SELECTED = (
     "v1/InitializeParams.json", "v1/InitializeResponse.json",
     "v2/ThreadStartParams.json", "v2/ThreadStartResponse.json",
     "v2/ThreadResumeParams.json", "v2/TurnStartParams.json",
     "v2/TurnInterruptParams.json", "CommandExecutionRequestApprovalParams.json",
+    "v2/ItemStartedNotification.json", "v2/ItemCompletedNotification.json",
     "CommandExecutionRequestApprovalResponse.json", "FileChangeRequestApprovalParams.json",
     "FileChangeRequestApprovalResponse.json", "ServerRequest.json",
     "v2/ServerRequestResolvedNotification.json", "v2/TurnCompletedNotification.json",

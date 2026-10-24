@@ -1,0 +1,19 @@
+{
+  "codex_version": "codex-cli 0.164.0-alpha.11.1",
+  "scenario": "verify_command",
+  "registered_command": "python --version",
+  "fixture": "disposable_empty_git_workspace",
+  "observed": {
+    "matching_started_item": true,
+    "matching_completed_item": true,
+    "matching_thread_turn_item_ids": true,
+    "command_and_cwd_allowlisted": true,
+    "started_and_completed_timestamps_present": true,
+    "single_command_approval_accepted": true,
+    "structured_exit_code_zero": true,
+    "turn_status": "completed",
+    "required_verification_status": "passed",
+    "thread_resume": "recognized"
+  },
+  "limits": "One fixed read-only command. Multi-command aggregation, persistence, other CLI versions, and Host/API integration remain unverified."
+}

@@ -22,9 +22,16 @@ git diff --stat
 
 新增未跟踪文件也需单独检查；`git diff --check` 本身不覆盖未跟踪内容。当前没有已通过的产品 Host/Android 验收，探针的故障测试可执行如下。
 
+本地 Git 产物边界探针无需模型和账号，只能在 `.dev` 内准备全新夹具。它生成预先存在的跟踪文本/二进制改动和未跟踪文件，检查大小、哈希、内容截断与 Git 二进制标记；报告只含固定夹具的元信息，不包含文件正文。结果不能归因于 Codex 回合；见 [脱敏证据](docs/evidence/DEV-003-artifact-boundaries.json)：
+
+```powershell
+python scripts/probe_artifacts.py prepare --fixture .dev/artifact-fixture
+python scripts/probe_artifacts.py inspect --fixture .dev/artifact-fixture
+```
+
 ### DEV-001 已验证命令
 
-本轮实测 Windows、Python 3.12.10、SQLite 3.49.1，Codex CLI 锁定 `0.163.0-alpha.11.2`。使用系统标准库运行，不要求安装 pytest/ruff/FastAPI。仓库根目录执行：
+当前实测 Windows、Python 3.12.10、SQLite 3.49.1，Codex CLI 锁定 `0.164.0-alpha.11.1`；0.163 的历史证据保留原版本标注。使用系统标准库运行，不要求安装 pytest/ruff/FastAPI。仓库根目录执行：
 
 ```powershell
 python scripts/check.py
@@ -51,6 +58,27 @@ python scripts/probe_execution.py run --account-home .dev/codex-home --approval 
 ```
 
 探针固定 `workspace-write`、`on-request`、`approvalsReviewer=user`，拒绝扩权型或未知控制请求。显式改为 `--approval accept` 时，默认只允许测试仓库内预定的只读 `python --version`（含本机固定 Codex PowerShell 包装形式）；其他审批继续拒绝。真实单次允许与退出码 0 的证据见 [DEV-003](docs/evidence/DEV-003.md)。它不应用建议的 execpolicy 修订。超时或协议异常关闭受管进程，不自动重发；不把关闭进程写成上游已确认中断。成功时仅在被 Git 忽略的 `.dev/execution-probe-report.json` 保存事件字段名/类型、实际决定、终态和文件核对结果；不保存提示、输出或审批内容值。运行前检查测试仓库和账号目录，运行后人工核对报告并脱敏评审；这条探针不代替审批清理、中断竞争或生产 Host 验收。
+
+单条必需验证命令探针使用新的可丢弃仓库，预登记固定 `python --version`。只有同一 thread/turn/item 的结构化开始和完成事件、精确命令与 cwd、有效时间和整数退出码齐全，才判为 `passed` 或 `failed`；缺失与重复关联保持 `unknown`。真实观察见 [脱敏证据](docs/evidence/DEV-003-required-verification.json)：
+
+```powershell
+python scripts/probe_execution.py prepare --fixture .dev/execution-verification-fixture --scenario verify_command
+python scripts/probe_execution.py run --fixture .dev/execution-verification-fixture --account-home .dev/codex-home --approval accept --scenario verify_command --timeout 180
+```
+
+双命令探针预登记上述命令及 `git --version`，分别运行、分别审批。每项按结构化证据判定，再按协议优先级汇总；共用一个上游 item 的两项都降为 `unknown`。真实观察仅覆盖两项均通过，失败和混合状态由本地行为测试覆盖，见 [脱敏证据](docs/evidence/DEV-003-two-required-verifications.json)：
+
+```powershell
+python scripts/probe_execution.py prepare --fixture .dev/execution-two-verifications-fixture --scenario verify_two_commands
+python scripts/probe_execution.py run --fixture .dev/execution-two-verifications-fixture --account-home .dev/codex-home --approval accept --scenario verify_two_commands --timeout 180
+```
+
+失败路径使用新的可丢弃仓库，只允许精确 `exit 7` 一次。运行结果必须核对结构化退出码精确为 7、回合终态与必需验证汇总分别记录；真实观察见 [脱敏证据](docs/evidence/DEV-003-nonzero-verification.json)：
+
+```powershell
+python scripts/probe_execution.py prepare --fixture .dev/execution-nonzero-verification-fixture --scenario verify_nonzero
+python scripts/probe_execution.py run --fixture .dev/execution-nonzero-verification-fixture --account-home .dev/codex-home --approval accept --scenario verify_nonzero --timeout 180
+```
 
 受控写入使用全新的可丢弃测试仓库，避免覆盖上次探针结果：
 
@@ -94,6 +122,13 @@ python scripts/probe_execution.py run --fixture .dev/execution-file-change-decli
 ```powershell
 python scripts/probe_execution.py prepare --fixture .dev/execution-file-change-accept-fixture
 python scripts/probe_execution.py run --fixture .dev/execution-file-change-accept-fixture --account-home .dev/codex-home --approval accept --scenario file_change_accept --timeout 180
+```
+
+脏工作区探针在准备阶段提交固定基线，再制造一个跟踪文件的预先修改和一个预先存在的未跟踪文件；运行阶段仍只允许上述精确新增文件的一次审批。运行后需同时核对上游 item、目标字节、原有文件字节、`git status --porcelain` 和 `git diff --name-only` 的可见范围。每次使用新的 `.dev` 夹具目录；真实观察见 [脱敏证据](docs/evidence/DEV-003-dirty-workspace.json)：
+
+```powershell
+python scripts/probe_execution.py prepare --fixture .dev/execution-dirty-file-change-fixture --scenario file_change_accept_dirty
+python scripts/probe_execution.py run --fixture .dev/execution-dirty-file-change-fixture --account-home .dev/codex-home --approval accept --scenario file_change_accept_dirty --timeout 180
 ```
 
 审批答复后受控进程切断使用另一个全新测试仓库，沿用上述精确文件修改白名单。探针在单次 `accept` 写入返回后立即关闭受管 app-server，不继续读事件或恢复 thread；报告将文件 item 和回合终态保持为未观察到，并在关闭后核对目标文件及目录内容。它用于验证未知结果的表示，不能证明上游收到答复、通知确实丢失或 Host 重启可恢复。真实切点记录见 [DEV-003](docs/evidence/DEV-003.md)：

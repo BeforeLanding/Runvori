@@ -1,0 +1,24 @@
+{
+  "codex_version": "codex-cli 0.164.0-alpha.11.1",
+  "scenario": "file_change_accept_dirty",
+  "fixture_before": {
+    "tracked_file_preexisting_edit": true,
+    "preexisting_untracked_file": true,
+    "target_file_absent": true
+  },
+  "observed": {
+    "turn_status": "completed",
+    "resume": "recognized",
+    "file_change_approval_count": 1,
+    "command_approval_count": 0,
+    "one_shot_accept_count": 1,
+    "file_change_item_allowlisted": true,
+    "file_change_item_status": "completed",
+    "target_bytes_exact": true,
+    "preexisting_files_unchanged": true,
+    "git_status_expected_transition": true,
+    "git_diff_name_only_excludes_untracked": true,
+    "fixture_entries_within_allowlist": true
+  },
+  "provenance_limit": "Git status and diff alone do not attribute changes to the turn; the result is correlated with the allowlisted upstream item, one approval, and byte checks."
+}

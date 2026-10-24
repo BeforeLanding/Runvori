@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 
 from runvori.codex.stdio import RpcError, StdioClient, TransportError
+from runvori.codex.verification import RequiredCommandEvidence, RequiredVerificationSet
 
 MARKER = ".runvori-disposable-fixture"
 SAFE_KEYS = frozenset({
@@ -30,6 +31,8 @@ PROMPT = (
     "outside this workspace or use the network."
 )
 SAFE_COMMAND = "python --version"
+SECOND_VERIFY_COMMAND = "git --version"
+NONZERO_VERIFY_COMMAND = "exit 7"
 WRITE_COMMAND = (
     "Set-Content -LiteralPath probe-result.txt -Value RUNVORI_PROBE_OK -NoNewline"
 )
@@ -39,6 +42,18 @@ ACCEPT_PROMPT = (
     "This is a disposable Runvori protocol probe. In this workspace, run only "
     f"the exact command {SAFE_COMMAND} and report its result. Do not use "
     "other commands, access paths outside this workspace, or use the network."
+)
+TWO_VERIFY_PROMPT = (
+    "This is a disposable Runvori protocol probe. Run these two commands "
+    f"separately in this workspace: {SAFE_COMMAND} and {SECOND_VERIFY_COMMAND}. "
+    "Run each once and report the results. Do not combine commands, use other "
+    "tools, access paths outside this workspace, or use the network."
+)
+NONZERO_VERIFY_PROMPT = (
+    "This is a disposable Runvori protocol probe. In this workspace, run "
+    f"only the exact PowerShell command {NONZERO_VERIFY_COMMAND}. Its nonzero "
+    "exit is intentional. Report the result without running any other command, "
+    "using other tools, accessing paths outside this workspace, or using the network."
 )
 WRITE_PROMPT = (
     "This is a disposable Runvori protocol probe. In this workspace, run only "
@@ -65,6 +80,9 @@ FILE_CHANGE_APPROVAL_KEYS = frozenset({
     "threadId", "turnId", "itemId", "startedAtMs", "reason", "grantRoot",
 })
 FILE_CHANGE_BYTES = b"RUNVORI_PROBE_OK\n"
+DIRTY_TRACKED_BASE = b"tracked baseline\n"
+DIRTY_TRACKED_BEFORE = b"tracked preexisting edit\n"
+DIRTY_UNTRACKED_BEFORE = b"preexisting untracked\n"
 PENDING_RESOLUTION_GRACE_SECONDS = 2.0
 COMMAND_COMPLETION_RACE_DELAY_SECONDS = 5.0
 
@@ -232,6 +250,58 @@ def prepare_fixture(root: Path, fixture: Path) -> Path:
     return target
 
 
+def _git_status_entries(target: Path) -> set[bytes]:
+    result = subprocess.run(
+        ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        cwd=target, capture_output=True, timeout=15, check=False,
+    )
+    if result.returncode or not result.stdout.endswith(b"\0"):
+        raise TransportError("fixture_git_status_failed")
+    entries = result.stdout.split(b"\0")
+    if entries[-1] != b"" or len(entries[:-1]) != len(set(entries[:-1])):
+        raise TransportError("fixture_git_status_invalid")
+    return set(entries[:-1])
+
+
+def prepare_dirty_fixture(root: Path, fixture: Path) -> Path:
+    target = prepare_fixture(root, fixture)
+    (target / "tracked.txt").write_bytes(DIRTY_TRACKED_BASE)
+    commands = (
+        ["git", "add", "--", MARKER, "tracked.txt"],
+        ["git", "-c", "user.name=RunvoriProbe",
+         "-c", "user.email=probe@invalid.local", "-c", "commit.gpgsign=false",
+         "commit", "--quiet", "-m", "probe baseline"],
+    )
+    for command in commands:
+        result = subprocess.run(command, cwd=target, capture_output=True,
+                                timeout=15, check=False)
+        if result.returncode:
+            raise TransportError("fixture_git_baseline_failed")
+    (target / "tracked.txt").write_bytes(DIRTY_TRACKED_BEFORE)
+    (target / "existing-untracked.txt").write_bytes(DIRTY_UNTRACKED_BEFORE)
+    validate_dirty_fixture(root, target)
+    return target
+
+
+def validate_dirty_fixture(root: Path, fixture: Path) -> Path:
+    target = fixture_path(root, fixture)
+    expected_names = {MARKER, ".git", "tracked.txt", "existing-untracked.txt"}
+    if (not target.is_dir() or {path.name for path in target.iterdir()} != expected_names
+            or any((target / name).is_symlink() for name in expected_names)
+            or not (target / ".git").is_dir()
+            or not all((target / name).is_file() for name in (
+                MARKER, "tracked.txt", "existing-untracked.txt"))
+            or (target / MARKER).read_text(encoding="utf-8") !=
+            "Runvori disposable execution probe\n"
+            or (target / "tracked.txt").read_bytes() != DIRTY_TRACKED_BEFORE
+            or (target / "existing-untracked.txt").read_bytes() !=
+            DIRTY_UNTRACKED_BEFORE
+            or _git_status_entries(target) != {
+                b" M tracked.txt", b"?? existing-untracked.txt"}):
+        raise TransportError("invalid_dirty_fixture")
+    return target
+
+
 def validate_fixture(root: Path, fixture: Path) -> Path:
     target = fixture_path(root, fixture)
     if (not target.is_dir() or set(path.name for path in target.iterdir()) != {MARKER, ".git"}
@@ -277,14 +347,18 @@ def run_probe(*, root: Path, fixture: Path, account_home: Path,
               timeout: float = 120) -> dict:
     if decision not in ("accept", "decline", "defer"):
         raise ValueError("invalid_approval_decision")
-    if scenario not in ("read_only", "write_file", "interrupt", "interrupt_pending",
+    if scenario not in ("read_only", "verify_command", "verify_two_commands",
+                        "verify_nonzero",
+                        "write_file", "interrupt", "interrupt_pending",
                         "interrupt_on_approval", "file_change_decline",
-                        "file_change_accept", "file_change_cut_after_accept",
+                        "file_change_accept", "file_change_accept_dirty",
+                        "file_change_cut_after_accept",
                         "interrupt_after_turn_completed",
                         "interrupt_after_command_completed",
                         "interrupt_after_command_completed_delayed"):
         raise ValueError("invalid_probe_scenario")
-    if scenario in ("write_file", "interrupt", "interrupt_on_approval",
+    if scenario in ("verify_command", "verify_two_commands", "verify_nonzero", "write_file",
+                    "interrupt", "interrupt_on_approval",
                     "interrupt_after_turn_completed",
                     "interrupt_after_command_completed",
                     "interrupt_after_command_completed_delayed") and decision != "accept":
@@ -293,11 +367,14 @@ def run_probe(*, root: Path, fixture: Path, account_home: Path,
         raise ValueError("pending_scenario_requires_defer_mode")
     if scenario == "file_change_decline" and decision != "decline":
         raise ValueError("file_change_scenario_requires_decline_mode")
-    if scenario in ("file_change_accept", "file_change_cut_after_accept") and decision != "accept":
+    if scenario in ("file_change_accept", "file_change_accept_dirty",
+                    "file_change_cut_after_accept") and decision != "accept":
         raise ValueError("file_change_scenario_requires_accept_mode")
     if timeout <= 0 or timeout > 600:
         raise ValueError("invalid_probe_timeout")
-    target = validate_fixture(root, fixture)
+    target = (validate_dirty_fixture(root, fixture)
+              if scenario == "file_change_accept_dirty" else
+              validate_fixture(root, fixture))
     home = account_home.resolve(strict=True)
     if not home.is_dir() or home == target or home.is_relative_to(target):
         raise TransportError("invalid_account_home")
@@ -305,15 +382,19 @@ def run_probe(*, root: Path, fixture: Path, account_home: Path,
     for key in list(env):
         if any(word in key.upper() for word in ("TOKEN", "API_KEY", "SECRET", "PASSWORD")):
             del env[key]
-    expected_command = (WRITE_COMMAND if scenario == "write_file" else
+    expected_command = (NONZERO_VERIFY_COMMAND if scenario == "verify_nonzero" else
+                        WRITE_COMMAND if scenario == "write_file" else
                         INTERRUPT_COMMAND if scenario in ("interrupt", "interrupt_on_approval")
                         else SAFE_COMMAND)
-    prompt = (FILE_CHANGE_PROMPT if scenario in ("file_change_decline", "file_change_accept",
-                                                 "file_change_cut_after_accept")
+    prompt = (FILE_CHANGE_PROMPT if scenario in (
+        "file_change_decline", "file_change_accept", "file_change_accept_dirty",
+        "file_change_cut_after_accept")
               else
               PROMPT if decision == "decline" else
               WRITE_PROMPT if scenario == "write_file" else
               INTERRUPT_PROMPT if scenario in ("interrupt", "interrupt_on_approval")
+              else TWO_VERIFY_PROMPT if scenario == "verify_two_commands"
+              else NONZERO_VERIFY_PROMPT if scenario == "verify_nonzero"
               else ACCEPT_PROMPT)
     report: dict = {"schema": 1, "status": "started", "approval_decision": decision,
                     "scenario": scenario,
@@ -323,6 +404,10 @@ def run_probe(*, root: Path, fixture: Path, account_home: Path,
                     "resume": "not_attempted", "approval_checks": [],
                     "accepted_command_exit_zero": None,
                     "accepted_command_exit_kind": "not_observed",
+                    "fixed_nonzero_exit_seven": None,
+                    "required_verification_status": None,
+                    "required_verification_items": None,
+                    "required_verification_summary": None,
                     "interrupt_rpc": "not_requested", "interrupt_trigger": None,
                     "interrupt_marker_seen": False,
                     "pending_request_resolved": None,
@@ -331,6 +416,9 @@ def run_probe(*, root: Path, fixture: Path, account_home: Path,
                     "file_change_item_allowlisted": None,
                     "fixture_only_expected_file": None,
                     "fixture_entries_within_allowlist": None,
+                    "preexisting_files_unchanged": None,
+                    "git_status_expected_transition": None,
+                    "git_diff_excludes_untracked": None,
                     "cutoff": None, "managed_process_close_returned": None,
                     "interrupt_delay_ms": None}
     accepted_items: set[str] = set()
@@ -340,6 +428,7 @@ def run_probe(*, root: Path, fixture: Path, account_home: Path,
     accepted_at: float | None = None
     pending_request_id: str | int | None = None
     cutoff_after_accept = False
+    verification_group: RequiredVerificationSet | None = None
     deadline = time.monotonic() + timeout
     with StdioClient([executable, "app-server", "--listen", "stdio://"],
                      cwd=target, env=env, timeout=15) as client:
@@ -348,7 +437,8 @@ def run_probe(*, root: Path, fixture: Path, account_home: Path,
             "cwd": str(target), "approvalPolicy": "on-request",
             "approvalsReviewer": "user",
             "sandbox": ("read-only" if scenario in (
-                "file_change_decline", "file_change_accept", "file_change_cut_after_accept")
+                "file_change_decline", "file_change_accept", "file_change_accept_dirty",
+                "file_change_cut_after_accept")
                         else "workspace-write"),
             "ephemeral": False,
         })
@@ -361,6 +451,17 @@ def run_probe(*, root: Path, fixture: Path, account_home: Path,
         turn_id = begun.get("turn", {}).get("id")
         if not isinstance(turn_id, str):
             raise TransportError("turn_start_shape_mismatch")
+        if scenario in ("verify_command", "verify_two_commands", "verify_nonzero"):
+            commands = ({"failure": NONZERO_VERIFY_COMMAND}
+                        if scenario == "verify_nonzero" else {"python": SAFE_COMMAND})
+            if scenario == "verify_two_commands":
+                commands["git"] = SECOND_VERIFY_COMMAND
+            verification_group = RequiredVerificationSet({
+                key: RequiredCommandEvidence(
+                    thread_id=thread_id, turn_id=turn_id, cwd=target,
+                    matches_command=lambda value, expected=command:
+                    is_safe_command(value, expected))
+                for key, command in commands.items()})
         while time.monotonic() < deadline:
             if (scenario == "interrupt" and accepted_at is not None
                     and report["interrupt_rpc"] == "not_requested"
@@ -374,7 +475,10 @@ def run_probe(*, root: Path, fixture: Path, account_home: Path,
             if event is None:
                 continue
             method = record_event_shape(report, event)
-            if scenario in ("file_change_accept", "file_change_cut_after_accept") and method in ("item/started", "item/updated"):
+            if verification_group is not None:
+                verification_group.observe(method, event.get("params"))
+            if scenario in ("file_change_accept", "file_change_accept_dirty",
+                            "file_change_cut_after_accept") and method in ("item/started", "item/updated"):
                 params = event.get("params", {})
                 item = params.get("item", {}) if isinstance(params, dict) else {}
                 if isinstance(item, dict) and item.get("type") == "fileChange":
@@ -422,7 +526,8 @@ def run_probe(*, root: Path, fixture: Path, account_home: Path,
                 if (scenario == "interrupt_on_approval"
                         and report["interrupt_rpc"] != "not_requested"):
                     raise TransportError("unexpected_approval_after_interrupt")
-                if scenario in ("file_change_accept", "file_change_cut_after_accept"):
+                if scenario in ("file_change_accept", "file_change_accept_dirty",
+                                "file_change_cut_after_accept"):
                     report["file_change_item_allowlisted"] = file_change_candidate_valid
                     actual, reason = (safe_file_change_decision(
                         event, thread_id=thread_id, turn_id=turn_id,
@@ -430,12 +535,29 @@ def run_probe(*, root: Path, fixture: Path, account_home: Path,
                         candidate_valid=file_change_candidate_valid)
                         if accepted_file_change_id is None else
                         ("decline", "second_file_change_approval"))
+                elif scenario == "verify_two_commands":
+                    params = event.get("params", {})
+                    command = params.get("command") if isinstance(params, dict) else None
+                    key = next((key for key, expected in (
+                        ("python", SAFE_COMMAND), ("git", SECOND_VERIFY_COMMAND))
+                        if is_safe_command(command, expected)), None)
+                    expected_for_review = (SAFE_COMMAND if key is None or key == "python"
+                                           else SECOND_VERIFY_COMMAND)
+                    if key is None:
+                        actual, reason = "decline", "operation_not_allowlisted"
+                    elif verification_group is not None and verification_group.requirements[key].approved_ids:
+                        actual, reason = "decline", "second_command_approval"
+                    else:
+                        actual, reason = safe_accept_decision(
+                            event, target=target, thread_id=thread_id,
+                            turn_id=turn_id, expected=expected_for_review)
                 else:
                     actual, reason = (safe_accept_decision(
                         event, target=target, thread_id=thread_id, turn_id=turn_id,
                         expected=expected_command)
                         if decision == "accept" and not (
-                            scenario in ("interrupt_after_turn_completed",
+                            scenario in ("verify_command", "verify_nonzero",
+                                         "interrupt_after_turn_completed",
                                          "interrupt_after_command_completed",
                                          "interrupt_after_command_completed_delayed")
                             and accepted_items)
@@ -445,11 +567,14 @@ def run_probe(*, root: Path, fixture: Path, account_home: Path,
                     "decision": actual, "reason": reason,
                     "review": (file_change_review_shape(event, thread_id, turn_id)
                                if method == "item/fileChange/requestApproval"
-                               else approval_review_shape(event, target, expected_command)),
+                               else approval_review_shape(event, target,
+                                   expected_for_review if scenario == "verify_two_commands"
+                                   else expected_command)),
                 })
                 client.respond_approval(event["id"], actual)
                 if actual == "accept":
-                    if scenario in ("file_change_accept", "file_change_cut_after_accept"):
+                    if scenario in ("file_change_accept", "file_change_accept_dirty",
+                                    "file_change_cut_after_accept"):
                         accepted_file_change_id = event["params"]["itemId"]
                         if scenario == "file_change_cut_after_accept":
                             report["cutoff"] = "after_approval_write"
@@ -459,6 +584,11 @@ def run_probe(*, root: Path, fixture: Path, account_home: Path,
                             break
                     else:
                         accepted_items.add(event["params"]["itemId"])
+                        if verification_group is not None:
+                            verification_group.note_approved(
+                                key if scenario == "verify_two_commands" else
+                                "failure" if scenario == "verify_nonzero" else "python",
+                                event["params"]["itemId"])
                     accepted_at = time.monotonic()
                     if scenario == "interrupt_on_approval":
                         report["interrupt_trigger"] = "approval_answered"
@@ -477,7 +607,8 @@ def run_probe(*, root: Path, fixture: Path, account_home: Path,
                     report["interrupt_marker_seen"] = True
             if method == "item/completed":
                 item = event.get("params", {}).get("item", {})
-                if (scenario in ("file_change_accept", "file_change_cut_after_accept") and isinstance(item, dict)
+                if (scenario in ("file_change_accept", "file_change_accept_dirty",
+                                 "file_change_cut_after_accept") and isinstance(item, dict)
                         and item.get("id") == accepted_file_change_id):
                     status = item.get("status")
                     report["accepted_file_change_status"] = (
@@ -485,10 +616,14 @@ def run_probe(*, root: Path, fixture: Path, account_home: Path,
                         else "unknown")
                 if isinstance(item, dict) and item.get("id") in accepted_items:
                     exit_code = item.get("exitCode")
-                    report["accepted_command_exit_zero"] = exit_code == 0
-                    report["accepted_command_exit_kind"] = (
-                        "zero" if exit_code == 0 else
-                        "nonzero" if type(exit_code) is int else "missing")
+                    if scenario == "verify_nonzero":
+                        report["fixed_nonzero_exit_seven"] = (
+                            type(exit_code) is int and exit_code == 7)
+                    if scenario != "verify_two_commands":
+                        report["accepted_command_exit_zero"] = exit_code == 0
+                        report["accepted_command_exit_kind"] = (
+                            "zero" if exit_code == 0 else
+                            "nonzero" if type(exit_code) is int else "missing")
                     if (scenario in ("interrupt_after_command_completed",
                                      "interrupt_after_command_completed_delayed")
                             and exit_code == 0
@@ -554,12 +689,42 @@ def run_probe(*, root: Path, fixture: Path, account_home: Path,
     report["file_match"] = (result.is_file() and not result.is_symlink()
                             and result.resolve().is_relative_to(target)
                             and result.read_bytes() == expected_bytes)
-    if scenario in ("file_change_accept", "file_change_cut_after_accept"):
+    if verification_group is not None:
+        snapshot = verification_group.snapshot(report["turn_status"])
+        report["required_verification_items"] = snapshot["items"]
+        report["required_verification_summary"] = snapshot["summary"]
+        if scenario in ("verify_command", "verify_nonzero"):
+            report["required_verification_status"] = snapshot["items"][
+                "failure" if scenario == "verify_nonzero" else "python"]
+    if scenario in ("file_change_accept", "file_change_accept_dirty",
+                    "file_change_cut_after_accept"):
         fixture_entries = {path.name for path in target.iterdir()}
+        expected_entries = ({MARKER, ".git", "tracked.txt",
+                             "existing-untracked.txt", "probe-result.txt"}
+                            if scenario == "file_change_accept_dirty" else
+                            {MARKER, ".git", "probe-result.txt"})
         report["fixture_only_expected_file"] = (
-            fixture_entries == {MARKER, ".git", "probe-result.txt"})
+            fixture_entries == expected_entries)
         report["fixture_entries_within_allowlist"] = (
-            fixture_entries.issubset({MARKER, ".git", "probe-result.txt"}))
+            fixture_entries.issubset(expected_entries))
+    if scenario == "file_change_accept_dirty":
+        report["preexisting_files_unchanged"] = (
+            (target / "tracked.txt").is_file()
+            and not (target / "tracked.txt").is_symlink()
+            and (target / "tracked.txt").read_bytes() == DIRTY_TRACKED_BEFORE
+            and (target / "existing-untracked.txt").is_file()
+            and not (target / "existing-untracked.txt").is_symlink()
+            and (target / "existing-untracked.txt").read_bytes() ==
+            DIRTY_UNTRACKED_BEFORE)
+        report["git_status_expected_transition"] = (
+            _git_status_entries(target) == {
+                b" M tracked.txt", b"?? existing-untracked.txt",
+                b"?? probe-result.txt"})
+        git_diff = subprocess.run(
+            ["git", "diff", "--name-only", "--", "tracked.txt", "probe-result.txt"],
+            cwd=target, capture_output=True, timeout=15, check=False)
+        report["git_diff_excludes_untracked"] = (
+            git_diff.returncode == 0 and git_diff.stdout == b"tracked.txt\n")
     report["status"] = "observed"
     report["thread_id_sha256"] = hashlib.sha256(thread_id.encode()).hexdigest()
     return report

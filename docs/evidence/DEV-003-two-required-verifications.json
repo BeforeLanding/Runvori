@@ -1,0 +1,18 @@
+{
+  "codex_version": "codex-cli 0.164.0-alpha.11.1",
+  "scenario": "verify_two_commands",
+  "fixture": "disposable_empty_git_workspace",
+  "registered_commands": ["python --version", "git --version"],
+  "observed": {
+    "turn_status": "completed",
+    "command_approval_count": 2,
+    "one_shot_accept_count": 2,
+    "distinct_structured_command_items": true,
+    "each_item_has_matching_thread_turn_cwd_and_timestamps": true,
+    "python_status": "passed",
+    "git_status": "passed",
+    "required_verification_summary": "passed",
+    "thread_resume": "recognized"
+  },
+  "limits": "Only two fixed read-only commands were exercised with a real model. Nonzero exits, duplicate item identities, missing events, and mixed statuses were verified with local behavior tests; Host persistence and product acceptance remain open."
+}
