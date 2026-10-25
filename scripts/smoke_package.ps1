@@ -40,7 +40,7 @@ try {
     try {
         & $entrypoint verify-contracts --workspace $repository
         if ($LASTEXITCODE -ne 0) { throw 'Installed CLI contract verification failed.' }
-        & $python -c 'import runvori.codex.execution_probe, runvori.infrastructure.approval_journal, runvori.infrastructure.artifact_probe, runvori.infrastructure.event_journal, runvori.infrastructure.instance_lock, runvori.infrastructure.locked_journal, runvori.infrastructure.pairing_journal'
+        & $python -c 'import runvori.codex.approval_dispatch, runvori.codex.approval_events, runvori.codex.event_handoff, runvori.codex.execution_probe, runvori.codex.owned_approval_queue, runvori.codex.owned_event_loop, runvori.codex.owned_event_pump, runvori.codex.owned_thread_start, runvori.codex.run_dispatch, runvori.codex.thread_resume, runvori.codex.thread_start, runvori.codex.turn_events, runvori.codex.upstream_lifecycle, runvori.infrastructure.approval_journal, runvori.infrastructure.artifact_probe, runvori.infrastructure.event_journal, runvori.infrastructure.instance_lock, runvori.infrastructure.locked_journal, runvori.infrastructure.pairing_journal'
         if ($LASTEXITCODE -ne 0) { throw 'Installed module import failed.' }
     }
     finally { Pop-Location }

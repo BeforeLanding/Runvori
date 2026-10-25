@@ -4,7 +4,39 @@
 
 ## 当前状态
 
-本仓库已进入 M0 技术验证阶段。已建立 Python 探针、schema 基线、故障测试、事件/活动槽/请求幂等/派发/回合确认/恢复存储切片、单库审批请求/决定/派发领取/隔离后恢复/请求结束事务切片及可构建的 Android 占位工程；Host 产品服务与 Android 业务功能尚未实现。以下 PRD/架构文档仍主要描述待实现目标，实际完成项以 [progress.md](../progress.md) 和 [DEV-001](evidence/DEV-001.md)、[DEV-002](evidence/DEV-002.md)、[DEV-003](evidence/DEV-003.md)、[DEV-004](evidence/DEV-004-toolchain.md)、[DEV-005 事件](evidence/DEV-005-event-journal.md)、[DEV-005 活动槽](evidence/DEV-005-active-slot.md)、[DEV-005 幂等](evidence/DEV-005-run-idempotency.md)、[DEV-005 派发](evidence/DEV-005-run-dispatch.md)、[DEV-005 确认](evidence/DEV-005-turn-confirmation.md)、[DEV-005 恢复](evidence/DEV-005-run-recovery.md)、[DEV-005 启动](evidence/DEV-005-locked-startup.md)、[DEV-005 单库](evidence/DEV-005-unified-store.md)、[DEV-005 审批决定](evidence/DEV-005-approval-decision.md)、[DEV-005 审批领取](evidence/DEV-005-approval-dispatch.md)、[DEV-005 审批恢复](evidence/DEV-005-approval-epoch-recovery.md)、[DEV-005 请求结束](evidence/DEV-005-approval-request-closed.md) 验证证据为准。
+本地 `thread/start` 的连接归属调度见 [DEV-005 本地 thread 创建](evidence/DEV-005-owned-thread-start.md)。
+
+当前连接上的审批串行派发见 [DEV-005 审批调度](evidence/DEV-005-owned-approval-scheduling.md)。
+
+归属连接持续消费与停止边界见 [DEV-005 持续事件循环](evidence/DEV-005-owned-event-loop.md)。该入口仍需与审批答复和 RPC 调度整合。
+
+归属连接单步事件交接与故障恢复验证见 [DEV-005 事件泵](evidence/DEV-005-owned-event-pump.md)。
+
+当前 Host 上游连接唯一归属的验证见 [DEV-005 连接归属](evidence/DEV-005-upstream-single-owner.md)。
+
+当前受管上游退出后的隔离与恢复验证见 [DEV-005 上游退出](evidence/DEV-005-owned-upstream-exit.md)。
+
+本地工作区登记与会话归属的本轮验证见 [DEV-005 工作区登记](evidence/DEV-005-local-workspace-registration.md)。
+
+上游 thread 一次创建的本轮验证见 [DEV-005 thread 创建](evidence/DEV-005-thread-start-once.md)。
+
+历史 thread 恢复身份核对的本轮验证见 [DEV-005 thread 恢复](evidence/DEV-005-thread-resume-identity.md)。
+
+会话与上游 thread 持久归属的本轮验证见 [DEV-005 thread 绑定](evidence/DEV-005-session-thread-binding.md)。
+
+新回合一次派发到 stdio 的本轮验证见 [DEV-005 回合派发](evidence/DEV-005-run-stdio-dispatch.md)。
+
+审批一次派发到 stdio 的本轮验证见 [DEV-005 审批派发](evidence/DEV-005-approval-stdio-dispatch.md)。
+
+上游单消息持久交接的本轮验证见 [DEV-005 事件交接](evidence/DEV-005-event-handoff.md)。
+
+回合终态时的审批收尾行为见 [DEV-005 终态审批收尾](evidence/DEV-005-turn-terminal-approval-settlement.md)。
+
+上游回合终态身份映射的本轮验证见 [DEV-005 回合终态映射](evidence/DEV-005-upstream-turn-terminal.md)。该切片仍未接入产品事件循环。
+
+上游审批请求身份映射的本轮验证见 [DEV-005 上游请求映射](evidence/DEV-005-upstream-approval-request.md)。该切片仍未接入产品事件循环。
+
+本仓库已进入 M0 技术验证阶段。已建立 Python 探针、schema 基线、故障测试、事件/活动槽/请求幂等/派发/回合确认/恢复存储切片、单库审批生命周期、持锁启动原子恢复、恢复前写门控与上游结束通知身份映射切片，以及可构建的 Android 占位工程；Host 产品服务与 Android 业务功能尚未实现。以下 PRD/架构文档仍主要描述待实现目标，实际完成项以 [progress.md](../progress.md) 和 [DEV-001](evidence/DEV-001.md)、[DEV-002](evidence/DEV-002.md)、[DEV-003](evidence/DEV-003.md)、[DEV-004](evidence/DEV-004-toolchain.md)、[DEV-005 事件](evidence/DEV-005-event-journal.md)、[DEV-005 活动槽](evidence/DEV-005-active-slot.md)、[DEV-005 幂等](evidence/DEV-005-run-idempotency.md)、[DEV-005 派发](evidence/DEV-005-run-dispatch.md)、[DEV-005 确认](evidence/DEV-005-turn-confirmation.md)、[DEV-005 恢复](evidence/DEV-005-run-recovery.md)、[DEV-005 启动](evidence/DEV-005-locked-startup.md)、[DEV-005 单库](evidence/DEV-005-unified-store.md)、[DEV-005 审批决定](evidence/DEV-005-approval-decision.md)、[DEV-005 审批领取](evidence/DEV-005-approval-dispatch.md)、[DEV-005 审批恢复](evidence/DEV-005-approval-epoch-recovery.md)、[DEV-005 请求结束](evidence/DEV-005-approval-request-closed.md)、[DEV-005 原子恢复](evidence/DEV-005-host-atomic-recovery.md)、[DEV-005 写门控](evidence/DEV-005-startup-write-gate.md)、[DEV-005 上游结束映射](evidence/DEV-005-upstream-approval-resolved.md) 验证证据为准。
 
 ## 阅读顺序
 

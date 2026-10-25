@@ -21,6 +21,108 @@ class EventJournalTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def test_session_thread_binding_is_immutable_unique_and_persistent(self):
+        with EventJournal(self.path) as journal:
+            journal.create_session("other", {})
+            with self.assertRaisesRegex(EventJournalError,
+                                        "session_thread_not_bound"):
+                journal.get_session_thread("session")
+            self.assertEqual(journal.bind_session_thread("session", "thread1"),
+                             "thread1")
+            self.assertEqual(journal.bind_session_thread("session", "thread1"),
+                             "thread1")
+            with self.assertRaisesRegex(EventJournalError,
+                                        "session_thread_conflict"):
+                journal.bind_session_thread("session", "different")
+            with self.assertRaisesRegex(EventJournalError,
+                                        "session_thread_conflict"):
+                journal.bind_session_thread("other", "thread1")
+            with self.assertRaisesRegex(EventJournalError, "session_not_found"):
+                journal.bind_session_thread("missing", "thread2")
+            with self.assertRaisesRegex(EventJournalError,
+                                        "invalid_session_thread"):
+                journal.bind_session_thread("other", "x" * 257)
+            journal.bind_session_thread("other", "thread2")
+        with EventJournal(self.path) as reopened:
+            self.assertEqual(reopened.get_session_thread("session"), "thread1")
+            self.assertEqual(reopened.get_session_thread("other"), "thread2")
+
+    def test_v6_migration_requires_verified_thread_backfill(self):
+        with EventJournal(self.path) as journal:
+            self.request(journal)
+            journal.claim_run_dispatch("device1", "request1", process_epoch=1,
+                                       recorded_at="2026-10-25T00:00:01Z")
+            self.confirm(journal, thread_id="historic-thread")
+            journal.connection.execute("DROP TABLE session_threads")
+            journal.connection.execute("PRAGMA user_version=6")
+        with EventJournal(self.path) as reopened:
+            self.assertEqual(reopened.connection.execute(
+                "PRAGMA user_version").fetchone()[0], 9)
+            with self.assertRaisesRegex(EventJournalError,
+                                        "session_thread_not_bound"):
+                reopened.get_session_thread("session")
+            with self.assertRaisesRegex(EventJournalError,
+                                        "session_thread_conflict"):
+                reopened.bind_session_thread("session", "wrong-thread")
+            self.assertEqual(reopened.bind_session_thread(
+                "session", "historic-thread"), "historic-thread")
+
+    def test_v7_migration_preserves_thread_binding_and_adds_create_journal(self):
+        with EventJournal(self.path) as journal:
+            journal.bind_session_thread("session", "thread1")
+            journal.connection.execute("DROP TABLE thread_starts")
+            journal.connection.execute("PRAGMA user_version=7")
+        with EventJournal(self.path) as reopened:
+            self.assertEqual(reopened.connection.execute(
+                "PRAGMA user_version").fetchone()[0], 9)
+            self.assertEqual(reopened.get_session_thread("session"), "thread1")
+            self.assertEqual(reopened.connection.execute(
+                "SELECT COUNT(*) FROM thread_starts").fetchone()[0], 0)
+
+    def test_v8_migration_adds_workspace_registry_without_guessing_legacy_session(self):
+        with EventJournal(self.path) as journal:
+            journal.connection.execute("DROP TABLE session_workspaces")
+            journal.connection.execute("DROP TABLE workspaces")
+            journal.connection.execute("PRAGMA user_version=8")
+        with EventJournal(self.path) as reopened:
+            self.assertEqual(reopened.connection.execute(
+                "PRAGMA user_version").fetchone()[0], 9)
+            self.assertEqual(reopened.connection.execute(
+                "SELECT COUNT(*) FROM session_workspaces").fetchone()[0], 0)
+
+    def test_bound_session_rejects_other_thread_at_turn_confirmation(self):
+        with EventJournal(self.path) as journal:
+            journal.bind_session_thread("session", "expected-thread")
+            self.request(journal)
+            journal.claim_run_dispatch("device1", "request1", process_epoch=1,
+                                       recorded_at="2026-10-25T00:00:01Z")
+            with self.assertRaisesRegex(EventJournalError,
+                                        "session_thread_conflict"):
+                self.confirm(journal, thread_id="other-thread")
+            self.assertEqual(journal.get_run_operation(
+                "device1", "request1")["status"], "dispatching")
+            self.assertEqual(journal.snapshot("session")["active_run"]["status"],
+                             "starting")
+            self.assertEqual(self.confirm(
+                journal, thread_id="expected-thread")["status"], "confirmed")
+
+    def test_two_connections_cannot_bind_same_thread_to_different_sessions(self):
+        with EventJournal(self.path) as journal:
+            journal.create_session("other", {})
+
+        def bind(session_id):
+            with EventJournal(self.path) as journal:
+                try:
+                    journal.bind_session_thread(session_id, "same-thread")
+                    return "bound"
+                except EventJournalError as error:
+                    return str(error)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(bind, ("session", "other")))
+        self.assertEqual(sorted(results),
+                         ["bound", "session_thread_conflict"])
+
     def append(self, journal, n, *, payload=None):
         return journal.append("session", run_id="run", kind="message.delta",
                               payload=payload or {"part": n},
@@ -228,7 +330,7 @@ class EventJournalTests(unittest.TestCase):
         with EventJournal(legacy) as journal:
             self.assertEqual(journal.snapshot("old")["snapshot_seq"], 1)
             self.assertEqual(journal.page("old")["events"][0]["seq"], 1)
-            self.assertEqual(journal.connection.execute("PRAGMA user_version").fetchone()[0], 5)
+            self.assertEqual(journal.connection.execute("PRAGMA user_version").fetchone()[0], 9)
             journal.reserve_run("old", "run", expected_session_version=0,
                                 recorded_at="2026-10-25T00:00:00Z")
             self.assertEqual(journal.snapshot("old")["snapshot_seq"], 2)
@@ -316,7 +418,7 @@ class EventJournalTests(unittest.TestCase):
             journal.connection.execute("PRAGMA user_version=2")
         with EventJournal(legacy) as reopened:
             self.assertEqual(reopened.connection.execute(
-                "PRAGMA user_version").fetchone()[0], 5)
+                "PRAGMA user_version").fetchone()[0], 9)
             self.assertEqual(reopened.connection.execute(
                 "SELECT run_id FROM active_slot").fetchone()[0], "active")
             with self.assertRaisesRegex(EventJournalError, "active_run_exists"):
@@ -559,7 +661,7 @@ class EventJournalTests(unittest.TestCase):
             journal.connection.execute("PRAGMA user_version=3")
         with EventJournal(legacy) as reopened:
             self.assertEqual(reopened.connection.execute(
-                "PRAGMA user_version").fetchone()[0], 5)
+                "PRAGMA user_version").fetchone()[0], 9)
             self.assertEqual(reopened.get_run_operation("device1", "request1")["status"],
                              "accepted")
             self.assertIsNone(reopened.connection.execute(

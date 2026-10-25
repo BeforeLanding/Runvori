@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from runvori.cli import ROOT
+from runvori.infrastructure.approval_journal import JournalError
 from runvori.infrastructure.event_journal import EventJournalError
 from runvori.infrastructure.instance_lock import InstanceLockUnavailable, WindowsInstanceLock
 from runvori.infrastructure.locked_journal import LockedHostJournals
@@ -22,9 +23,15 @@ PEER = Path(__file__).with_name("locked_host_peer.py")
 @unittest.skipUnless(os.name == "nt", "Windows startup lock")
 class LockedHostJournalsTests(unittest.TestCase):
     @staticmethod
+    def _start_epoch(startup):
+        return startup.recover_host_after_isolation(
+            old_process_isolated=True, old_process_epoch=0,
+            expected_run_id=None, expected_run_version=None,
+            reason="host_restart", recorded_at="2026-10-25T00:00:00Z")["epoch"]
+
+    @staticmethod
     def _pending_approval(startup):
-        epoch = startup.approvals.start_epoch_after_isolation(
-            old_process_isolated=True)
+        epoch = LockedHostJournalsTests._start_epoch(startup)
         startup.events.create_session("session", {})
         startup.events.reserve_run_request(
             "session", "run", actor_id="device", request_id="run-request",
@@ -43,14 +50,149 @@ class LockedHostJournalsTests(unittest.TestCase):
             recorded_at="2026-10-25T00:00:03Z")
         return epoch
 
-    def test_empty_isolated_epoch_starts_without_events(self):
+    def test_shared_approval_probe_writes_cannot_bypass_host_events(self):
         with tempfile.TemporaryDirectory(dir=ROOT / ".dev") as temp:
             with LockedHostJournals(Path(temp)) as startup:
+                with self.assertRaisesRegex(EventJournalError, "host_not_recovered"):
+                    startup.record_approval_request(
+                        "session", "run", approval_id="approval", epoch=1,
+                        upstream_request_id="upstream", kind="command",
+                        recorded_at="2026-10-25T00:00:00Z")
+                epoch = self._start_epoch(startup)
+                calls = (
+                    lambda: startup.approvals.start_epoch_after_isolation(
+                        old_process_isolated=True),
+                    lambda: startup.approvals.record_request(
+                        approval_id="approval", epoch=epoch,
+                        upstream_request_id="upstream", kind="command"),
+                    lambda: startup.approvals.record_decision(
+                        approval_id="approval", request_id="request",
+                        decision="accept", expected_version=1),
+                    lambda: startup.approvals.claim_dispatch(
+                        approval_id="approval", epoch=epoch),
+                    lambda: startup.approvals.record_request_closed(
+                        approval_id="approval", epoch=epoch),
+                    lambda: startup.approvals.inspect_unknown_file(
+                        approval_id="approval", workspace=Path(temp),
+                        relative_path="file", expected_bytes=b"test"),
+                )
+                for call in calls:
+                    with self.assertRaisesRegex(
+                            JournalError, "shared_store_requires_host_transaction"):
+                        call()
+                self.assertEqual(startup.approvals.current_epoch(), epoch)
+                self.assertEqual(startup.events.connection.execute(
+                    "SELECT COUNT(*) FROM approvals").fetchone()[0], 0)
+
+    def test_host_recovery_starts_empty_epoch_only_after_isolation(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / ".dev") as temp:
+            with LockedHostJournals(Path(temp)) as startup:
+                args = {"old_process_epoch": 0, "expected_run_id": None,
+                        "expected_run_version": None, "reason": "host_restart",
+                        "recorded_at": "2026-10-25T00:00:00Z"}
+                with self.assertRaisesRegex(EventJournalError,
+                                            "old_process_not_isolated"):
+                    startup.recover_host_after_isolation(
+                        old_process_isolated=False, **args)
+                self.assertEqual(startup.approvals.current_epoch(), 0)
+                with self.assertRaisesRegex(EventJournalError, "host_not_recovered"):
+                    startup.events.create_session("session", {})
+                with self.assertRaisesRegex(EventJournalError, "host_not_recovered"):
+                    startup.events.bind_session_thread("session", "thread_demo")
+                self.assertEqual(startup.recover_host_after_isolation(
+                    old_process_isolated=True, **args),
+                    {"epoch": 1, "run_event": None})
                 startup.events.create_session("session", {})
-                self.assertEqual(startup.recover_approvals_after_isolation(
-                    old_process_isolated=True,
-                    recorded_at="2026-10-25T00:00:00Z"), 1)
                 self.assertEqual(startup.events.snapshot("session")["snapshot_seq"], 0)
+
+    def test_host_recovery_commits_approval_epoch_and_run_together(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / ".dev") as temp:
+            data_dir = Path(temp)
+            with LockedHostJournals(data_dir) as startup:
+                epoch = self._pending_approval(startup)
+                startup.record_approval_decision(
+                    "approval", actor_id="device", request_id="decision-request",
+                    expected_version=1, decision="allow_once",
+                    recorded_at="2026-10-25T00:00:04Z")
+                startup.claim_approval_dispatch(
+                    "device", "decision-request", epoch=epoch,
+                    recorded_at="2026-10-25T00:00:05Z")
+                with self.assertRaisesRegex(EventJournalError, "resource_changed"):
+                    startup.recover_host_after_isolation(
+                        old_process_isolated=True, old_process_epoch=epoch,
+                        expected_run_id="run", expected_run_version=2,
+                        reason="host_restart",
+                        recorded_at="2026-10-25T00:00:06Z")
+                self.assertEqual(startup.approvals.current_epoch(), epoch)
+                self.assertEqual(startup.events.snapshot("session")["snapshot_seq"], 9)
+                recovered = startup.recover_host_after_isolation(
+                    old_process_isolated=True, old_process_epoch=epoch,
+                    expected_run_id="run", expected_run_version=3,
+                    reason="host_restart", recorded_at="2026-10-25T00:00:06Z")
+                self.assertEqual(recovered["epoch"], epoch + 1)
+                self.assertEqual(recovered["run_event"]["type"], "run.interrupted")
+                self.assertEqual(startup.approvals.get("approval")["status"], "unknown")
+                self.assertEqual(startup.get_approval_operation(
+                    "device", "decision-request")["outcome"],
+                    "dispatch_unconfirmed")
+                snapshot = startup.events.snapshot("session")
+                self.assertIsNone(snapshot["active_run"])
+                self.assertEqual(snapshot["open_approval_ids"], ["approval"])
+                self.assertEqual(snapshot["snapshot_seq"], 12)
+                self.assertIsNone(startup.events.connection.execute(
+                    "SELECT run_id FROM active_slot").fetchone())
+            with LockedHostJournals(data_dir) as reopened:
+                self.assertEqual(reopened.approvals.current_epoch(), epoch + 1)
+                self.assertEqual(reopened.events.snapshot("session")["snapshot_seq"], 12)
+                with self.assertRaisesRegex(EventJournalError, "stale_epoch"):
+                    reopened.recover_host_after_isolation(
+                        old_process_isolated=True, old_process_epoch=epoch,
+                        expected_run_id="run", expected_run_version=3,
+                        reason="host_restart",
+                        recorded_at="2026-10-25T00:00:07Z")
+
+    def test_host_recovery_run_event_failure_rolls_back_approval_and_epoch(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / ".dev") as temp:
+            with LockedHostJournals(Path(temp)) as startup:
+                epoch = self._pending_approval(startup)
+                startup.record_approval_decision(
+                    "approval", actor_id="device", request_id="decision-request",
+                    expected_version=1, decision="deny",
+                    recorded_at="2026-10-25T00:00:04Z")
+                startup.claim_approval_dispatch(
+                    "device", "decision-request", epoch=epoch,
+                    recorded_at="2026-10-25T00:00:05Z")
+                db = startup.events.connection
+                db.execute("""
+                    CREATE TRIGGER block_run_recovery BEFORE INSERT ON events
+                    WHEN NEW.seq = 12
+                    BEGIN SELECT RAISE(ABORT, 'blocked'); END
+                """)
+                args = {"old_process_isolated": True,
+                        "old_process_epoch": epoch, "expected_run_id": "run",
+                        "expected_run_version": 3, "reason": "host_restart",
+                        "recorded_at": "2026-10-25T00:00:06Z"}
+                with self.assertRaises(sqlite3.IntegrityError):
+                    startup.recover_host_after_isolation(**args)
+                with self.assertRaisesRegex(EventJournalError, "host_not_recovered"):
+                    startup.claim_approval_dispatch(
+                        "device", "decision-request", epoch=epoch,
+                        recorded_at="2026-10-25T00:00:07Z")
+                with self.assertRaisesRegex(EventJournalError, "host_not_recovered"):
+                    startup.events.finish_run(
+                        "run", expected_version=3, terminal="interrupted",
+                        recorded_at="2026-10-25T00:00:07Z")
+                self.assertEqual(startup.approvals.current_epoch(), epoch)
+                self.assertEqual(startup.approvals.get("approval")["status"],
+                                 "dispatching")
+                self.assertEqual(startup.get_approval_operation(
+                    "device", "decision-request")["status"], "dispatching")
+                self.assertEqual(startup.events.snapshot("session")["snapshot_seq"], 9)
+                self.assertEqual(db.execute(
+                    "SELECT run_id FROM active_slot").fetchone()[0], "run")
+                db.execute("DROP TRIGGER block_run_recovery")
+                self.assertEqual(startup.recover_host_after_isolation(
+                    **args)["run_event"]["seq"], 12)
 
     def test_contended_lock_never_opens_either_database(self):
         with tempfile.TemporaryDirectory(dir=ROOT / ".dev") as temp:
@@ -74,6 +216,7 @@ class LockedHostJournalsTests(unittest.TestCase):
                     LockedHostJournals(data_dir).open()
             with LockedHostJournals(data_dir) as startup:
                 self.assertEqual(startup.approvals.current_epoch(), 0)
+                self._start_epoch(startup)
                 startup.events.create_session("session", {})
                 self.assertEqual(startup.events.snapshot("session")["snapshot_seq"], 0)
                 self.assertIs(startup.approvals.connection, startup.events.connection)
@@ -113,7 +256,7 @@ class LockedHostJournalsTests(unittest.TestCase):
                 owner.kill()
                 owner.wait(timeout=5)
                 with LockedHostJournals(data_dir) as reopened:
-                    self.assertEqual(reopened.approvals.current_epoch(), 0)
+                    self.assertEqual(reopened.approvals.current_epoch(), 1)
                     self.assertIs(reopened.approvals.connection,
                                   reopened.events.connection)
                     self.assertEqual(reopened.events.snapshot("session")["active_run"],
@@ -128,8 +271,7 @@ class LockedHostJournalsTests(unittest.TestCase):
     def test_approval_request_and_event_commit_together(self):
         with tempfile.TemporaryDirectory(dir=ROOT / ".dev") as temp:
             with LockedHostJournals(Path(temp)) as startup:
-                epoch = startup.approvals.start_epoch_after_isolation(
-                    old_process_isolated=True)
+                epoch = self._start_epoch(startup)
                 startup.events.create_session("session", {})
                 startup.events.reserve_run_request(
                     "session", "run", actor_id="device", request_id="request",
@@ -152,21 +294,24 @@ class LockedHostJournalsTests(unittest.TestCase):
                 self.assertEqual(snapshot["snapshot_seq"], event["seq"])
                 self.assertEqual(snapshot["open_approval_ids"], ["approval"])
                 self.assertEqual(snapshot["active_run"]["status"], "waiting_approval")
-                next_epoch = startup.approvals.start_epoch_after_isolation(
-                    old_process_isolated=True)
+                next_epoch = startup.recover_host_after_isolation(
+                    old_process_isolated=True, old_process_epoch=epoch,
+                    expected_run_id="run", expected_run_version=3,
+                    reason="host_restart",
+                    recorded_at="2026-10-25T00:00:04Z")["epoch"]
                 with self.assertRaisesRegex(EventJournalError, "stale_epoch"):
                     startup.record_approval_request(
-                        "session", "run", approval_id="late", epoch=next_epoch,
+                        "session", "run", approval_id="late", epoch=epoch,
                         upstream_request_id="late", kind="command",
                         recorded_at="2026-10-25T00:00:04Z")
+                self.assertEqual(next_epoch, epoch + 1)
                 self.assertEqual(startup.events.snapshot("session")["snapshot_seq"],
-                                 event["seq"])
+                                 event["seq"] + 2)
 
     def test_approval_event_failure_rolls_back_row_and_run_status(self):
         with tempfile.TemporaryDirectory(dir=ROOT / ".dev") as temp:
             with LockedHostJournals(Path(temp)) as startup:
-                epoch = startup.approvals.start_epoch_after_isolation(
-                    old_process_isolated=True)
+                epoch = self._start_epoch(startup)
                 startup.events.create_session("session", {})
                 startup.events.reserve_run_request(
                     "session", "run", actor_id="device", request_id="request",
@@ -220,14 +365,28 @@ class LockedHostJournalsTests(unittest.TestCase):
             with LockedHostJournals(data_dir) as reopened:
                 self.assertEqual(reopened.get_approval_operation(
                     "device", "decision-request"), accepted)
+                with self.assertRaisesRegex(EventJournalError, "host_not_recovered"):
+                    reopened.record_approval_decision(
+                        "approval", actor_id="device",
+                        request_id="decision-request", expected_version=1,
+                        decision="allow_once",
+                        recorded_at="2026-10-25T00:00:05Z")
+                reopened.recover_host_after_isolation(
+                    old_process_isolated=True, old_process_epoch=1,
+                    expected_run_id="run", expected_run_version=3,
+                    reason="host_restart", recorded_at="2026-10-25T00:00:05Z")
+                recovered = reopened.get_approval_operation(
+                    "device", "decision-request")
+                self.assertEqual(recovered["status"], "failed")
+                self.assertEqual(recovered["outcome"], "not_dispatched")
                 self.assertEqual(reopened.record_approval_decision(
                     "approval", actor_id="device", request_id="decision-request",
                     expected_version=1, decision="allow_once",
-                    recorded_at="2026-10-25T00:00:05Z"), accepted)
+                    recorded_at="2026-10-25T00:00:05Z"), recovered)
                 self.assertEqual(reopened.record_approval_decision(
                     "approval", actor_id="device", request_id="other-request",
                     expected_version=1, decision="allow_once",
-                    recorded_at="2026-10-25T00:00:05Z"), accepted)
+                    recorded_at="2026-10-25T00:00:05Z"), recovered)
                 for request_id, version, decision, error in (
                         ("decision-request", 1, "deny", "idempotency_conflict"),
                         ("decision-request", 2, "allow_once", "idempotency_conflict"),
@@ -242,11 +401,11 @@ class LockedHostJournalsTests(unittest.TestCase):
                     reopened.events.reserve_run_request(
                         "session", "other-run", actor_id="device",
                         request_id="decision-request",
-                        expected_session_version=5, input_text="continue",
+                        expected_session_version=8, input_text="continue",
                         recorded_at="2026-10-25T00:00:05Z")
                 with self.assertRaisesRegex(EventJournalError, "operation_not_found"):
                     reopened.get_approval_operation("other-device", "decision-request")
-                self.assertEqual(reopened.events.snapshot("session")["snapshot_seq"], 7)
+                self.assertEqual(reopened.events.snapshot("session")["snapshot_seq"], 10)
                 self.assertEqual(reopened.events.connection.execute(
                     "SELECT COUNT(*) FROM approval_operations").fetchone()[0], 1)
 
@@ -284,14 +443,17 @@ class LockedHostJournalsTests(unittest.TestCase):
                         "approval", actor_id="device", request_id="decision-request",
                         expected_version=2, decision="deny",
                         recorded_at="2026-10-25T00:00:04Z")
-                startup.approvals.start_epoch_after_isolation(
-                    old_process_isolated=True)
+                startup.recover_host_after_isolation(
+                    old_process_isolated=True, old_process_epoch=1,
+                    expected_run_id="run", expected_run_version=3,
+                    reason="host_restart",
+                    recorded_at="2026-10-25T00:00:05Z")
                 with self.assertRaisesRegex(EventJournalError, "approval_expired"):
                     startup.record_approval_decision(
                         "approval", actor_id="device", request_id="decision-request",
                         expected_version=1, decision="deny",
                         recorded_at="2026-10-25T00:00:05Z")
-                self.assertEqual(startup.events.snapshot("session")["snapshot_seq"], 5)
+                self.assertEqual(startup.events.snapshot("session")["snapshot_seq"], 7)
 
     def test_decision_request_key_is_scoped_to_actor(self):
         with tempfile.TemporaryDirectory(dir=ROOT / ".dev") as temp:
@@ -337,16 +499,19 @@ class LockedHostJournalsTests(unittest.TestCase):
             with LockedHostJournals(data_dir) as reopened:
                 self.assertEqual(reopened.get_approval_operation(
                     "device", "decision-request"), claim)
-                with self.assertRaisesRegex(EventJournalError, "dispatch_unavailable"):
+                with self.assertRaisesRegex(EventJournalError, "host_not_recovered"):
                     reopened.claim_approval_dispatch(
                         "device", "decision-request", epoch=epoch,
                         recorded_at="2026-10-25T00:00:07Z")
-                unknown = reopened.mark_approval_dispatch_unknown(
-                    "device", "decision-request", epoch=epoch,
-                    recorded_at="2026-10-25T00:00:08Z")
+                reopened.recover_host_after_isolation(
+                    old_process_isolated=True, old_process_epoch=epoch,
+                    expected_run_id="run", expected_run_version=3,
+                    reason="host_restart", recorded_at="2026-10-25T00:00:08Z")
+                unknown = reopened.get_approval_operation(
+                    "device", "decision-request")
                 self.assertEqual(unknown["outcome"], "dispatch_unconfirmed")
                 self.assertEqual(reopened.approvals.get("approval")["status"], "unknown")
-                self.assertEqual(reopened.events.snapshot("session")["snapshot_seq"], 11)
+                self.assertEqual(reopened.events.snapshot("session")["snapshot_seq"], 12)
                 with self.assertRaisesRegex(EventJournalError, "dispatch_unavailable"):
                     reopened.mark_approval_dispatch_unknown(
                         "device", "decision-request", epoch=epoch,
@@ -392,14 +557,17 @@ class LockedHostJournalsTests(unittest.TestCase):
                     "approval", actor_id="device", request_id="decision-request",
                     expected_version=1, decision="allow_once",
                     recorded_at="2026-10-25T00:00:04Z")
-                startup.approvals.start_epoch_after_isolation(
-                    old_process_isolated=True)
+                startup.recover_host_after_isolation(
+                    old_process_isolated=True, old_process_epoch=epoch,
+                    expected_run_id="run", expected_run_version=3,
+                    reason="host_restart",
+                    recorded_at="2026-10-25T00:00:05Z")
                 with self.assertRaisesRegex(EventJournalError, "dispatch_unavailable"):
                     startup.claim_approval_dispatch(
                         "device", "decision-request", epoch=epoch,
                         recorded_at="2026-10-25T00:00:05Z")
                 self.assertEqual(startup.get_approval_operation(
-                    "device", "decision-request")["status"], "accepted")
+                    "device", "decision-request")["status"], "failed")
 
     def test_unknown_event_failure_keeps_claimed_state(self):
         with tempfile.TemporaryDirectory(dir=ROOT / ".dev") as temp:
@@ -459,14 +627,18 @@ class LockedHostJournalsTests(unittest.TestCase):
                 before = startup.events.snapshot("session")
                 with self.assertRaisesRegex(EventJournalError,
                                             "old_process_not_isolated"):
-                    startup.recover_approvals_after_isolation(
-                        old_process_isolated=False,
+                    startup.recover_host_after_isolation(
+                        old_process_isolated=False, old_process_epoch=epoch,
+                        expected_run_id="run", expected_run_version=5,
+                        reason="host_restart",
                         recorded_at="2026-10-25T00:00:09Z")
                 self.assertEqual(startup.events.snapshot("session"), before)
                 self.assertEqual(startup.approvals.current_epoch(), epoch)
-                self.assertEqual(startup.recover_approvals_after_isolation(
-                    old_process_isolated=True,
-                    recorded_at="2026-10-25T00:00:09Z"), epoch + 1)
+                self.assertEqual(startup.recover_host_after_isolation(
+                    old_process_isolated=True, old_process_epoch=epoch,
+                    expected_run_id="run", expected_run_version=5,
+                    reason="host_restart",
+                    recorded_at="2026-10-25T00:00:09Z")["epoch"], epoch + 1)
                 self.assertEqual(startup.approvals.get("approval")["status"], "expired")
                 self.assertEqual(startup.approvals.get("second")["status"], "unknown")
                 self.assertEqual(startup.approvals.get("third")["status"], "expired")
@@ -476,18 +648,13 @@ class LockedHostJournalsTests(unittest.TestCase):
                     "device", "claimed")["outcome"], "dispatch_unconfirmed")
                 snapshot = startup.events.snapshot("session")
                 self.assertEqual(snapshot["open_approval_ids"], ["second"])
-                self.assertEqual(snapshot["snapshot_seq"], 18)
-                self.assertEqual(snapshot["session_version"], 14)
-                self.assertEqual(snapshot["active_run"]["status"], "waiting_approval")
+                self.assertEqual(snapshot["snapshot_seq"], 19)
+                self.assertEqual(snapshot["session_version"], 15)
+                self.assertIsNone(snapshot["active_run"])
                 with self.assertRaisesRegex(EventJournalError, "dispatch_unavailable"):
                     startup.claim_approval_dispatch(
                         "device", "unclaimed", epoch=epoch,
                         recorded_at="2026-10-25T00:00:10Z")
-                startup.events.recover_run_after_isolation(
-                    "run", expected_version=5, old_process_epoch=epoch,
-                    old_process_isolated=True, reason="host_restart",
-                    recorded_at="2026-10-25T00:00:10Z")
-                self.assertIsNone(startup.events.snapshot("session")["active_run"])
                 self.assertEqual(startup.events.snapshot("session")["open_approval_ids"],
                                  ["second"])
             with LockedHostJournals(data_dir) as reopened:
@@ -512,10 +679,12 @@ class LockedHostJournalsTests(unittest.TestCase):
                     WHEN NEW.seq = 11
                     BEGIN SELECT RAISE(ABORT, 'blocked'); END
                 """)
+                args = {"old_process_isolated": True,
+                        "old_process_epoch": epoch, "expected_run_id": "run",
+                        "expected_run_version": 4, "reason": "host_restart",
+                        "recorded_at": "2026-10-25T00:00:05Z"}
                 with self.assertRaises(sqlite3.IntegrityError):
-                    startup.recover_approvals_after_isolation(
-                        old_process_isolated=True,
-                        recorded_at="2026-10-25T00:00:05Z")
+                    startup.recover_host_after_isolation(**args)
                 self.assertEqual(startup.approvals.current_epoch(), epoch)
                 self.assertEqual(startup.approvals.get("approval")["status"],
                                  "decision_recorded")
@@ -524,9 +693,9 @@ class LockedHostJournalsTests(unittest.TestCase):
                     "device", "unclaimed")["status"], "accepted")
                 self.assertEqual(startup.events.snapshot("session")["snapshot_seq"], 8)
                 db.execute("DROP TRIGGER block_recovery_event")
-                self.assertEqual(startup.recover_approvals_after_isolation(
-                    old_process_isolated=True,
-                    recorded_at="2026-10-25T00:00:06Z"), epoch + 1)
+                args["recorded_at"] = "2026-10-25T00:00:06Z"
+                self.assertEqual(startup.recover_host_after_isolation(
+                    **args)["epoch"], epoch + 1)
 
     def test_request_closure_after_terminal_run_expires_pending(self):
         with tempfile.TemporaryDirectory(dir=ROOT / ".dev") as temp:
@@ -568,10 +737,18 @@ class LockedHostJournalsTests(unittest.TestCase):
                     "request_closed_before_dispatch")
                 self.assertEqual(startup.events.snapshot("session")["snapshot_seq"], 9)
             with LockedHostJournals(data_dir) as reopened:
+                with self.assertRaisesRegex(EventJournalError, "host_not_recovered"):
+                    reopened.record_approval_request_closed(
+                        "approval", epoch=epoch, upstream_request_id="upstream",
+                        recorded_at="2026-10-25T00:00:06Z")
+                reopened.recover_host_after_isolation(
+                    old_process_isolated=True, old_process_epoch=epoch,
+                    expected_run_id="run", expected_run_version=3,
+                    reason="host_restart", recorded_at="2026-10-25T00:00:06Z")
                 self.assertEqual(reopened.record_approval_request_closed(
                     "approval", epoch=epoch, upstream_request_id="upstream",
                     recorded_at="2026-10-25T00:00:06Z"), closed)
-                self.assertEqual(reopened.events.snapshot("session")["snapshot_seq"], 9)
+                self.assertEqual(reopened.events.snapshot("session")["snapshot_seq"], 10)
 
     def test_request_closure_confirms_end_without_claiming_effect(self):
         for mark_unknown in (False, True):

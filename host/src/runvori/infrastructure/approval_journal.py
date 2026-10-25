@@ -45,12 +45,16 @@ class ApprovalJournal:
                 file_snapshot TEXT CHECK (file_snapshot IN
                     ('absent', 'matches', 'different', 'unsafe_path')),
                 run_id TEXT,
+                request_digest BLOB,
                 UNIQUE (epoch, upstream_request_id)
             );
         """)
         if "run_id" not in {
                 row["name"] for row in self.connection.execute("PRAGMA table_info(approvals)")}:
             self.connection.execute("ALTER TABLE approvals ADD COLUMN run_id TEXT")
+        if "request_digest" not in {
+                row["name"] for row in self.connection.execute("PRAGMA table_info(approvals)")}:
+            self.connection.execute("ALTER TABLE approvals ADD COLUMN request_digest BLOB")
 
     def close(self) -> None:
         if self._owns_connection:
@@ -63,6 +67,8 @@ class ApprovalJournal:
         self.close()
 
     def _begin(self) -> None:
+        if not self._owns_connection:
+            raise JournalError("shared_store_requires_host_transaction")
         self.connection.execute("BEGIN IMMEDIATE")
 
     def _epoch(self) -> int:
@@ -193,6 +199,8 @@ class ApprovalJournal:
 
     def inspect_unknown_file(self, *, approval_id: str, workspace: Path,
                              relative_path: str, expected_bytes: bytes) -> dict:
+        if not self._owns_connection:
+            raise JournalError("shared_store_requires_host_transaction")
         if not isinstance(expected_bytes, bytes) or not expected_bytes:
             raise JournalError("invalid_expected_bytes")
         if self._row(approval_id)["status"] != "unknown":

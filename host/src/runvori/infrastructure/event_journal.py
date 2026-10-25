@@ -10,7 +10,7 @@ import json
 import hashlib
 import sqlite3
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 MAX_EVENT_BYTES = 64 * 1024
@@ -18,6 +18,7 @@ MAX_PAGE_BYTES = 256 * 1024
 MAX_PAGE_ITEMS = 100
 MAX_SEQ = 2**63 - 1
 MAX_INPUT_BYTES = 16 * 1024
+MAX_THREAD_ID_BYTES = 256
 # Leave room for the response envelope, list separators, and cursor fields.
 PAGE_EVENT_BUDGET = MAX_PAGE_BYTES - 2048
 
@@ -37,7 +38,9 @@ def _json_bytes(value: dict[str, Any]) -> bytes:
 
 
 class EventJournal:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, *,
+                 write_gate: Callable[[], bool] | None = None):
+        self._write_gate = write_gate
         self.connection = sqlite3.connect(path, timeout=5, isolation_level=None)
         self.connection.row_factory = sqlite3.Row
         try:
@@ -45,7 +48,7 @@ class EventJournal:
             self.connection.execute("PRAGMA journal_mode=WAL")
             self.connection.execute("PRAGMA synchronous=FULL")
             version = self.connection.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1, 2, 3, 4, 5):
+            if version not in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9):
                 raise EventJournalError("unsupported_schema")
             self.connection.executescript("""
                 CREATE TABLE IF NOT EXISTS sessions (
@@ -117,15 +120,47 @@ class EventJournal:
                     started_event_seq INTEGER NOT NULL,
                     UNIQUE(process_epoch, thread_id, turn_id)
                 );
+                CREATE TABLE IF NOT EXISTS session_threads (
+                    session_id TEXT PRIMARY KEY REFERENCES sessions(session_id)
+                        ON DELETE CASCADE,
+                    thread_id TEXT NOT NULL UNIQUE
+                );
+                CREATE TABLE IF NOT EXISTS thread_starts (
+                    session_id TEXT PRIMARY KEY REFERENCES sessions(session_id)
+                        ON DELETE CASCADE,
+                    actor_id TEXT NOT NULL,
+                    request_id TEXT NOT NULL,
+                    request_digest BLOB NOT NULL,
+                    status TEXT NOT NULL CHECK (status IN
+                        ('accepted', 'dispatching', 'confirmed', 'unknown')),
+                    dispatch_epoch INTEGER,
+                    thread_id TEXT,
+                    UNIQUE(actor_id, request_id)
+                );
+                CREATE TABLE IF NOT EXISTS workspaces (
+                    workspace_id TEXT PRIMARY KEY,
+                    root TEXT NOT NULL UNIQUE,
+                    sandbox TEXT NOT NULL CHECK (sandbox IN
+                        ('read-only', 'workspace-write'))
+                );
+                CREATE TABLE IF NOT EXISTS session_workspaces (
+                    session_id TEXT PRIMARY KEY REFERENCES sessions(session_id)
+                        ON DELETE CASCADE,
+                    workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id)
+                );
             """)
-            if version < 5:
-                self.connection.execute("PRAGMA user_version=5")
+            if version < 9:
+                self.connection.execute("PRAGMA user_version=9")
         except BaseException:
             self.connection.close()
             raise
 
     def close(self) -> None:
         self.connection.close()
+
+    def _require_write_ready(self) -> None:
+        if self._write_gate is not None and not self._write_gate():
+            raise EventJournalError("host_not_recovered")
 
     def __enter__(self) -> EventJournal:
         return self
@@ -134,6 +169,7 @@ class EventJournal:
         self.close()
 
     def create_session(self, session_id: str, snapshot: dict[str, Any]) -> None:
+        self._require_write_ready()
         if not session_id or not isinstance(session_id, str):
             raise EventJournalError("invalid_session_id")
         data = _json_bytes(snapshot)
@@ -143,9 +179,69 @@ class EventJournal:
             "INSERT INTO sessions(session_id, snapshot_json) VALUES (?, ?)",
             (session_id, data.decode("utf-8")))
 
+    def bind_session_thread(self, session_id: str, thread_id: str) -> str:
+        """Keep one immutable upstream thread identity per Host session."""
+        self._require_write_ready()
+        if (not isinstance(session_id, str) or not session_id
+                or not isinstance(thread_id, str) or not thread_id):
+            raise EventJournalError("invalid_session_thread")
+        try:
+            if len(thread_id.encode("utf-8")) > MAX_THREAD_ID_BYTES:
+                raise EventJournalError("invalid_session_thread")
+        except UnicodeError as error:
+            raise EventJournalError("invalid_session_thread") from error
+        self.connection.execute("BEGIN IMMEDIATE")
+        try:
+            if self.connection.execute(
+                    "SELECT 1 FROM sessions WHERE session_id=?",
+                    (session_id,)).fetchone() is None:
+                raise EventJournalError("session_not_found")
+            creation = self.connection.execute(
+                "SELECT status, thread_id FROM thread_starts WHERE session_id=?",
+                (session_id,)).fetchone()
+            if creation is not None and (creation["status"] != "confirmed"
+                                         or creation["thread_id"] != thread_id):
+                raise EventJournalError("session_thread_conflict")
+            prior = self.connection.execute(
+                "SELECT thread_id FROM session_threads WHERE session_id=?",
+                (session_id,)).fetchone()
+            if prior is not None:
+                if prior["thread_id"] != thread_id:
+                    raise EventJournalError("session_thread_conflict")
+            elif self.connection.execute(
+                    "SELECT 1 FROM session_threads WHERE thread_id=?",
+                    (thread_id,)).fetchone():
+                raise EventJournalError("session_thread_conflict")
+            else:
+                historic = self.connection.execute(
+                    "SELECT DISTINCT u.thread_id FROM upstream_turns AS u "
+                    "JOIN runs AS r ON r.run_id=u.run_id WHERE r.session_id=?",
+                    (session_id,)).fetchall()
+                if any(row["thread_id"] != thread_id for row in historic):
+                    raise EventJournalError("session_thread_conflict")
+                self.connection.execute(
+                    "INSERT INTO session_threads(session_id, thread_id) VALUES (?, ?)",
+                    (session_id, thread_id))
+            self.connection.execute("COMMIT")
+            return thread_id
+        except BaseException:
+            self.connection.execute("ROLLBACK")
+            raise
+
+    def get_session_thread(self, session_id: str) -> str:
+        if not isinstance(session_id, str) or not session_id:
+            raise EventJournalError("invalid_session_id")
+        row = self.connection.execute(
+            "SELECT thread_id FROM session_threads WHERE session_id=?",
+            (session_id,)).fetchone()
+        if row is None:
+            raise EventJournalError("session_thread_not_bound")
+        return row["thread_id"]
+
     def append(self, session_id: str, *, run_id: str | None, kind: str,
                payload: dict[str, Any], recorded_at: str,
                snapshot: dict[str, Any]) -> dict[str, Any]:
+        self._require_write_ready()
         if not session_id or not kind or not recorded_at:
             raise EventJournalError("invalid_event")
         if kind in {"run.created", "run.started", "run.completed", "run.failed",
@@ -192,6 +288,7 @@ class EventJournal:
     def reserve_run(self, session_id: str, run_id: str, *,
                     expected_session_version: int, recorded_at: str) -> dict[str, Any]:
         """Trusted local probe; product callers must use reserve_run_request."""
+        self._require_write_ready()
         if (not isinstance(run_id, str) or not run_id
                 or type(expected_session_version) is not int
                 or not 0 <= expected_session_version < MAX_SEQ or not recorded_at):
@@ -244,6 +341,7 @@ class EventJournal:
                             request_id: str, expected_session_version: int,
                             input_text: str, recorded_at: str) -> dict[str, Any]:
         """Accept a run request once; a lost response replays its original record."""
+        self._require_write_ready()
         if (not isinstance(actor_id, str) or not actor_id
                 or not isinstance(request_id, str) or not request_id
                 or not isinstance(session_id, str) or not session_id
@@ -332,6 +430,7 @@ class EventJournal:
                                from_status: str, to_status: str,
                                recorded_at: str,
                                process_epoch: int | None = None) -> dict[str, Any]:
+        self._require_write_ready()
         if (not isinstance(actor_id, str) or not actor_id
                 or not isinstance(request_id, str) or not request_id
                 or not isinstance(recorded_at, str) or not recorded_at
@@ -392,6 +491,7 @@ class EventJournal:
                             process_epoch: int, thread_id: str, turn_id: str,
                             recorded_at: str) -> dict[str, Any]:
         """Bind a recognized upstream turn to its claimed run exactly once."""
+        self._require_write_ready()
         if (not isinstance(actor_id, str) or not actor_id
                 or not isinstance(request_id, str) or not request_id
                 or type(process_epoch) is not int or process_epoch < 1
@@ -413,6 +513,11 @@ class EventJournal:
                 raise EventJournalError("operation_not_found")
             if row["dispatch_epoch"] != process_epoch:
                 raise EventJournalError("stale_epoch")
+            session_thread = self.connection.execute(
+                "SELECT thread_id FROM session_threads WHERE session_id=?",
+                (row["session_id"],)).fetchone()
+            if session_thread is not None and session_thread["thread_id"] != thread_id:
+                raise EventJournalError("session_thread_conflict")
             binding = self.connection.execute(
                 "SELECT process_epoch, thread_id, turn_id FROM upstream_turns "
                 "WHERE run_id=?", (row["run_id"],)).fetchone()
@@ -481,64 +586,72 @@ class EventJournal:
     def finish_run(self, run_id: str, *, expected_version: int,
                    terminal: str, recorded_at: str) -> dict[str, Any]:
         """Record a terminal state, releasing only this run's slot."""
+        self._require_write_ready()
         if (terminal not in {"completed", "failed", "interrupted"}
                 or type(expected_version) is not int or expected_version < 1
                 or not recorded_at):
             raise EventJournalError("invalid_terminal")
         self.connection.execute("BEGIN IMMEDIATE")
         try:
-            row = self.connection.execute(
-                "SELECT run_id, session_id, status, version, terminal_event_seq "
-                "FROM runs WHERE run_id=?", (run_id,)).fetchone()
-            if row is None:
-                raise EventJournalError("run_not_found")
-            if row["status"] in {"completed", "failed", "interrupted"}:
-                if row["status"] != terminal:
-                    raise EventJournalError("terminal_conflict")
-                event = self.connection.execute(
-                    "SELECT event_json FROM events WHERE session_id=? AND seq=?",
-                    (row["session_id"], row["terminal_event_seq"])).fetchone()
-                self.connection.execute("COMMIT")
-                return json.loads(event["event_json"])
-            if row["version"] != expected_version:
-                raise EventJournalError("resource_changed")
-            slot = self.connection.execute(
-                "SELECT run_id FROM active_slot WHERE singleton=1").fetchone()
-            if slot is None or slot["run_id"] != run_id:
-                raise EventJournalError("active_slot_mismatch")
-            session = self.connection.execute(
-                "SELECT session_version, snapshot_json FROM sessions WHERE session_id=?",
-                (row["session_id"],)).fetchone()
-            if session["session_version"] >= MAX_SEQ or row["version"] >= MAX_SEQ:
-                raise EventJournalError("version_exhausted")
-            snapshot = json.loads(session["snapshot_json"])
-            snapshot["active_run"] = None
-            snapshot["session_version"] = session["session_version"] + 1
-            snapshot_bytes = _json_bytes(snapshot)
-            if len(snapshot_bytes) > MAX_EVENT_BYTES:
-                raise EventJournalError("snapshot_too_large")
-            event = self._append_in_tx(row["session_id"], run_id, f"run.{terminal}",
-                                       {"run_id": run_id, "status": terminal},
-                                       recorded_at, snapshot_bytes)
-            self.connection.execute(
-                "UPDATE runs SET status=?, version=version+1, terminal_event_seq=? "
-                "WHERE run_id=?", (terminal, event["seq"], run_id))
-            self.connection.execute(
-                "DELETE FROM active_slot WHERE singleton=1 AND run_id=?", (run_id,))
-            self.connection.execute(
-                "UPDATE sessions SET session_version=session_version+1 WHERE session_id=?",
-                (row["session_id"],))
+            event = self._finish_run_in_tx(
+                run_id, expected_version=expected_version,
+                terminal=terminal, recorded_at=recorded_at)
             self.connection.execute("COMMIT")
             return event
         except BaseException:
             self.connection.execute("ROLLBACK")
             raise
 
+    def _finish_run_in_tx(self, run_id: str, *, expected_version: int,
+                          terminal: str, recorded_at: str) -> dict[str, Any]:
+        row = self.connection.execute(
+            "SELECT run_id, session_id, status, version, terminal_event_seq "
+            "FROM runs WHERE run_id=?", (run_id,)).fetchone()
+        if row is None:
+            raise EventJournalError("run_not_found")
+        if row["status"] in {"completed", "failed", "interrupted"}:
+            if row["status"] != terminal:
+                raise EventJournalError("terminal_conflict")
+            event = self.connection.execute(
+                "SELECT event_json FROM events WHERE session_id=? AND seq=?",
+                (row["session_id"], row["terminal_event_seq"])).fetchone()
+            return json.loads(event["event_json"])
+        if row["version"] != expected_version:
+            raise EventJournalError("resource_changed")
+        slot = self.connection.execute(
+            "SELECT run_id FROM active_slot WHERE singleton=1").fetchone()
+        if slot is None or slot["run_id"] != run_id:
+            raise EventJournalError("active_slot_mismatch")
+        session = self.connection.execute(
+            "SELECT session_version, snapshot_json FROM sessions WHERE session_id=?",
+            (row["session_id"],)).fetchone()
+        if session["session_version"] >= MAX_SEQ or row["version"] >= MAX_SEQ:
+            raise EventJournalError("version_exhausted")
+        snapshot = json.loads(session["snapshot_json"])
+        snapshot["active_run"] = None
+        snapshot["session_version"] = session["session_version"] + 1
+        snapshot_bytes = _json_bytes(snapshot)
+        if len(snapshot_bytes) > MAX_EVENT_BYTES:
+            raise EventJournalError("snapshot_too_large")
+        event = self._append_in_tx(row["session_id"], run_id, f"run.{terminal}",
+                                   {"run_id": run_id, "status": terminal},
+                                   recorded_at, snapshot_bytes)
+        self.connection.execute(
+            "UPDATE runs SET status=?, version=version+1, terminal_event_seq=? "
+            "WHERE run_id=?", (terminal, event["seq"], run_id))
+        self.connection.execute(
+            "DELETE FROM active_slot WHERE singleton=1 AND run_id=?", (run_id,))
+        self.connection.execute(
+            "UPDATE sessions SET session_version=session_version+1 WHERE session_id=?",
+            (row["session_id"],))
+        return event
+
     def recover_run_after_isolation(
             self, run_id: str, *, expected_version: int,
             old_process_epoch: int, old_process_isolated: bool,
             reason: str, recorded_at: str) -> dict[str, Any]:
         """Interrupt one old run only after the caller isolated its process."""
+        self._require_write_ready()
         if not old_process_isolated:
             raise EventJournalError("old_process_not_isolated")
         if (not isinstance(run_id, str) or not run_id
@@ -549,88 +662,97 @@ class EventJournal:
             raise EventJournalError("invalid_recovery")
         self.connection.execute("BEGIN IMMEDIATE")
         try:
-            row = self.connection.execute(
-                "SELECT r.session_id, r.status, r.version, r.terminal_event_seq, "
-                "s.session_version, s.snapshot_json FROM runs AS r "
-                "JOIN sessions AS s ON s.session_id=r.session_id WHERE r.run_id=?",
-                (run_id,)).fetchone()
-            if row is None:
-                raise EventJournalError("run_not_found")
-            if row["status"] in {"completed", "failed", "interrupted"}:
-                if row["status"] != "interrupted":
-                    raise EventJournalError("recovery_unavailable")
-                existing = self.connection.execute(
-                    "SELECT event_json FROM events WHERE session_id=? AND seq=?",
-                    (row["session_id"], row["terminal_event_seq"])).fetchone()
-                event = json.loads(existing["event_json"])
-                if event["payload"].get("reason") != reason:
-                    raise EventJournalError("recovery_conflict")
-                self.connection.execute("COMMIT")
-                return event
-            if row["version"] != expected_version:
-                raise EventJournalError("resource_changed")
-            slot = self.connection.execute(
-                "SELECT run_id FROM active_slot WHERE singleton=1").fetchone()
-            if slot is None or slot["run_id"] != run_id:
-                raise EventJournalError("active_slot_mismatch")
-            operation = self.connection.execute(
-                "SELECT actor_id, request_id, status, dispatch_epoch "
-                "FROM run_operations WHERE run_id=?", (run_id,)).fetchone()
-            if (operation is not None and operation["dispatch_epoch"] is not None
-                    and operation["dispatch_epoch"] != old_process_epoch):
-                raise EventJournalError("stale_epoch")
-            operation_status = None
-            operation_outcome = None
-            if operation is not None:
-                if operation["status"] == "accepted":
-                    operation_status = "failed"
-                    operation_outcome = "not_dispatched"
-                elif operation["status"] == "dispatching":
-                    operation_status = "unknown"
-                    operation_outcome = "dispatch_unconfirmed"
-            needed_versions = 2 if operation_status is not None else 1
-            if (row["session_version"] > MAX_SEQ - needed_versions
-                    or row["version"] >= MAX_SEQ):
-                raise EventJournalError("version_exhausted")
-            snapshot = json.loads(row["snapshot_json"])
-            if operation_status is not None:
-                interim = dict(snapshot)
-                interim["session_version"] = row["session_version"] + 1
-                interim_bytes = _json_bytes(interim)
-                if len(interim_bytes) > MAX_EVENT_BYTES:
-                    raise EventJournalError("snapshot_too_large")
-                self.connection.execute(
-                    "UPDATE run_operations SET status=?, outcome=? "
-                    "WHERE actor_id=? AND request_id=?",
-                    (operation_status, operation_outcome,
-                     operation["actor_id"], operation["request_id"]))
-                self._append_in_tx(
-                    row["session_id"], run_id, "operation.updated",
-                    {"request_id": operation["request_id"], "run_id": run_id,
-                     "status": operation_status, "outcome": operation_outcome},
-                    recorded_at, interim_bytes)
-            snapshot["active_run"] = None
-            snapshot["session_version"] = row["session_version"] + needed_versions
-            snapshot_bytes = _json_bytes(snapshot)
-            if len(snapshot_bytes) > MAX_EVENT_BYTES:
-                raise EventJournalError("snapshot_too_large")
-            event = self._append_in_tx(
-                row["session_id"], run_id, "run.interrupted",
-                {"run_id": run_id, "status": "interrupted", "reason": reason},
-                recorded_at, snapshot_bytes)
-            self.connection.execute(
-                "UPDATE runs SET status='interrupted', version=version+1, "
-                "terminal_event_seq=? WHERE run_id=?", (event["seq"], run_id))
-            self.connection.execute(
-                "DELETE FROM active_slot WHERE singleton=1 AND run_id=?", (run_id,))
-            self.connection.execute(
-                "UPDATE sessions SET session_version=session_version+? "
-                "WHERE session_id=?", (needed_versions, row["session_id"]))
+            event = self._recover_run_after_isolation_in_tx(
+                run_id, expected_version=expected_version,
+                old_process_epoch=old_process_epoch, reason=reason,
+                recorded_at=recorded_at)
             self.connection.execute("COMMIT")
             return event
         except BaseException:
             self.connection.execute("ROLLBACK")
             raise
+
+    def _recover_run_after_isolation_in_tx(
+            self, run_id: str, *, expected_version: int,
+            old_process_epoch: int, reason: str,
+            recorded_at: str) -> dict[str, Any]:
+        row = self.connection.execute(
+            "SELECT r.session_id, r.status, r.version, r.terminal_event_seq, "
+            "s.session_version, s.snapshot_json FROM runs AS r "
+            "JOIN sessions AS s ON s.session_id=r.session_id WHERE r.run_id=?",
+            (run_id,)).fetchone()
+        if row is None:
+            raise EventJournalError("run_not_found")
+        if row["status"] in {"completed", "failed", "interrupted"}:
+            if row["status"] != "interrupted":
+                raise EventJournalError("recovery_unavailable")
+            existing = self.connection.execute(
+                "SELECT event_json FROM events WHERE session_id=? AND seq=?",
+                (row["session_id"], row["terminal_event_seq"])).fetchone()
+            event = json.loads(existing["event_json"])
+            if event["payload"].get("reason") != reason:
+                raise EventJournalError("recovery_conflict")
+            return event
+        if row["version"] != expected_version:
+            raise EventJournalError("resource_changed")
+        slot = self.connection.execute(
+            "SELECT run_id FROM active_slot WHERE singleton=1").fetchone()
+        if slot is None or slot["run_id"] != run_id:
+            raise EventJournalError("active_slot_mismatch")
+        operation = self.connection.execute(
+            "SELECT actor_id, request_id, status, dispatch_epoch "
+            "FROM run_operations WHERE run_id=?", (run_id,)).fetchone()
+        if (operation is not None and operation["dispatch_epoch"] is not None
+                and operation["dispatch_epoch"] != old_process_epoch):
+            raise EventJournalError("stale_epoch")
+        operation_status = None
+        operation_outcome = None
+        if operation is not None:
+            if operation["status"] == "accepted":
+                operation_status = "failed"
+                operation_outcome = "not_dispatched"
+            elif operation["status"] == "dispatching":
+                operation_status = "unknown"
+                operation_outcome = "dispatch_unconfirmed"
+        needed_versions = 2 if operation_status is not None else 1
+        if (row["session_version"] > MAX_SEQ - needed_versions
+                or row["version"] >= MAX_SEQ):
+            raise EventJournalError("version_exhausted")
+        snapshot = json.loads(row["snapshot_json"])
+        if operation_status is not None:
+            interim = dict(snapshot)
+            interim["session_version"] = row["session_version"] + 1
+            interim_bytes = _json_bytes(interim)
+            if len(interim_bytes) > MAX_EVENT_BYTES:
+                raise EventJournalError("snapshot_too_large")
+            self.connection.execute(
+                "UPDATE run_operations SET status=?, outcome=? "
+                "WHERE actor_id=? AND request_id=?",
+                (operation_status, operation_outcome,
+                 operation["actor_id"], operation["request_id"]))
+            self._append_in_tx(
+                row["session_id"], run_id, "operation.updated",
+                {"request_id": operation["request_id"], "run_id": run_id,
+                 "status": operation_status, "outcome": operation_outcome},
+                recorded_at, interim_bytes)
+        snapshot["active_run"] = None
+        snapshot["session_version"] = row["session_version"] + needed_versions
+        snapshot_bytes = _json_bytes(snapshot)
+        if len(snapshot_bytes) > MAX_EVENT_BYTES:
+            raise EventJournalError("snapshot_too_large")
+        event = self._append_in_tx(
+            row["session_id"], run_id, "run.interrupted",
+            {"run_id": run_id, "status": "interrupted", "reason": reason},
+            recorded_at, snapshot_bytes)
+        self.connection.execute(
+            "UPDATE runs SET status='interrupted', version=version+1, "
+            "terminal_event_seq=? WHERE run_id=?", (event["seq"], run_id))
+        self.connection.execute(
+            "DELETE FROM active_slot WHERE singleton=1 AND run_id=?", (run_id,))
+        self.connection.execute(
+            "UPDATE sessions SET session_version=session_version+? "
+            "WHERE session_id=?", (needed_versions, row["session_id"]))
+        return event
 
     def snapshot(self, session_id: str) -> dict[str, Any]:
         self.connection.execute("BEGIN")

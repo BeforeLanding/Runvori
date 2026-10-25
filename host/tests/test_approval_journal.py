@@ -1,3 +1,4 @@
+import sqlite3
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -8,6 +9,32 @@ from runvori.infrastructure.approval_journal import ApprovalJournal, JournalErro
 
 
 class ApprovalJournalTests(unittest.TestCase):
+    def test_adds_request_digest_to_existing_approval_database(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / ".dev") as temp:
+            database = Path(temp) / "journal.db"
+            connection = sqlite3.connect(database)
+            try:
+                connection.execute("""
+                    CREATE TABLE approvals (
+                        approval_id TEXT PRIMARY KEY, epoch INTEGER NOT NULL,
+                        upstream_request_id TEXT NOT NULL, kind TEXT NOT NULL,
+                        status TEXT NOT NULL, decision TEXT,
+                        decision_request_id TEXT UNIQUE, version INTEGER NOT NULL,
+                        resolution_kind TEXT, file_snapshot TEXT, run_id TEXT,
+                        UNIQUE (epoch, upstream_request_id)
+                    )
+                """)
+                connection.execute(
+                    "INSERT INTO approvals (approval_id, epoch, upstream_request_id, "
+                    "kind, status, version, run_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    ("old", 1, "int:23", "command", "pending", 1, "run"))
+                connection.commit()
+            finally:
+                connection.close()
+            with ApprovalJournal(database) as journal:
+                self.assertIsNone(journal.get("old")["request_digest"])
+                self.assertEqual(journal.get("old")["run_id"], "run")
+
     def test_reopen_expires_unclaimed_and_never_reclaims_dispatched_decision(self):
         with tempfile.TemporaryDirectory(dir=ROOT / ".dev") as temp:
             database = Path(temp) / "journal.db"
