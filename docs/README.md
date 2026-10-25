@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-本仓库已进入 M0 技术验证阶段。已建立 Python 探针、schema 基线、故障测试及可构建的 Android 占位工程；Host 产品服务与 Android 业务功能尚未实现。以下 PRD/架构文档仍主要描述待实现目标，实际完成项以 [progress.md](../progress.md) 和 [DEV-001](evidence/DEV-001.md)、[DEV-002](evidence/DEV-002.md)、[DEV-003](evidence/DEV-003.md)、[DEV-004](evidence/DEV-004-toolchain.md) 验证证据为准。
+本仓库已进入 M0 技术验证阶段。已建立 Python 探针、schema 基线、故障测试、事件/活动槽/请求幂等/派发/回合确认/恢复存储切片、单库审批请求/决定/派发领取/隔离后恢复/请求结束事务切片及可构建的 Android 占位工程；Host 产品服务与 Android 业务功能尚未实现。以下 PRD/架构文档仍主要描述待实现目标，实际完成项以 [progress.md](../progress.md) 和 [DEV-001](evidence/DEV-001.md)、[DEV-002](evidence/DEV-002.md)、[DEV-003](evidence/DEV-003.md)、[DEV-004](evidence/DEV-004-toolchain.md)、[DEV-005 事件](evidence/DEV-005-event-journal.md)、[DEV-005 活动槽](evidence/DEV-005-active-slot.md)、[DEV-005 幂等](evidence/DEV-005-run-idempotency.md)、[DEV-005 派发](evidence/DEV-005-run-dispatch.md)、[DEV-005 确认](evidence/DEV-005-turn-confirmation.md)、[DEV-005 恢复](evidence/DEV-005-run-recovery.md)、[DEV-005 启动](evidence/DEV-005-locked-startup.md)、[DEV-005 单库](evidence/DEV-005-unified-store.md)、[DEV-005 审批决定](evidence/DEV-005-approval-decision.md)、[DEV-005 审批领取](evidence/DEV-005-approval-dispatch.md)、[DEV-005 审批恢复](evidence/DEV-005-approval-epoch-recovery.md)、[DEV-005 请求结束](evidence/DEV-005-approval-request-closed.md) 验证证据为准。
 
 ## 阅读顺序
 

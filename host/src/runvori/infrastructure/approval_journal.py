@@ -13,11 +13,17 @@ class JournalError(Exception):
 
 
 class ApprovalJournal:
-    def __init__(self, path: Path):
-        self.connection = sqlite3.connect(path, timeout=5, isolation_level=None)
+    def __init__(self, path: Path | None = None, *,
+                 connection: sqlite3.Connection | None = None):
+        if (path is None) == (connection is None):
+            raise ValueError("one_database_source_required")
+        self._owns_connection = connection is None
+        self.connection = (sqlite3.connect(path, timeout=5, isolation_level=None)
+                           if connection is None else connection)
         self.connection.row_factory = sqlite3.Row
-        self.connection.execute("PRAGMA journal_mode=WAL")
-        self.connection.execute("PRAGMA synchronous=FULL")
+        if self._owns_connection:
+            self.connection.execute("PRAGMA journal_mode=WAL")
+            self.connection.execute("PRAGMA synchronous=FULL")
         self.connection.executescript("""
             CREATE TABLE IF NOT EXISTS journal_meta (
                 singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -38,12 +44,17 @@ class ApprovalJournal:
                 resolution_kind TEXT,
                 file_snapshot TEXT CHECK (file_snapshot IN
                     ('absent', 'matches', 'different', 'unsafe_path')),
+                run_id TEXT,
                 UNIQUE (epoch, upstream_request_id)
             );
         """)
+        if "run_id" not in {
+                row["name"] for row in self.connection.execute("PRAGMA table_info(approvals)")}:
+            self.connection.execute("ALTER TABLE approvals ADD COLUMN run_id TEXT")
 
     def close(self) -> None:
-        self.connection.close()
+        if self._owns_connection:
+            self.connection.close()
 
     def __enter__(self):
         return self

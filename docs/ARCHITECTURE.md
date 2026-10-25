@@ -1,6 +1,6 @@
 # 首版架构设计
 
-日期：2026-10-23。状态：产品架构设计基线；仅 M0 stdio 探针已有实现，业务模块与性能尚未验证，实际进度见 [progress.md](../progress.md)。产品范围见 [PRD](PRD.md)，字段和状态以 [PROTOCOL.md](PROTOCOL.md) 为准。
+日期：2026-10-23。状态：产品架构设计基线；M0 探针与独立存储切片已有实现，业务模块与性能尚未验证，实际进度见 [progress.md](../progress.md)。产品范围见 [PRD](PRD.md)，字段和状态以 [PROTOCOL.md](PROTOCOL.md) 为准。
 
 ## 1. 系统边界
 
@@ -26,12 +26,12 @@ Android 负责视图、缓存、同步、阅读位置和受限操作。Host 负�
 
 首版使用单 Host 进程、单 API worker、一个受管 app-server，以及一个 SQLite 数据库。启动时获取本机单实例锁；没有可靠获得锁就拒绝启动。不得用多个 FastAPI worker 绕过内存进程所有权和活动槽约束。
 
-完整模块规划如下；当前有 `codex` 探针、CLI 和独立 SQLite 审批派发验证切片，其余业务模块待 M0 退出后按 M1 建立：
+完整模块规划如下；当前有 `codex` 探针、CLI 及独立 SQLite 审批、事件和配对验证切片，其余业务模块待 M0 退出后按 M1 建立。当前单库启动切片已使审批请求、决定、派发领取、隔离后 epoch 恢复、请求结束、操作、事件和快照分别在对应事务中提交；真实上游发送/通知映射、配对与完整 Host 生命周期尚未纳入同一产品存储路径。旧双库探针数据不自动迁移。
 
 - `host/src/runvori/api/`：HTTPS API、认证、请求校验、错误映射。
 - `host/src/runvori/application/`：启动/中断/审批/同步用例与操作幂等。
 - `host/src/runvori/domain/`：状态机、活动槽、审批和验证规则，不依赖 FastAPI。
-- `host/src/runvori/infrastructure/`：SQLite、文件、TLS/凭据存储和进程管理。当前有审批派发、一次性配对的独立 SQLite 切片，Windows 单实例锁及先锁后开审批记录的最小启动切片；尚未接入业务服务、事件事务或进程所有权核对。
+- `host/src/runvori/infrastructure/`：SQLite、文件、TLS/凭据存储和进程管理。当前有审批派发、一次性配对、事件/回合/操作的独立 SQLite 切片，Windows 单实例锁及共享连接的审批请求/决定/领取/隔离后恢复/请求结束事务切片；尚未接入业务服务、完整审批状态或进程所有权核对。
 - `host/src/runvori/codex/`：初始化、RPC 路由、schema 校验及上游事件映射。
 - `host/tests/`：领域、数据库事务、API、故障注入和适配器夹具测试。
 

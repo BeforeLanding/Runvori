@@ -153,6 +153,8 @@ stateDiagram-v2
 
 `pending → decision_recorded → dispatching → resolved` 是正常流程；尚未确认的状态都可能进入 expired 或 unknown，且必须保留已记录的决定。unknown 只有取得证据后才转 resolved/expired，不回到 pending 自动重发。上游“请求已清理”不能证明本次批准生效，原因必须分别保存。
 
+匹配 epoch、上游请求标识与已绑定回合的“请求已结束”证据使 `pending/decision_recorded` 审批失效，使 `dispatching/unknown` 审批变为 `resolved`。未派发操作记 `failed/request_closed_before_dispatch`；已领取操作可记 `confirmed/request_closed`，其中 `request_closed` 只确认请求结束，不证明允许决定被采用、工具副作用发生或命令成功。重复同一关闭证据不追加事件；不同请求身份不能复用该证据。
+
 操作状态为 `accepted / dispatching / confirmed / failed / unknown`。`confirmed` 对新回合表示已识别上游 turn，对中断表示终态已确认，对审批表示请求处理证据已确认；每个响应包含具体 `outcome`，不能把通用 confirmed 渲染为“测试通过”。
 
 `request_id` 的幂等记录随会话保留。重复 key 同请求返回已有状态；同 key 不同请求返回 `409 idempotency_conflict`。已受理操作跨 HTTP 响应丢失仍可查询；数据库清空/设备重新配对后，旧 key 不属于新身份，客户端不得跨身份自动重发。
