@@ -23,6 +23,45 @@ from runvori.infrastructure.locked_journal import LockedHostJournals
 PEER = Path(__file__).with_name("fake_app_server.py")
 
 
+class MailboxShutdownTests(unittest.TestCase):
+    def test_close_releases_waiters_and_refuses_new_work(self):
+        mailbox = HostCommandMailbox()
+        outcomes = {}
+
+        def read():
+            try:
+                mailbox.wait_session_events(
+                    session_id="session", wait_ms=25000)
+            except CommandMailboxError as error:
+                outcomes["read"] = str(error)
+
+        def write():
+            try:
+                mailbox.start_run(
+                    session_id="session", actor_id="device",
+                    request_id="request", expected_session_version=0,
+                    input_text="go")
+            except CommandMailboxError as error:
+                outcomes["write"] = str(error)
+
+        readers = [threading.Thread(target=read), threading.Thread(target=write)]
+        for worker in readers:
+            worker.start()
+        deadline = time.monotonic() + 1
+        while mailbox._items.qsize() != 2 and time.monotonic() < deadline:
+            time.sleep(0.005)
+        self.assertEqual(mailbox._items.qsize(), 2)
+        mailbox.close()
+        mailbox.close()
+        for worker in readers:
+            worker.join(timeout=1)
+            self.assertFalse(worker.is_alive())
+        self.assertEqual(outcomes, {
+            "read": "host_stopped", "write": "command_result_unknown"})
+        with self.assertRaisesRegex(CommandMailboxError, "host_stopped"):
+            mailbox.get_session_snapshot(session_id="session")
+
+
 @unittest.skipUnless(os.name == "nt", "Windows locked Host integration")
 class CommandMailboxTests(unittest.TestCase):
     @staticmethod
@@ -180,6 +219,8 @@ class CommandMailboxTests(unittest.TestCase):
                         mailbox, startup, call, runs=runs,
                         interrupts=interrupts)
 
+                self.assertEqual(read(lambda: mailbox.get_host_identity()),
+                                 {"host_id": startup.events.get_host_id()})
                 snapshot = read(lambda: mailbox.get_session_snapshot(
                     session_id="session"))
                 self.assertEqual(snapshot["snapshot_seq"], 1)
@@ -396,6 +437,8 @@ class CommandMailboxTests(unittest.TestCase):
                 self.assertFalse(worker.is_alive())
                 self.assertEqual(result["counts"]["command_served"], 1)
                 self.assertEqual(outcome["operation"]["resource_id"], "run")
+                with self.assertRaisesRegex(CommandMailboxError, "host_stopped"):
+                    mailbox.get_session_snapshot(session_id="session")
 
 
 if __name__ == "__main__":

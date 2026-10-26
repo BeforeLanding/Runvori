@@ -373,7 +373,7 @@ class InterruptJournalTests(unittest.TestCase):
                 startup.events.connection.execute("PRAGMA user_version=9")
             with LockedHostJournals(folder) as reopened:
                 self.assertEqual(reopened.events.connection.execute(
-                    "PRAGMA user_version").fetchone()[0], 10)
+                    "PRAGMA user_version").fetchone()[0], 11)
                 self.assertEqual(reopened.events.connection.execute(
                     "SELECT status FROM runs WHERE run_id='run'"
                 ).fetchone()[0], "running")

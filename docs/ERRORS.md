@@ -2,6 +2,27 @@
 
 此处保存已发生的错误。规则唯一来源为 [AGENTS.md](../AGENTS.md)，进度见 [progress.md](../progress.md)。禁止粘贴未脱敏栈、个人目录、令牌或真实会话。
 
+## ERR-DEV-005：重开夹具使用过时代次
+
+- 日期/阶段：2026-10-26，DEV-005 Host 设备访问组合。
+- 触发：新增关闭后重开同一对象的测试，第二次统一恢复返回 `stale_epoch`。
+- 根因：测试辅助函数把旧进程代次固定为 0，首次恢复已经将其推进。
+- 修复与回归：每次从当前审批库读取代次后恢复；4 项定向测试通过，随后完整检查通过。
+
+## ERR-DEV-005：迁移测试未关闭临时 SQLite 连接
+
+- 日期/阶段：2026-10-26，DEV-005 Host 身份持久化。
+- 触发：首次定向测试的两项迁移场景在 Windows 清理临时目录时遇到文件占用。
+- 根因：测试使用 `with sqlite3.connect(...)`，该上下文只提交/回滚事务，不关闭连接。
+- 修复与回归：改用 `contextlib.closing` 并显式提交；48 项事件库定向测试复验通过。
+
+## ERR-DEV-005：定向测试未设置源码导入路径
+
+- 日期/阶段：2026-10-26，DEV-005 邮箱停机边界。
+- 触发：直接用 `python -m unittest discover -s host/tests -p test_command_mailbox.py` 启动，未设置 `host/src` 的模块导入路径，测试加载时报 `ModuleNotFoundError`。
+- 根因：该仓库的完整检查脚本自行加入 `host/src`，直接调用 unittest 不会继承此设置。
+- 修复与回归：在本次 PowerShell 进程内设置 `PYTHONPATH` 后运行同一命令，11 项通过；完整 `python scripts/check.py` 通过。未修改系统或全局环境。
+
 ## ERR-DEV-005：未派发取消测试使用错误分页字段
 
 - 日期/阶段：2026-10-26，DEV-005 未派发回合取消。

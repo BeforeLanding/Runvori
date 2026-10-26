@@ -15,7 +15,11 @@ import tempfile
 import tomllib
 from pathlib import Path
 
+from runvori.application.local_device_admin import (
+    LocalDeviceAdminError, revoke_device_offline,
+)
 from runvori.codex.stdio import StdioClient, TransportError
+from runvori.infrastructure.instance_lock import InstanceLockUnavailable
 
 PINNED_CODEX = "codex-cli 0.164.0-alpha.11.1"
 ROOT = Path(__file__).resolve().parents[3]
@@ -63,6 +67,10 @@ def execute(args: argparse.Namespace) -> dict:
     contracts = root / "contracts/codex"
     if args.command == "verify-contracts":
         return {"status": "passed", "schema_count": verify_contracts(contracts)}
+    if args.command == "revoke-device":
+        if args.data_dir is None:
+            raise LocalDeviceAdminError("host_data_dir_required")
+        return revoke_device_offline(args.data_dir)
     executable = shutil.which(args.codex)
     if not executable:
         raise TransportError("codex_not_found")
@@ -119,17 +127,24 @@ def execute(args: argparse.Namespace) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["doctor", "export-schema", "verify-contracts"])
+    parser.add_argument("command", choices=[
+        "doctor", "export-schema", "verify-contracts", "revoke-device"])
     parser.add_argument("--codex", default="codex")
     parser.add_argument("--timeout", type=float, default=15)
     parser.add_argument("--replace", action="store_true", help="explicitly replace schema baseline")
     parser.add_argument("--workspace", type=Path, default=Path.cwd())
+    parser.add_argument("--data-dir", type=Path,
+                        help="existing absolute Host data directory for offline revocation")
     args = parser.parse_args()
     try:
         result = execute(args)
-    except (OSError, ValueError, KeyError, subprocess.SubprocessError, TransportError) as error:
+    except (OSError, ValueError, KeyError, sqlite3.Error,
+            subprocess.SubprocessError, TransportError,
+            InstanceLockUnavailable) as error:
         # Do not echo exception messages from filesystem/subprocess: may contain secrets.
-        code = str(error) if isinstance(error, TransportError) else type(error).__name__
+        code = (str(error) if isinstance(
+            error, (TransportError, LocalDeviceAdminError,
+                    InstanceLockUnavailable)) else type(error).__name__)
         print(json.dumps({"status": "failed", "code": code}))
         return 1
     print(json.dumps(result, indent=2))

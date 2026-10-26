@@ -40,6 +40,12 @@ class HostCommandMailbox:
         self._items: queue.Queue[_Command] = queue.Queue(maxsize=capacity)
         self._events_changed = threading.Condition()
         self._event_generation = 0
+        self._closed = threading.Event()
+
+    def close(self) -> None:
+        """Stop accepting work and wake readers when the owner exits."""
+        self._closed.set()
+        self.notify_events()
 
     def notify_events(self) -> None:
         """Wake readers after a committed state change; readers still query."""
@@ -83,10 +89,15 @@ class HostCommandMailbox:
         return self._submit("get_session_snapshot", {
             "session_id": session_id}, timeout)
 
+    def get_host_identity(self, *, timeout: float = 5) -> dict:
+        return self._submit("get_host_identity", {}, timeout)
+
     def get_session_view(self, *, session_id: str, limit: int = 50,
-                         timeout: float = 5) -> dict:
+                         timeout: float = 5,
+                         cancelled: threading.Event | None = None) -> dict:
         return self._submit("get_session_view", {
-            "session_id": session_id, "limit": limit}, timeout)
+            "session_id": session_id, "limit": limit}, timeout,
+            cancelled=cancelled)
 
     def get_session_events(self, *, session_id: str,
                            after_seq: int | None = None,
@@ -109,6 +120,8 @@ class HostCommandMailbox:
             raise CommandMailboxError("invalid_wait_cancellation")
 
         def require_active() -> None:
+            if self._closed.is_set():
+                raise CommandMailboxError("host_stopped")
             if cancelled is not None and cancelled.is_set():
                 raise CommandMailboxError("request_cancelled")
 
@@ -148,6 +161,8 @@ class HostCommandMailbox:
             raise CommandMailboxError("invalid_wait_cancellation")
         if cancelled is not None and cancelled.is_set():
             raise CommandMailboxError("request_cancelled")
+        if self._closed.is_set():
+            raise CommandMailboxError("host_stopped")
         command = _Command(kind, values, cancelled)
         try:
             self._items.put_nowait(command)
@@ -155,14 +170,22 @@ class HostCommandMailbox:
             raise CommandMailboxError("command_mailbox_full") from None
         deadline = time.monotonic() + timeout
         while True:
+            if self._closed.is_set():
+                if kind in {"start_run", "interrupt_run"}:
+                    raise CommandMailboxError("command_result_unknown")
+                raise CommandMailboxError("host_stopped")
             if cancelled is not None and cancelled.is_set():
                 raise CommandMailboxError("request_cancelled")
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 # The owner may still commit later. A caller must query the key.
                 raise CommandMailboxError("command_result_unknown")
-            if command.done.wait(min(remaining, 0.05 if cancelled else remaining)):
+            if command.done.wait(min(remaining, 0.05)):
                 break
+        if self._closed.is_set():
+            if kind in {"start_run", "interrupt_run"}:
+                raise CommandMailboxError("command_result_unknown")
+            raise CommandMailboxError("host_stopped")
         if cancelled is not None and cancelled.is_set():
             raise CommandMailboxError("request_cancelled")
         if command.error is not None:
@@ -180,6 +203,8 @@ class HostCommandMailbox:
         except queue.Empty:
             return False
         try:
+            if self._closed.is_set():
+                raise CommandMailboxError("host_stopped")
             if command.cancelled is not None and command.cancelled.is_set():
                 raise CommandMailboxError("request_cancelled")
             command.result = self._execute(
@@ -200,6 +225,8 @@ class HostCommandMailbox:
                  run_starts: OwnedRunStartQueue | None,
                  interrupts: OwnedInterruptQueue | None) -> dict:
         values = command.values
+        if command.kind == "get_host_identity":
+            return {"host_id": journals.events.get_host_id()}
         if command.kind == "get_operation":
             getter = (journals.events.get_run_operation if values["kind"] == "run"
                       else journals.events.get_interrupt_operation)

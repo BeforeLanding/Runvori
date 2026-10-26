@@ -31,6 +31,29 @@ def run_owned_event_loop(owner: OwnedUpstream, *, stop: threading.Event,
                          run_starts: OwnedRunStartQueue | None = None,
                          interrupts: OwnedInterruptQueue | None = None,
                          commands: HostCommandMailbox | None = None) -> dict:
+    """Release the mailbox on terminal exit, retaining it at a handoff limit."""
+    result = None
+    try:
+        result = _run_owned_event_loop(
+            owner, stop=stop, poll_timeout=poll_timeout,
+            max_handoffs=max_handoffs, approvals=approvals,
+            thread_starts=thread_starts, run_starts=run_starts,
+            interrupts=interrupts, commands=commands)
+        return result
+    finally:
+        if (isinstance(commands, HostCommandMailbox)
+                and (result is None or result["reason"] != "handoff_limit")):
+            commands.close()
+
+
+def _run_owned_event_loop(owner: OwnedUpstream, *, stop: threading.Event,
+                         poll_timeout: float = 0.25,
+                         max_handoffs: int | None = None,
+                         approvals: OwnedApprovalQueue | None = None,
+                         thread_starts: OwnedThreadStartQueue | None = None,
+                         run_starts: OwnedRunStartQueue | None = None,
+                         interrupts: OwnedInterruptQueue | None = None,
+                         commands: HostCommandMailbox | None = None) -> dict:
     """Consume events until stopped, bounded for a caller, or recovered.
 
     The caller must be the sole stdio consumer. Queued approval, interrupt,

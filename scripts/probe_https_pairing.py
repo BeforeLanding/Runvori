@@ -20,7 +20,7 @@ sys.path.insert(0, str(ROOT / "host/src"))
 from runvori.infrastructure.pairing_journal import PairingError, PairingJournal
 
 
-HOST_ID = "host_probe"
+HOST_ID = "host_" + "1" * 32
 EXCHANGE_PATH = "/v1/pairings/exchange"
 
 
@@ -60,7 +60,7 @@ class PairingProbeHandler(BaseHTTPRequestHandler):
             return
         with PairingJournal(self.server.database) as journal:
             try:
-                device_id, token = journal.exchange(secret)
+                device_id, token = journal.exchange(secret, host_id=HOST_ID)
             except PairingError:
                 self._reply(409, {"code": "pairing_unavailable"})
                 return
@@ -104,7 +104,7 @@ def run_probe() -> dict[str, str]:
         pin = spki_sha256(certificate_der(certificate))
         database = folder / "pairing.db"
         with PairingJournal(database) as journal:
-            secret, _expiry = journal.issue_local_secret()
+            secret, _expiry = journal.issue_local_secret(host_id=HOST_ID)
 
         server = PairingProbeServer(certificate, key, database)
         worker = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01},
@@ -137,13 +137,13 @@ def run_probe() -> dict[str, str]:
 
             with PairingJournal(database) as journal:
                 journal.revoke_local_device()
-                replacement, _expiry = journal.issue_local_secret()
+                replacement, _expiry = journal.issue_local_secret(host_id=HOST_ID)
             status, paired = post_pinned(port, certificate, pin, replacement)
             if status != 200 or paired.get("host_id") != HOST_ID:
                 raise ProbeError("local_repairing_failed")
             with PairingJournal(database) as journal:
                 token = base64.b64decode(paired["device_token"], validate=True)
-                if not journal.authenticates(token):
+                if not journal.authenticates(token, host_id=HOST_ID):
                     raise ProbeError("issued_token_not_active")
             if server.request_count != 3:
                 raise ProbeError("unexpected_request_count")

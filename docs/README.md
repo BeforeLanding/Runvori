@@ -4,9 +4,15 @@
 
 ## 当前状态
 
+恢复后 Host 身份与配对、读取入口的内部组合见 [DEV-005 Host 设备访问](evidence/DEV-005-host-device-access.md)。
+
+权威 Host 数据库中的稳定身份前提见 [DEV-005 Host 身份](evidence/DEV-005-host-identity.md)。
+
+配对秘密、设备令牌与当前 Host 身份的内部绑定见 [DEV-005 配对身份绑定](evidence/DEV-005-pairing-host-binding.md)。
+
 等待线程的已提交事件提示见 [DEV-005 事件通知](evidence/DEV-005-event-notification.md)。
 
-内部增量事件等待见 [DEV-005 命令邮箱事件等待](evidence/DEV-005-mailbox-event-wait.md)；取消边界见 [DEV-005 事件等待取消](evidence/DEV-005-event-wait-cancel.md)。
+内部增量事件等待见 [DEV-005 命令邮箱事件等待](evidence/DEV-005-mailbox-event-wait.md)；取消边界见 [DEV-005 事件等待取消](evidence/DEV-005-event-wait-cancel.md)，归属循环退出后的等待释放见 [DEV-005 邮箱停机边界](evidence/DEV-005-mailbox-shutdown.md)，配对令牌保护的内部读取见 [DEV-005 设备鉴权读取](evidence/DEV-005-device-reads.md)，进程内撤销切片见 [DEV-005 在途读取取消](evidence/DEV-005-device-revocation.md)，停机后的 CLI 入口见 [DEV-005 离线撤销](evidence/DEV-005-offline-device-revoke.md)。
 
 同事务快照与最近事件尾页见 [DEV-005 快照尾页](evidence/DEV-005-snapshot-tail.md)。
 

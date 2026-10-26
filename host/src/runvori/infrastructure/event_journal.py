@@ -12,6 +12,8 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Callable
 
+from runvori.infrastructure.host_identity import new_host_id, valid_host_id
+
 
 MAX_EVENT_BYTES = 64 * 1024
 MAX_PAGE_BYTES = 256 * 1024
@@ -48,7 +50,7 @@ class EventJournal:
             self.connection.execute("PRAGMA journal_mode=WAL")
             self.connection.execute("PRAGMA synchronous=FULL")
             version = self.connection.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10):
+            if version not in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11):
                 raise EventJournalError("unsupported_schema")
             self.connection.executescript("""
                 CREATE TABLE IF NOT EXISTS sessions (
@@ -160,15 +162,40 @@ class EventJournal:
                         ON DELETE CASCADE,
                     workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id)
                 );
+                CREATE TABLE IF NOT EXISTS host_identity (
+                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                    host_id TEXT NOT NULL UNIQUE
+                );
             """)
-            if version < 10:
-                self.connection.execute("PRAGMA user_version=10")
+            if version < 11:
+                self.connection.execute("BEGIN IMMEDIATE")
+                try:
+                    row = self.connection.execute(
+                        "SELECT host_id FROM host_identity WHERE singleton=1").fetchone()
+                    if row is None:
+                        self.connection.execute(
+                            "INSERT INTO host_identity VALUES (1, ?)",
+                            (new_host_id(),))
+                    self.connection.execute("PRAGMA user_version=11")
+                    self.connection.execute("COMMIT")
+                except BaseException:
+                    self.connection.execute("ROLLBACK")
+                    raise
+            self.get_host_id()
         except BaseException:
             self.connection.close()
             raise
 
     def close(self) -> None:
         self.connection.close()
+
+    def get_host_id(self) -> str:
+        row = self.connection.execute(
+            "SELECT host_id FROM host_identity WHERE singleton=1").fetchone()
+        host_id = None if row is None else row["host_id"]
+        if not valid_host_id(host_id):
+            raise EventJournalError("host_identity_invalid")
+        return host_id
 
     def _require_write_ready(self) -> None:
         if self._write_gate is not None and not self._write_gate():

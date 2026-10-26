@@ -190,6 +190,14 @@ M0 TLS 身份探针需要本机 OpenSSL CLI 和可用回环端口，不使用真
 
 定向 HTTPS 联动夹具可用 `python scripts/probe_https_pairing.py` 运行：仅监听本机回环临时端口，使用一次性测试证书、秘密和数据库；需 OpenSSL CLI 与可用回环连接。结果和限制见 [Q-05 联动证据](docs/evidence/M0-Q05-https-pairing.md)。
 
+Windows 上已有独立配对库的 Host 数据目录，可在 Host 停止后执行离线本地撤销：先将 `$runvoriDataDir` 设置为含 `pairing.db` 的**现有绝对目录**，再运行：
+
+```powershell
+python scripts/runvori.py revoke-device --data-dir $runvoriDataDir
+```
+
+命令先取得同目录的 `host.lock`；锁被占用时拒绝且不撤销令牌，缺失配对库也拒绝，不要求 Codex 或模型账号。该命令只适用于当前独立配对切片；运行中撤销需未来可信本地通道调用进程内网关，见 [验证记录](docs/evidence/DEV-005-offline-device-revoke.md)。
+
 schema 已提交，通常不需要重新导出。`python scripts/runvori.py export-schema` 在基线存在时拒绝覆盖；仅经评审后使用 `--replace`。升级须更新版本常量、schema、测试及兼容记录。
 
 已安装 setuptools 81.0.0 的环境可复验当前探针 wheel、隔离安装和真实命令入口（尚非独立部署的 Host）：

@@ -46,6 +46,7 @@ class OwnedEventLoopTests(unittest.TestCase):
                     max_handoffs=1, commands=mailbox)
                 self.assertEqual(result["handoffs"], 1)
                 self.assertGreaterEqual(mailbox.notifications, 1)
+                self.assertFalse(mailbox._closed.is_set())
 
     def _start(self, startup, *, confirmed=False, mode="event_handoff"):
         epoch = startup.recover_host_after_isolation(

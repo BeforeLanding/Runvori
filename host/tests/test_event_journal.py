@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 import sqlite3
+from contextlib import closing
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -20,6 +21,53 @@ class EventJournalTests(unittest.TestCase):
 
     def tearDown(self):
         self.temp.cleanup()
+
+    def test_host_identity_is_stable_across_reopen_and_distinct_for_new_store(self):
+        with EventJournal(self.path) as journal:
+            first = journal.get_host_id()
+            self.assertTrue(first.startswith("host_"))
+            self.assertEqual(len(first), 37)
+        with EventJournal(self.path) as reopened:
+            self.assertEqual(reopened.get_host_id(), first)
+        with EventJournal(Path(self.temp.name) / "new-host.db") as fresh:
+            self.assertNotEqual(fresh.get_host_id(), first)
+
+    def test_v10_identity_migration_preserves_session_and_missing_v11_fails(self):
+        with EventJournal(self.path) as journal:
+            journal.connection.execute("DROP TABLE host_identity")
+            journal.connection.execute("PRAGMA user_version=10")
+        with EventJournal(self.path) as upgraded:
+            identity = upgraded.get_host_id()
+            self.assertEqual(upgraded.connection.execute(
+                "PRAGMA user_version").fetchone()[0], 11)
+            self.assertEqual(upgraded.snapshot("session")["status"], "starting")
+            upgraded.connection.execute("DELETE FROM host_identity")
+        with self.assertRaisesRegex(EventJournalError, "host_identity_invalid"):
+            EventJournal(self.path)
+        with closing(sqlite3.connect(self.path)) as db:
+            db.execute("INSERT INTO host_identity VALUES (1, ?)", (identity,))
+            db.commit()
+        with EventJournal(self.path) as restored:
+            self.assertEqual(restored.get_host_id(), identity)
+
+    def test_identity_migration_failure_keeps_old_version(self):
+        with EventJournal(self.path) as journal:
+            journal.connection.execute("DELETE FROM host_identity")
+            journal.connection.execute("PRAGMA user_version=10")
+            journal.connection.execute(
+                "CREATE TRIGGER block_identity BEFORE INSERT ON host_identity "
+                "BEGIN SELECT RAISE(ABORT, 'blocked'); END")
+        with self.assertRaises(sqlite3.IntegrityError):
+            EventJournal(self.path)
+        with closing(sqlite3.connect(self.path)) as db:
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 10)
+            self.assertIsNone(db.execute(
+                "SELECT host_id FROM host_identity").fetchone())
+            db.execute("DROP TRIGGER block_identity")
+            db.commit()
+        with EventJournal(self.path) as journal:
+            self.assertEqual(journal.connection.execute(
+                "PRAGMA user_version").fetchone()[0], 11)
 
     def test_session_thread_binding_is_immutable_unique_and_persistent(self):
         with EventJournal(self.path) as journal:
@@ -57,7 +105,7 @@ class EventJournalTests(unittest.TestCase):
             journal.connection.execute("PRAGMA user_version=6")
         with EventJournal(self.path) as reopened:
             self.assertEqual(reopened.connection.execute(
-                "PRAGMA user_version").fetchone()[0], 10)
+                "PRAGMA user_version").fetchone()[0], 11)
             with self.assertRaisesRegex(EventJournalError,
                                         "session_thread_not_bound"):
                 reopened.get_session_thread("session")
@@ -74,7 +122,7 @@ class EventJournalTests(unittest.TestCase):
             journal.connection.execute("PRAGMA user_version=7")
         with EventJournal(self.path) as reopened:
             self.assertEqual(reopened.connection.execute(
-                "PRAGMA user_version").fetchone()[0], 10)
+                "PRAGMA user_version").fetchone()[0], 11)
             self.assertEqual(reopened.get_session_thread("session"), "thread1")
             self.assertEqual(reopened.connection.execute(
                 "SELECT COUNT(*) FROM thread_starts").fetchone()[0], 0)
@@ -86,7 +134,7 @@ class EventJournalTests(unittest.TestCase):
             journal.connection.execute("PRAGMA user_version=8")
         with EventJournal(self.path) as reopened:
             self.assertEqual(reopened.connection.execute(
-                "PRAGMA user_version").fetchone()[0], 10)
+                "PRAGMA user_version").fetchone()[0], 11)
             self.assertEqual(reopened.connection.execute(
                 "SELECT COUNT(*) FROM session_workspaces").fetchone()[0], 0)
 
@@ -370,7 +418,7 @@ class EventJournalTests(unittest.TestCase):
         with EventJournal(legacy) as journal:
             self.assertEqual(journal.snapshot("old")["snapshot_seq"], 1)
             self.assertEqual(journal.page("old")["events"][0]["seq"], 1)
-            self.assertEqual(journal.connection.execute("PRAGMA user_version").fetchone()[0], 10)
+            self.assertEqual(journal.connection.execute("PRAGMA user_version").fetchone()[0], 11)
             journal.reserve_run("old", "run", expected_session_version=0,
                                 recorded_at="2026-10-25T00:00:00Z")
             self.assertEqual(journal.snapshot("old")["snapshot_seq"], 2)
@@ -458,7 +506,7 @@ class EventJournalTests(unittest.TestCase):
             journal.connection.execute("PRAGMA user_version=2")
         with EventJournal(legacy) as reopened:
             self.assertEqual(reopened.connection.execute(
-                "PRAGMA user_version").fetchone()[0], 10)
+                "PRAGMA user_version").fetchone()[0], 11)
             self.assertEqual(reopened.connection.execute(
                 "SELECT run_id FROM active_slot").fetchone()[0], "active")
             with self.assertRaisesRegex(EventJournalError, "active_run_exists"):
@@ -701,7 +749,7 @@ class EventJournalTests(unittest.TestCase):
             journal.connection.execute("PRAGMA user_version=3")
         with EventJournal(legacy) as reopened:
             self.assertEqual(reopened.connection.execute(
-                "PRAGMA user_version").fetchone()[0], 10)
+                "PRAGMA user_version").fetchone()[0], 11)
             self.assertEqual(reopened.get_run_operation("device1", "request1")["status"],
                              "accepted")
             self.assertIsNone(reopened.connection.execute(

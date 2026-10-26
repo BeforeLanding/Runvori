@@ -29,6 +29,12 @@
 
 2026-10-24 回环联动：定向 HTTPS 夹具已验证错误指纹不发送请求、秘密只进 POST body、已提交但响应丢失时重放拒绝，见 [联动证据](docs/evidence/M0-Q05-https-pairing.md)；它不提供产品网络入口或来源限流。
 
+2026-10-26 内部读取切片：配对令牌保护快照和事件读取，可信本地撤销提交后主动取消同一网关实例的在途请求，见 [设备读取](docs/evidence/DEV-005-device-reads.md)与[撤销联动](docs/evidence/DEV-005-device-revocation.md)。产品本地管理入口和 HTTP 响应发送前的鉴权仍待实现。
+
+2026-10-26 离线撤销入口：CLI 仅在取得与 Host 相同的 Windows 单实例锁后修改已有配对库；Host 持锁运行时拒绝，见 [离线撤销证据](docs/evidence/DEV-005-offline-device-revoke.md)。运行中撤销仍需产品本地管理通道接入进程内取消机制。
+
+2026-10-26 Host 身份前提：权威数据库 v11 保存稳定随机 `host_id`，重开保持不变，身份缺失或损坏时拒绝继续，见 [身份验证](docs/evidence/DEV-005-host-identity.md)。独立配对库要求秘密与令牌绑定该身份，旧无归属记录失效，见 [绑定证据](docs/evidence/DEV-005-pairing-host-binding.md)；恢复后内部组合已验证旧令牌与关闭后旧对象的拒绝，见 [组合证据](docs/evidence/DEV-005-host-device-access.md)。产品启动编排、旧备份回滚后的换身份和重新配对仍待实现。
+
 ## 3. 凭据生命周期
 
 - 设备令牌至少 32 字节安全随机数，Host 仅存不可逆摘要并用恒定时间比较。令牌只放 Authorization header，不放 URL。

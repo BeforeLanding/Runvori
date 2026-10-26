@@ -64,6 +64,10 @@ DEV-004 工具链基线：已加入 Gradle 8.13 wrapper、Android 占位工程�
 
 ## M1：Host 持久化与最小协议（第 2 周）
 
+DEV-005 读取边界补充：内部邮箱具备快照/分页/等待读取及停机释放，设备读取网关已接入配对令牌复核和可信本地撤销后的在途取消；停机后离线撤销 CLI 须取得 Host 单实例锁。运行中产品本地管理入口、HTTP/TLS、响应发送前鉴权及 Android 联调仍开放，见 [撤销联动](evidence/DEV-005-device-revocation.md)与[离线命令](evidence/DEV-005-offline-device-revoke.md)。M0 退出条件和 M1 验收条件不因此视为满足。
+
+DEV-005 Host 身份补充：权威数据库 v11 已保存稳定随机 `host_id`，旧库升级及损坏拒绝有行为测试；独立配对库现按该身份约束秘密与设备令牌。恢复后的内部组合层已把权威身份用于配对、读取与撤销，并拒绝关闭后的旧对象。产品 Host 启动编排、HTTPS 联调与旧备份回滚时的身份轮换仍开放，见 [身份](evidence/DEV-005-host-identity.md)、[配对绑定](evidence/DEV-005-pairing-host-binding.md)和[组合验证](evidence/DEV-005-host-device-access.md)。
+
 依赖 M0。交付：
 
 - 数据库迁移、单实例锁、全局活动槽、会话/回合模型。

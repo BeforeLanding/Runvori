@@ -148,6 +148,11 @@ class LockedHostJournals:
         if not self._recovered:
             raise EventJournalError("host_not_recovered")
 
+    def current_host_id(self) -> str:
+        """Expose the authoritative identity only after startup recovery."""
+        self._require_recovered()
+        return self.events.get_host_id()
+
     def reserve_upstream_owner(self, owner, *, epoch: int) -> None:
         """Reserve the sole connection slot before starting a child process."""
         if type(epoch) is not int or epoch < 1:
