@@ -199,6 +199,27 @@ class LockedHostJournals:
             raise EventJournalError("stale_epoch")
         return self.events.get_session_thread(session_id)
 
+    def get_bound_interrupt_turn(self, run_id: str, *, epoch: int) -> dict:
+        """Read only the active, bound turn on this Host's current epoch."""
+        self._require_recovered()
+        if not isinstance(run_id, str) or not run_id:
+            raise EventJournalError("invalid_run_id")
+        if type(epoch) is not int or epoch < 1:
+            raise EventJournalError("invalid_epoch")
+        if epoch != self.approvals.current_epoch():
+            raise EventJournalError("stale_epoch")
+        row = self.events.connection.execute(
+            "SELECT u.thread_id, u.turn_id, u.process_epoch "
+            "FROM upstream_turns u JOIN runs r ON r.run_id=u.run_id "
+            "JOIN active_slot a ON a.run_id=r.run_id AND a.singleton=1 "
+            "JOIN session_threads st ON st.session_id=r.session_id "
+            "AND st.thread_id=u.thread_id "
+            "WHERE u.run_id=? AND r.status='interrupting'",
+            (run_id,)).fetchone()
+        if row is None or row["process_epoch"] != epoch:
+            raise EventJournalError("interrupt_turn_unavailable")
+        return {"thread_id": row["thread_id"], "turn_id": row["turn_id"]}
+
     def register_workspace(self, workspace_id: str, workspace: Path, *,
                            sandbox: str, epoch: int) -> dict:
         """Register an immutable local root and policy under Host ownership."""
@@ -742,6 +763,10 @@ class LockedHostJournals:
             if db.execute(
                     "SELECT 1 FROM run_operations WHERE actor_id=? AND request_id=?",
                     (actor_id, request_id)).fetchone():
+                raise EventJournalError("idempotency_conflict")
+            if db.execute(
+                "SELECT 1 FROM interrupt_operations WHERE actor_id=? AND request_id=?",
+                (actor_id, request_id)).fetchone():
                 raise EventJournalError("idempotency_conflict")
             prior = db.execute(
                 "SELECT actor_id, request_id, request_digest, approval_id, "

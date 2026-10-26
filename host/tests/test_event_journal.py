@@ -57,7 +57,7 @@ class EventJournalTests(unittest.TestCase):
             journal.connection.execute("PRAGMA user_version=6")
         with EventJournal(self.path) as reopened:
             self.assertEqual(reopened.connection.execute(
-                "PRAGMA user_version").fetchone()[0], 9)
+                "PRAGMA user_version").fetchone()[0], 10)
             with self.assertRaisesRegex(EventJournalError,
                                         "session_thread_not_bound"):
                 reopened.get_session_thread("session")
@@ -74,7 +74,7 @@ class EventJournalTests(unittest.TestCase):
             journal.connection.execute("PRAGMA user_version=7")
         with EventJournal(self.path) as reopened:
             self.assertEqual(reopened.connection.execute(
-                "PRAGMA user_version").fetchone()[0], 9)
+                "PRAGMA user_version").fetchone()[0], 10)
             self.assertEqual(reopened.get_session_thread("session"), "thread1")
             self.assertEqual(reopened.connection.execute(
                 "SELECT COUNT(*) FROM thread_starts").fetchone()[0], 0)
@@ -86,7 +86,7 @@ class EventJournalTests(unittest.TestCase):
             journal.connection.execute("PRAGMA user_version=8")
         with EventJournal(self.path) as reopened:
             self.assertEqual(reopened.connection.execute(
-                "PRAGMA user_version").fetchone()[0], 9)
+                "PRAGMA user_version").fetchone()[0], 10)
             self.assertEqual(reopened.connection.execute(
                 "SELECT COUNT(*) FROM session_workspaces").fetchone()[0], 0)
 
@@ -187,6 +187,46 @@ class EventJournalTests(unittest.TestCase):
                 "session", before_seq=history["next_before_seq"], limit=2)["events"]],
                              [2, 3])
             self.assertEqual(journal.page("session", after_seq=5)["next_after_seq"], 5)
+
+    def test_snapshot_tail_is_ordered_bounded_and_has_history_cursor(self):
+        with EventJournal(self.path) as journal:
+            empty = journal.snapshot_tail("session")
+            self.assertEqual(empty["recent_events"], [])
+            self.assertEqual(empty["history_before_seq"], 1)
+            for n in range(1, 6):
+                self.append(journal, n)
+            view = journal.snapshot_tail("session", limit=2)
+            self.assertEqual(view["session_id"], "session")
+            self.assertEqual(view["snapshot_seq"], 5)
+            self.assertEqual(view["part"], 5)
+            self.assertEqual([event["seq"] for event in view["recent_events"]],
+                             [4, 5])
+            self.assertEqual(view["history_before_seq"], 4)
+            older = journal.page(
+                "session", before_seq=view["history_before_seq"], limit=3)
+            self.assertEqual([event["seq"] for event in older["events"]],
+                             [1, 2, 3])
+            with self.assertRaisesRegex(EventJournalError, "invalid_cursor"):
+                journal.snapshot_tail("session", limit=0)
+            with self.assertRaisesRegex(EventJournalError, "session_not_found"):
+                journal.snapshot_tail("missing")
+
+    def test_snapshot_tail_trims_oldest_events_to_response_budget(self):
+        with EventJournal(self.path) as journal:
+            for n in range(6):
+                journal.append(
+                    "session", run_id="run", kind="message.delta",
+                    payload={"text": "x" * 50000},
+                    recorded_at="2026-10-26T00:00:00Z",
+                    snapshot={"part": n, "large": "y" * 50000})
+            view = journal.snapshot_tail("session", limit=100)
+            seqs = [event["seq"] for event in view["recent_events"]]
+            self.assertEqual(seqs[-1], view["snapshot_seq"])
+            self.assertEqual(len(view["large"]), 50000)
+            self.assertLess(len(seqs), 6)
+            self.assertEqual(view["history_before_seq"], seqs[0])
+            self.assertLessEqual(len(json.dumps(view, ensure_ascii=False).encode(
+                "utf-8")), 256 * 1024)
 
     def test_cursor_rejections_and_unknown_session(self):
         with EventJournal(self.path) as journal:
@@ -330,7 +370,7 @@ class EventJournalTests(unittest.TestCase):
         with EventJournal(legacy) as journal:
             self.assertEqual(journal.snapshot("old")["snapshot_seq"], 1)
             self.assertEqual(journal.page("old")["events"][0]["seq"], 1)
-            self.assertEqual(journal.connection.execute("PRAGMA user_version").fetchone()[0], 9)
+            self.assertEqual(journal.connection.execute("PRAGMA user_version").fetchone()[0], 10)
             journal.reserve_run("old", "run", expected_session_version=0,
                                 recorded_at="2026-10-25T00:00:00Z")
             self.assertEqual(journal.snapshot("old")["snapshot_seq"], 2)
@@ -418,7 +458,7 @@ class EventJournalTests(unittest.TestCase):
             journal.connection.execute("PRAGMA user_version=2")
         with EventJournal(legacy) as reopened:
             self.assertEqual(reopened.connection.execute(
-                "PRAGMA user_version").fetchone()[0], 9)
+                "PRAGMA user_version").fetchone()[0], 10)
             self.assertEqual(reopened.connection.execute(
                 "SELECT run_id FROM active_slot").fetchone()[0], "active")
             with self.assertRaisesRegex(EventJournalError, "active_run_exists"):
@@ -661,7 +701,7 @@ class EventJournalTests(unittest.TestCase):
             journal.connection.execute("PRAGMA user_version=3")
         with EventJournal(legacy) as reopened:
             self.assertEqual(reopened.connection.execute(
-                "PRAGMA user_version").fetchone()[0], 9)
+                "PRAGMA user_version").fetchone()[0], 10)
             self.assertEqual(reopened.get_run_operation("device1", "request1")["status"],
                              "accepted")
             self.assertIsNone(reopened.connection.execute(

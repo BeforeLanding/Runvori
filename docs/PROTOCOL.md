@@ -92,6 +92,12 @@ Host 校验当前 epoch、请求仍待处理、回合未终止且版本匹配。
 
 中断目标已终态返回 `200` 当前终态，不再次中断；已有中断操作返回原操作。审批已派发时中断仍可请求，不能承诺先前决定尚未生效。新回合遇到全局活动槽返回 `409 active_run_exists`；thread 不可加载返回 `409 thread_unavailable`；执行环境不可用返回 `503 execution_unavailable`。
 
+当前 M0 持久切片受理已绑定上游 turn 的 `running / waiting_approval` 回合中断。事件库 v10 在一个事务中记录不可变请求摘要、`accepted` 操作、`interrupting` 回合状态、事件和快照；重复同一请求返回原操作，同回合另一个请求返回已有操作，已终态回合返回终态而不创建操作。`starting` 且启动操作仍为 `accepted`、尚未领取发送权且无上游 turn 绑定时，可在同一事务直接取消：启动操作记 `failed/cancelled_before_dispatch`，中断操作记 `confirmed/run_interrupted`，写入终态事件并释放活动槽；原中断请求重放返回同一操作。启动发送权已领取而 turn 未绑定时，中断意图先持久化为 `accepted`，回合进入 `interrupting`；收到有效 `turn/start` 响应后才绑定 turn，保留 `interrupting` 状态，由当前连接所有者按绑定一次派发中断。启动响应丢失时不猜测 turn 身份；隔离恢复将未派发中断记为 `failed/not_dispatched`，已领取但未确认的启动保持 `unknown`。
+
+`claim_interrupt_dispatch` 只对匹配上游 turn epoch、活动槽和 `accepted` 操作授予一次发送权；领取后失败可记 `unknown`，必须带原派发 epoch。当前连接所有者从持久操作读取 run，再核对活动槽、session/thread 绑定及 turn epoch，领取后一次调用 `turn/interrupt`。RPC 正常响应只保留 `dispatching`，直到独立终态；匹配的 RPC 错误保留 `unknown` 并继续读取同一连接，避免丢失可能已缓冲的完成事件。传输失效则关闭并隔离连接，不自动重发。回合终态同事务结算操作：未派发记 `failed/terminal_before_dispatch`；已领取或未知操作记 `confirmed/run_completed|run_failed|run_interrupted`，此 outcome 只表示最终回合状态，不归因中断的效果。进程隔离恢复时未派发记 `failed/not_dispatched`，已领取记 `unknown/dispatch_unconfirmed`，原本未知保持未知。任何一步事件写入失败须回滚整次结算。
+
+中断队列只携带已持久操作的操作者与请求标识；当前连接所有者在事件轮询前消费一个信号。重复、已终态或绑定不符的信号不能再次发送。队列满或进程重启不授权自动重发；尚未派发的操作需要调用方查询与显式处理，产品 API 仍待接入。
+
 受理示例：
 
 ```json
@@ -122,7 +128,7 @@ stateDiagram-v2
     starting --> running: 上游确认启动
     running --> waiting_approval: 至少一个待审批
     waiting_approval --> running: 待审批清空且执行继续
-    starting --> interrupting: 中断请求已受理
+    starting --> interrupting: 启动已派发，中断意图已受理
     running --> interrupting: 中断请求已受理
     waiting_approval --> interrupting: 中断请求已受理
     running --> completed: 上游正常结束
@@ -132,7 +138,7 @@ stateDiagram-v2
     running --> failed: 执行明确失败
     waiting_approval --> failed: 执行明确失败
     interrupting --> failed: 明确失败终态
-    starting --> interrupted: Host 或进程中断
+    starting --> interrupted: 未派发取消、Host 或进程中断
     running --> interrupted: 上游中断或进程退出
     waiting_approval --> interrupted: 上游中断或进程退出
     interrupting --> interrupted: 中断已确认
@@ -189,11 +195,21 @@ Host 恢复入口在持有单实例锁且确认旧进程已隔离后，将旧审
 
 归属连接上的事件交接须逐条读取并先核对连接归属与 epoch。已识别的审批请求、请求结束和回合终态通过既有事务写入；读取或持久化失败时，先隔离连接并执行 `upstream_exit` 恢复，不能继续消费可能失序的消息。恢复事务失败则保持写门控关闭和原 epoch。单步交接的空等待不改变状态；产品长期事件循环与审批答复调度仍待实现。
 
-持续消费入口须在持有 SQLite 连接的 Host 线程中运行，以有界超时轮询单步交接；外部停止信号只在消息间生效。空等待继续轮询，不产生事件；故障恢复后立即结束旧连接循环，不按新 epoch 自动重启。审批答复已在该线程的有界队列中串行派发；其他 stdio RPC 仍须由后续单所有者调度整合，不能在另一线程并发读取同一连接。
+持续消费入口须在持有 SQLite 连接的 Host 线程中运行，以有界超时轮询单步交接；外部停止信号只在消息间生效。空等待继续轮询，不产生事件；故障恢复后立即结束旧连接循环，不按新 epoch 自动重启。审批答复、本地 `thread/start` 和已受理回合的 `thread/resume`/`turn/start` 已在该线程的有界队列中串行派发；其他 stdio RPC 仍须由后续单所有者调度整合，不能在另一线程并发读取同一连接。
+
+当前有不对外开放的 Host 命令邮箱切片：外部线程只提交固定类型的回合启动、中断和操作查询命令；持有 SQLite 连接的连接所有者每轮最多处理一条。回合 ID 由 Host 生成，先持久受理操作，再向原有有界队列提交派发信号。邮箱等待超时为 `command_result_unknown`，不能推断未提交；调用方必须用原请求号查询。派发信号队列满时返回 `dispatch_signal_unavailable`，已提交的操作仍可查询，调用方可用同一请求号显式重试以重新唤醒。邮箱不提供 HTTP、认证或 TLS，不把入队当作上游确认。
+
+该内部邮箱现可读取单会话的原始存储快照，以及按 `after_seq` 或 `before_seq` 获取事件页；每次读取由 SQLite 所有者执行，沿用事件库的读事务、游标校验、100 条/256 KiB 页上限与 `session_not_found` 错误。先取快照的 `snapshot_seq`，再用该序号作为 `after_seq` 补读后续事件。原始快照仍是内部存储形状，设备鉴权尚未实现。
+
+新增内部 `snapshot_tail` 读取把存储快照、`snapshot_seq`、最近事件及 `history_before_seq` 放在同一 SQLite 读事务中。最近事件以 seq 升序返回，从最新事件向前选取，受 100 条和完整响应 256 KiB 上限约束；`history_before_seq` 为已选最早 seq，空尾页为 `snapshot_seq + 1`。历史页用该值作排他 `before_seq`，增量页仍从 `snapshot_seq` 之后读取。该切片尚缺 `host_id`、服务时间和设备鉴权，不等同于上面的正式 HTTPS 响应。
+
+内部邮箱现提供增量事件等待入口，`wait_ms` 限定 0–25000，0 为一次读取；等待只发生在请求线程，SQLite 所有者仍处理其他命令和上游消息。持久写入及归属连接事件交接完成后可通知等待线程立即复查；通知只表示可能变化，响应仍以数据库页为准。通知与查询之间用代次核对避免丢唤醒，最多 250 毫秒的定时复查覆盖尚未接入通知的写路径。结果沿用事件库的 `events / next_after_seq / latest_seq / has_more`；超时返回空页和未推进的游标，不插入心跳事件。游标错误及所有者处理超时须返回错误，不能伪装为空页。可信调用方可向内部等待传入取消信号；信号触发后唤醒等待者，排队中或读取后的请求返回 `request_cancelled`，不返回事件页。取消与读完成的并发边界仍要求未来 HTTP 入口在发送响应前重新核验设备权限。该切片尚未接入 HTTP，配对撤销和 Host 停止也尚未连接到取消信号。
 
 审批决定已落库后，可将调用方和请求标识放入有界内存队列，作为唤醒当前连接所有者的信号；队列不承载决定或上游请求内容，也不是持久化事实。所有者从数据库重取、核对并领取一次派发权后才答复 stdio。重复或已失效的队列项不重发；队列满或 Host 崩溃不能抹去已记录决定，也不授权新 epoch 自动补发。派发结果未知或写入失败时隔离当前连接并执行恢复，旧循环立即退出。其他 stdio RPC 的同线程调度和产品 API 仍待实现。
 
-受信任本地 `thread/start` 信号也使用有界队列，队列项仅含已登记会话 ID、本地操作者 ID 和请求 ID；入队不是持久受理。当前连接所有者消费时先从本地工作区登记读取并核对参数，再由原有一次创建适配器记录意图、领取发送权和核对绑定。重复已确认信号只返回绑定，未知创建不重发；响应丢失则隔离连接、恢复 epoch 并结束旧循环。队列满或进程退出前未消费的信号没有持久操作记录，调用方必须查询状态，不能宣称已开始创建。`thread/resume` 与 `turn/start` 的所有者线程调度仍待实现。
+受信任本地 `thread/start` 信号也使用有界队列，队列项仅含已登记会话 ID、本地操作者 ID 和请求 ID；入队不是持久受理。当前连接所有者消费时先从本地工作区登记读取并核对参数，再由原有一次创建适配器记录意图、领取发送权和核对绑定。重复已确认信号只返回绑定，未知创建不重发；响应丢失则隔离连接、恢复 epoch 并结束旧循环。队列满或进程退出前未消费的信号没有持久操作记录，调用方必须查询状态，不能宣称已开始创建。
+
+已持久受理的新回合可用另一有界内存队列唤醒当前连接所有者。队列项携带原 session、run、操作者、请求号、预期版本及至多 16 KiB 的原输入，不承载上游 thread ID；输入只在内存中暂存且不进入诊断。消费时先核对持久操作和输入摘要，再按持久绑定执行 `thread/resume` 身份核对，成功后领取一次 `turn/start` 发送权。输入冲突、重复或未绑定时不发送；恢复身份失败、领取事务故障及已领取后的响应不确定均隔离当前连接并执行恢复，不消费旧队列剩余信号。入队不等于新回合已开始；已受理请求跨重启不自动排队重发。
 
 共享 Host 存储打开后到统一恢复事务成功前，领域写入口拒绝新会话、回合、审批与操作写入；恢复失败后继续拒绝。旧独立探针的审批写方法不能作用于共享库，以免绕过规范化事件和快照。
 

@@ -4,6 +4,26 @@
 
 ## 当前状态
 
+等待线程的已提交事件提示见 [DEV-005 事件通知](evidence/DEV-005-event-notification.md)。
+
+内部增量事件等待见 [DEV-005 命令邮箱事件等待](evidence/DEV-005-mailbox-event-wait.md)；取消边界见 [DEV-005 事件等待取消](evidence/DEV-005-event-wait-cancel.md)。
+
+同事务快照与最近事件尾页见 [DEV-005 快照尾页](evidence/DEV-005-snapshot-tail.md)。
+
+邮箱中的原始快照与事件页读取见 [DEV-005 命令邮箱读取侧](evidence/DEV-005-mailbox-reads.md)。
+
+跨线程请求交给 SQLite 所有者的内部入口见 [DEV-005 命令邮箱](evidence/DEV-005-command-mailbox.md)。
+
+已领取 `turn/start` 但尚未绑定 turn 的中断意图见 [DEV-005 已领取启动的中断](evidence/DEV-005-claimed-start-interrupt.md)。
+
+尚未派发的 `starting` 回合原子取消见 [DEV-005 未派发取消](evidence/DEV-005-unstarted-cancel.md)。
+
+中断请求在归属连接上的一次 stdio 派发见 [DEV-005 中断派发](evidence/DEV-005-owned-interrupt.md)。
+
+已绑定回合的中断请求持久边界见 [DEV-005 中断记录](evidence/DEV-005-interrupt-journal.md)。上游 `turn/interrupt` 尚未接入。
+
+已受理回合在归属连接上的串行派发见 [DEV-005 回合调度](evidence/DEV-005-owned-run-start.md)。
+
 本地 `thread/start` 的连接归属调度见 [DEV-005 本地 thread 创建](evidence/DEV-005-owned-thread-start.md)。
 
 当前连接上的审批串行派发见 [DEV-005 审批调度](evidence/DEV-005-owned-approval-scheduling.md)。

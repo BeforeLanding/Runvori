@@ -56,6 +56,12 @@ for raw in sys.stdin:
         send({"id": request_id, "error": {"message": "SECRET_DIAGNOSTIC"}})
         send({"method": "turn/completed", "params": {
             "threadId": "thread_demo", "turn": {"id": "turn_demo", "status": "completed"}}})
+    elif mode == "interrupt_ack_then_terminal" and request["method"] == "turn/interrupt":
+        send({"id": request_id, "result": {}})
+        send({"method": "turn/completed", "params": {
+            "threadId": "thread_demo", "turn": {"id": "turn_demo", "status": "interrupted"}}})
+    elif mode == "interrupt_lost_reply" and request["method"] == "turn/interrupt":
+        sys.exit(0)
     elif mode == "error":
         send({"id": request_id, "error": {"message": "SECRET_DIAGNOSTIC"}})
     elif mode == "server_request":

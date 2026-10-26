@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 from runvori.cli import ROOT
+from runvori.application.command_mailbox import HostCommandMailbox
 from runvori.codex.owned_event_loop import (
     OwnedEventLoopError, run_owned_event_loop,
 )
@@ -25,6 +26,27 @@ PEER = Path(__file__).with_name("fake_app_server.py")
 
 @unittest.skipUnless(os.name == "nt", "Windows owned upstream integration")
 class OwnedEventLoopTests(unittest.TestCase):
+    def test_committed_handoff_notifies_mailbox_readers(self):
+        class CountingMailbox(HostCommandMailbox):
+            def __init__(self):
+                super().__init__()
+                self.notifications = 0
+
+            def notify_events(self):
+                self.notifications += 1
+                super().notify_events()
+
+        with tempfile.TemporaryDirectory(dir=ROOT / ".dev") as temp:
+            with LockedHostJournals(Path(temp)) as startup:
+                _, owner = self._start(startup, confirmed=True)
+                owner.client.request("turn/start", {})
+                mailbox = CountingMailbox()
+                result = run_owned_event_loop(
+                    owner, stop=threading.Event(), poll_timeout=0.05,
+                    max_handoffs=1, commands=mailbox)
+                self.assertEqual(result["handoffs"], 1)
+                self.assertGreaterEqual(mailbox.notifications, 1)
+
     def _start(self, startup, *, confirmed=False, mode="event_handoff"):
         epoch = startup.recover_host_after_isolation(
             old_process_isolated=True, old_process_epoch=0,

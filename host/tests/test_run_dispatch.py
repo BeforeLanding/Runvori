@@ -20,6 +20,38 @@ PEER = Path(__file__).with_name("fake_app_server.py")
 
 
 class RunDispatchTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "Windows locked Host integration")
+    def test_interrupt_during_turn_start_response_keeps_bound_run_interrupting(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / ".dev") as temp:
+            with LockedHostJournals(Path(temp)) as startup:
+                epoch = self._reserved(startup)
+
+                class Client:
+                    closed = False
+
+                    def request(self, method, _params):
+                        if method == "thread/resume":
+                            return {"thread": {"id": "thread_demo"}}
+                        if method == "turn/start":
+                            startup.events.reserve_interrupt_request(
+                                "run", actor_id="device", request_id="stop",
+                                expected_version=1,
+                                recorded_at="2026-10-26T00:00:00Z")
+                            return {"turn": {"id": "turn_demo"}}
+                        raise AssertionError("unexpected_rpc")
+
+                    def close(self):
+                        self.closed = True
+
+                client = Client()
+                result = self._start(client, startup, epoch)
+                self.assertEqual(result["status"], "confirmed")
+                self.assertFalse(client.closed)
+                self.assertEqual(startup.events.snapshot("session")[
+                    "active_run"]["status"], "interrupting")
+                self.assertEqual(startup.events.get_interrupt_operation(
+                    "device", "stop")["status"], "accepted")
+
     @staticmethod
     def _reserved(startup, *, bind_thread=True):
         epoch = startup.recover_host_after_isolation(
