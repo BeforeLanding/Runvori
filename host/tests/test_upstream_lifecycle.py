@@ -15,6 +15,7 @@ from runvori.codex.upstream_lifecycle import (
 )
 from runvori.infrastructure.event_journal import EventJournalError
 from runvori.infrastructure.locked_journal import LockedHostJournals
+from runvori.infrastructure.process_identity import probe_process_identity
 
 
 PEER = Path(__file__).with_name("fake_app_server.py")
@@ -25,7 +26,7 @@ class UpstreamLifecycleTests(unittest.TestCase):
     @staticmethod
     def _ready(startup):
         return startup.recover_host_after_isolation(
-            old_process_isolated=True, old_process_epoch=0,
+            old_process_epoch=0,
             expected_run_id=None, expected_run_version=None,
             reason="host_restart",
             recorded_at="2026-10-25T00:00:00Z")["epoch"]
@@ -114,6 +115,44 @@ class UpstreamLifecycleTests(unittest.TestCase):
                 owner = self._owner(startup, epoch)
                 self.assertIsNone(owner.client.process.poll())
 
+    def test_launch_records_launcher_identity_and_recovery_verifies_it(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / ".dev") as temp:
+            with LockedHostJournals(Path(temp)) as startup:
+                epoch = self._ready(startup)
+                owner = self._owner(startup, epoch)
+                try:
+                    row = startup.events.connection.execute(
+                        "SELECT process_epoch, pid, created_at FROM "
+                        "upstream_processes").fetchone()
+                    self.assertEqual(row["process_epoch"], epoch)
+                    self.assertEqual(row["pid"], owner.client.process.pid)
+                    self.assertEqual(
+                        probe_process_identity(row["pid"], row["created_at"]),
+                        "running")
+                finally:
+                    owner.client.close()
+                    startup.release_upstream_owner(owner)
+
+    def test_retry_in_the_same_epoch_replaces_a_closed_launcher(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / ".dev") as temp:
+            with LockedHostJournals(Path(temp)) as startup:
+                epoch = self._ready(startup)
+                with patch("runvori.codex.upstream_lifecycle.StdioClient.initialize",
+                           side_effect=TransportError("init_failed")):
+                    with self.assertRaisesRegex(TransportError, "init_failed"):
+                        self._owner(startup, epoch)
+                first_pid = startup.events.connection.execute(
+                    "SELECT pid FROM upstream_processes").fetchone()[0]
+                owner = self._owner(startup, epoch)
+                try:
+                    second_pid = startup.events.connection.execute(
+                        "SELECT pid FROM upstream_processes").fetchone()[0]
+                    self.assertNotEqual(first_pid, second_pid)
+                    self.assertEqual(second_pid, owner.client.process.pid)
+                finally:
+                    owner.client.close()
+                    startup.release_upstream_owner(owner)
+
     def test_direct_recovery_cannot_advance_while_owned_process_is_live(self):
         with tempfile.TemporaryDirectory(dir=ROOT / ".dev") as temp:
             with LockedHostJournals(Path(temp)) as startup:
@@ -122,7 +161,7 @@ class UpstreamLifecycleTests(unittest.TestCase):
                 with self.assertRaisesRegex(EventJournalError,
                                             "upstream_isolation_unconfirmed"):
                     startup.recover_host_after_isolation(
-                        old_process_isolated=True, old_process_epoch=epoch,
+                        old_process_epoch=epoch,
                         expected_run_id=None, expected_run_version=None,
                         reason="upstream_exit",
                         recorded_at="2026-10-25T00:00:01Z")

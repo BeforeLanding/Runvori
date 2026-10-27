@@ -1,0 +1,37 @@
+{
+  "status": "passed",
+  "upstream": "synthetic_app_server",
+  "device": {
+    "serial": "emulator-5554",
+    "avd": "Medium_Phone",
+    "api": 37,
+    "abi": "x86_64",
+    "android_release": "17"
+  },
+  "client": {
+    "package": "dev.runvori.app",
+    "version_name": "0.0.2",
+    "transport": "pinned_https_sslsocket",
+    "host_bind": "loopback",
+    "endpoint_alias": "10.0.2.2",
+    "certificate_sans": ["DNS:localhost", "IP:10.0.2.2"]
+  },
+  "steps": [
+    {"step": "host_running", "sessions": 2, "status": "ok"},
+    {"step": "transport", "endpoint": "10.0.2.2", "host_bind": "loopback", "status": "ok"},
+    {"scenario": "s", "name": "credential store round trip", "status": "passed"},
+    {"scenario": "a", "name": "wrong fingerprint refused before any request", "status": "passed"},
+    {"scenario": "b", "name": "full loop: list, read, approve, report", "status": "passed"},
+    {"scenario": "c", "name": "reconnect after process loss, no duplicates or gaps", "status": "passed"},
+    {"scenario": "d", "name": "expired approval cannot be allowed", "status": "passed"},
+    {"scenario": "f", "name": "insufficient review offers only deny", "status": "passed"},
+    {"scenario": "h", "name": "interrupt ends the active run", "status": "passed"},
+    {"scenario": "g", "name": "duplicate operation query is stable", "status": "passed"},
+    {"step": "revoke", "status": "revoked"},
+    {"scenario": "e", "name": "revoked device cannot read", "status": "passed"}
+  ],
+  "not_executed": {
+    "real_codex_acceptance": "requires paid model call and explicit authorization",
+    "scenarios_absent": ["file approval with complete details", "command/artifact detail endpoints"]
+  }
+}

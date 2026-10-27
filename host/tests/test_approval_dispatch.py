@@ -19,6 +19,8 @@ from runvori.codex.event_handoff import process_next_event
 from runvori.codex.stdio import StdioClient, TransportError
 from runvori.infrastructure.locked_journal import LockedHostJournals
 
+from approval_fixtures import reviewable_command, seed_workspace_session
+
 
 PEER = Path(__file__).with_name("fake_app_server.py")
 
@@ -37,10 +39,10 @@ class ApprovalDispatchTests(unittest.TestCase):
     @staticmethod
     def _running(startup):
         epoch = startup.recover_host_after_isolation(
-            old_process_isolated=True, old_process_epoch=0,
+            old_process_epoch=0,
             expected_run_id=None, expected_run_version=None,
             reason="host_restart", recorded_at="2026-10-25T00:00:00Z")["epoch"]
-        startup.events.create_session("session", {})
+        seed_workspace_session(startup, epoch)
         startup.events.reserve_run_request(
             "session", "run", actor_id="device", request_id="run-request",
             expected_session_version=0, input_text="continue",
@@ -55,11 +57,24 @@ class ApprovalDispatchTests(unittest.TestCase):
         return epoch
 
     @staticmethod
+    def _next_approval_request(client):
+        """Skip item lifecycle notifications that precede the approval."""
+        for _ in range(4):
+            message = client.next_event(1)
+            if "id" in message:
+                return message
+        raise AssertionError("approval_request_not_observed")
+
+    @staticmethod
     def _decision(startup, epoch, *, upstream_id=23):
         approval = record_approval_request_event(
             startup, {"id": upstream_id,
                       "method": "item/commandExecution/requestApproval",
-                      "params": {"threadId": "thread_demo", "turnId": "turn_demo"}},
+                      "params": {"threadId": "thread_demo", "turnId": "turn_demo",
+                                 "itemId": "item_demo",
+                                 "command": "python --version",
+                                 "cwd": str(startup.data_dir),
+                                 "startedAtMs": 1700000000000}},
             epoch=epoch, recorded_at="2026-10-25T00:00:04Z")
         startup.record_approval_decision(
             approval["approval_id"], actor_id="device",
@@ -205,7 +220,7 @@ class ApprovalDispatchTests(unittest.TestCase):
                          str(effect)], cwd=ROOT, env=dict(os.environ)) as client:
                     client.initialize()
                     client.request("turn/start", {})
-                    request = client.next_event(1)
+                    request = self._next_approval_request(client)
                     self._decision(startup, epoch, upstream_id=request["id"])
                     sent = send_approval_once(
                         client, startup, actor_id="device",
@@ -221,7 +236,7 @@ class ApprovalDispatchTests(unittest.TestCase):
                 self.assertEqual(startup.get_approval_operation(
                     "device", "decision-request")["status"], "dispatching")
                 startup.recover_host_after_isolation(
-                    old_process_isolated=True, old_process_epoch=epoch,
+                    old_process_epoch=epoch,
                     expected_run_id="run", expected_run_version=3,
                     reason="upstream_exit",
                     recorded_at="2026-10-25T00:00:07Z")

@@ -2,6 +2,34 @@
 
 此处保存已发生的错误。规则唯一来源为 [AGENTS.md](../AGENTS.md)，进度见 [progress.md](../progress.md)。禁止粘贴未脱敏栈、个人目录、令牌或真实会话。
 
+## ERR-DEV-006：审批详情闸门导致既有测试夹具被拒
+
+- 日期/阶段：2026-10-27，DEV-006 审批详情与禁止盲批。
+- 触发：加入 `allow_once` 闸门后，既有 13 处 `record_approval_request` 调用不提供详情，`record_approval_decision` 返回 `approval_details_insufficient`；合成 app-server 的审批载荷只有 `threadId/turnId`，也不满足 detail 完整性。
+- 根因：闸门按设计拒绝缺少 command/item/cwd 的请求，而测试辅助函数仍按旧形态构造审批；另有一处测试夹具在临时目录内注册工作区但会话未绑定工作区，导致 `cwd` 无法核实。
+- 修复与回归：新增 `host/tests/approval_fixtures.py` 统一提供可审阅的命令详情与工作区注册，13 处调用改为显式详情或断言 409；合成 app-server 按真实载荷补齐 `command/cwd/itemId/startedAtMs` 并支持 `RUNVORI_FAKE_WORKSPACE`。全量 362 项通过。
+
+## ERR-DEV-006：邮箱内嵌套命令自锁
+
+- 日期/阶段：2026-10-27，DEV-006 本地管理入口。
+- 触发：`create-session --create-thread` 经管道进入邮箱后，所有者线程在 `create_session` 内再次调用 `start_thread` 邮箱命令，等待自己完成，10 秒后返回 `command_result_unknown`。
+- 根因：管理命令在所有者线程上同步发起第二个邮箱命令，违反“邮箱只由外部线程提交”的假设。
+- 修复与回归：`create_session` 命令自身在已持久创建会话后直接向 `OwnedThreadStartQueue` 入队（同一命令内完成），不再嵌套提交；新增的合成闭环与 API 测试覆盖该路径。
+
+## ERR-DEV-006：命名管道连接不支持 settimeout
+
+- 日期/阶段：2026-10-27，DEV-006 本地管理入口。
+- 触发：`LocalAdminClient.call` 抛 `AttributeError: 'PipeConnection' object has no attribute 'settimeout'`。
+- 根因：`multiprocessing.connection.PipeConnection` 与套接字接口不同，无超时 API。
+- 修复与回归：移除超时设置；对端关闭以 `EOFError/OSError` 呈现并按“结果未知/未运行”分类，客户端明确不自动重试可能已执行的命令。
+
+## ERR-DEV-006：崩溃重启测试在标记改名后偶发 PermissionError
+
+- 日期/阶段：2026-10-27，DEV-006 全量检查。
+- 触发：`test_host_restart` 偶发在读取 `markers/started` 时抛 `PermissionError`，单独重跑总是通过。
+- 根因：测试辅助函数在原子改名后立即打开文件，Windows 上扫描器/索引进程可能短暂持有句柄；这是测试装置竞态，不是 Host 结果。
+- 修复与回归：`_wait_file` 在读取阶段对 `PermissionError` 重试至同一超时，超时才判失败；连续两次定向运行与全量检查通过。
+
 ## ERR-DEV-005：重开夹具使用过时代次
 
 - 日期/阶段：2026-10-26，DEV-005 Host 设备访问组合。
@@ -254,6 +282,69 @@
 - 分析：相同主题名使信任路径选择存在歧义；本轮没有单独证明 OpenSSL 内部选择细节。
 - 修复：测试证书使用不同主题名，仍都用 `localhost` SAN 做同一端点主机名核对；保持链和主机名校验开启。
 - 验证：匹配指纹通过，轮换公钥、错误主机名和未受信任证书的拒绝路径均通过。
+
+## ERR-025：进程退出后 PID 条目仍短暂存在
+
+- 日期/阶段：2026-10-26，DEV-005 上游进程身份切片。
+- 触发：测试先 `kill()` 并 `wait()` 一个子进程，然后期待 `OpenProcess` 失败；Windows 在仍有句柄或内核对象引用时保留 PID 条目，`OpenProcess` 仍成功，探测返回 `exited` 而不是 `absent`。
+- 分析：进程「已退出」与「PID 已回收」不是同一事实；`GetExitCodeProcess` 返回真实退出码，`STILL_ACTIVE`（259）才是存活判据。不能以 `OpenProcess` 失败作为唯一判据。
+- 修复：探测按创建时间区分 PID 复用，用退出码区分已退出与存活；门禁接受 `absent/exited/replaced` 三种结果。测试改为等待「不再是 running」，而不是等待 PID 消失。
+- 验证：跨崩溃回归验证了 Job 内启动器被杀后放行、Job 外遗留进程被杀前拒绝；见 [证据](evidence/DEV-005-upstream-process-identity.md)。
+- 规则：已提炼到 AGENTS.md「进程身份判定不以 OpenProcess 失败为唯一依据」。
+
+## ERR-026：TLS 回环探针发送后立即关闭导致丢包（已修复）
+
+- 日期/阶段：2026-10-26，运行完整离线检查时观察到；与本轮进程身份改动无关（该脚本不导入 `runvori`）。
+- 触发：`python scripts/probe_tls_identity.py` 偶发返回 `matching_identity_not_accepted` 或 `explicit_new_pin_not_accepted`；连续 20 次中失败 5 次。
+- 定位：单独复现握手 12 次，其中 1 次客户端 `sendall` 正常返回、服务端 `recv` 返回空字节且两侧都没有异常——客户端在发送后立即关闭 TLS 连接，触发的 RST 早于服务端读取，应用数据被丢弃。不是证书、指纹或主机名判定错误。
+- 修复：`connect_pinned` 发送后等待对端关闭（`recv` 到空）再退出，把「握手与指纹通过」与「套接字拆除时序」分开；超时明确报 `probe_ack_timeout`，不重试、不掩盖。
+- 验证：修复后探针连续 30 次全部通过；关联的 `scripts/probe_https_pairing.py` 连续 40 次通过（该脚本本就用 `HTTPResponse` 读完响应再关闭，未受影响）；`python scripts/check.py` 连续 4 次 294 项通过。
+- 规则：一次性握手探针必须等到对端确认或读到响应再关闭，不能把「发送成功」当作「对端收到」。
+
+## ERR-027：测试后代继承协议管道掩盖上游退出（测试装置已修复）
+
+- 日期/阶段：2026-10-26，DEV-005 Host 关闭与重启闭环。
+- 触发：上游故障用例中，fake app-server 在回复 `turn/start` 后退出，但 Host 的事件循环一直读不到 EOF，15 秒后仍保持运行；`run_result` 未写出。
+- 定位：fake app-server 为进程树验证派生的 leaf 进程继承了 fake app-server 的 stdout/stdin 管道。fake app-server 退出后，leaf 仍持有写端，Host 的读取线程看不到 EOF；Job 只在 Host 死亡时兜底，不能覆盖“上游父进程正常退出”。
+- 修复：测试 leaf 使用 `DEVNULL`，不继承协议管道；崩溃用例的进程树验证不变。
+- 验证：上游故障用例通过，Host 在恢复后退出；合成五切点崩溃测试与全量检查通过，后续真实 Codex 五切点也通过。
+- 未确认风险：真实 Codex app-server 若派生继承 stdio 的后代，Host 的上游退出检测同样可能被推迟。真实 Codex 崩溃测试中观测到 `codex-code-mode-host.exe` 与 `conhost.exe` 后代均被同一 Job 收敛，但没有测试“上游正常退出且后代仍持有协议管道”的 EOF 检测；该风险继续开放，不能把 Job 的 Host 死亡兜底当成上游退出检测。
+
+## ERR-028：新建 Codex thread 在首回合前无法 resume（已修复）
+
+- 日期/阶段：2026-10-26，DEV-005 真实 Codex Host 崩溃测试首次运行。
+- 触发：等待审批切点的真实 Host 在 `run_start_fault` 后恢复并退出；直接调用真实 app-server 复现，`thread/resume` 返回 `no rollout found for thread id ...`。
+- 定位：Codex 新建 thread 在首个 `turn` 产生 rollout 之前不能被新连接 resume。Host 的 `start_run_once` 在每次首次派发前都无条件调用 `thread/resume`，因此“新建会话后立即开始第一回合”在真实上游失败；此前合成 peer 与直接播种 thread 掩盖了该路径。
+- 修复：`StdioClient` 记录本连接创建的 thread；产品 `thread/start` 成功后标记；`resume_session_thread` 对同一连接新建的 thread 跳过 resume，直接允许首次 `turn/start`。标记只在内存中，Host 重启后消失，旧 thread 仍必须成功 resume，保持失败关闭。
+- 验证：真实 Codex 通过产品 `thread/start` 创建 thread 后成功开始首回合；五个真实崩溃切点通过；新增单元测试覆盖 fresh thread 跳过 resume 与 thread/start 标记。证据见 [真实 Codex 五切点](evidence/DEV-005-host-runtime-restart-real-codex.md)。
+- 规则：不得对刚刚由当前上游连接创建、尚未产生 rollout 的 thread 无条件 resume；也不能把“跳过首次 resume”扩大到重启后的旧 thread。
+
+## ERR-029：TLS 握手在 worker 线程交错导致客户端看到 EOF
+
+- 日期/阶段：2026-10-27，DEV-007 设备验收联调。
+- 触发：模拟器连接 `https://10.0.2.2:<port>/v1` 时，客户端偶发在握手后立刻读到 EOF；Host 侧无 HTTP 记录，客户端表现为握手失败。单客户端串行请求不出现。
+- 定位：`ThreadingHTTPServer` 把已 accept 的原始 socket 交给工作线程，`wrap_socket` 在工作线程执行。并发时 accept 循环继续返回新连接，两个 TLS 握手可以在同一对 socket 上交错，一方收到对方的 `ClientHello`/`ServerHello` 后报 `SSLV3_ALERT_CERTIFICATE_UNKNOWN` 并断开。不是证书、指纹或主机名判定错误，也不是防火墙。
+- 修复：`_ThreadedHttps.get_request` 在 accept 线程完成 `wrap_socket`，握手失败的连接就地关闭，不进入请求线程。
+- 验证：设备验收九个场景连续三轮全绿；`test_api_handlers.py`、`test_https_host_flow.py` 与全量 374 项检查通过。
+- 规则：TLS 必须在 accept 线程完成握手，不能把未包装的原始 socket 交给工作线程。
+
+## ERR-030：同步成功抹掉了紧接着的拒绝原因
+
+- 日期/阶段：2026-10-27，DEV-007 设备验收场景 `b`。
+- 触发：在已有活动回合的会话里发起新回合时，用户看不到 `active_run_exists` 的提示；`startRun` 明明设置了 `error`。
+- 定位：`startRun` 的 `ProtocolError` 分支先写 `error`，紧接着调用 `syncSelectedSession()`；`applySync` 无条件 `error = null`，于是刚写的拒绝信息在渲染前就被清掉。这不是测试时序问题——真实用户同样看不到。
+- 修复：`applySync` 只清除网络类瞬时错误（`TRANSIENT_ERRORS` 里的“网络不可达…”），其余错误保留；同时把 `dismissError` 改为同时清 `error` 与 `notice`，修掉“知道了”按钮只清错误而让提示横幅留在屏幕上的问题。
+- 验证：重装 APK 后重跑设备验收，九个场景仍全绿（`startRun` 在成功路径上断言 `error == null`，说明收紧后的清除规则没有误留错误）。但**拒绝路径仍无自动化断言**：现有场景不会在已有活动回合时再次发起，`active_run_exists` 的提示实际呈现未被测试覆盖，已记入 [DEV-007 未完成项](evidence/DEV-007-device-acceptance.md)。
+- 规则：同步可以推翻“连不上”，不能推翻“Host 拒绝了这次操作”；错误横幅与提示横幅共用一个关闭入口时必须一起清除。
+
+## ERR-031：真实模式最初复用合成场景与断言（准备阶段发现，已修复）
+
+- 日期/阶段：2026-10-27，DEV-007 真实 Codex 设备验收准备。
+- 触发：`scripts/accept_device.py --real` 只切换上游进程，默认仍运行九个合成场景；提示词含 `[expire-request]`、`[file-change]`、`[interrupt]`，断言依赖 `python --version` 字面量、输出 `3.12` 和“合成完成”。launcher 未传 `expected_upstream_version`，也未校验 Codex 绝对路径或专用 `CODEX_HOME`。
+- 定位：真实模式缺少场景白名单、版本门、真实提示词传递和真实断言分支；`c` 还会额外启动一个 run，使一次“真实验收”变成多次模型调用。直接加 `--real` 会把合成时序误称为真实证据，并可能跳过版本门。
+- 修复：真实模式增加 Codex 绝对路径/版本/`CODEX_HOME` 校验与敏感环境清理、一次性 fixture 工作区、线程绑定预检、`s/a/b/c/g/e` 白名单、`ACCEPT_PROMPT` base64 传递、真实断言分支与 240 秒超时、`--dry-run`、`--report` 和 `runs` 计数校验；`d/f/h` 在真实模式被拒绝。
+- 验证：`--real --dry-run` 输出 `expected_model_turns=1`；改后合成九场景全绿；随后真实设备验收 1 次通过（`observed_runs=1`），见 [真实设备验收](evidence/DEV-007-device-acceptance-real.md)。
+- 规则：真实模式必须有独立场景集、独立提示词与断言，并先过版本门；不能把合成时序、合成文本或“加了 `--real`”本身当作真实证据。
 
 ## 记录模板
 

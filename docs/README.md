@@ -1,8 +1,14 @@
 # 文档导航与维护约定
 
-更新日期：2026-10-23。基线：[定位与首版方案](定位与首版方案.md)，对应仓库提交 `9cf6495`。
+更新日期：2026-10-27。基线：[定位与首版方案](定位与首版方案.md)，对应仓库提交 `9cf6495`。
 
 ## 当前状态
+
+DEV-007 把 Android 从占位工程接成最小业务客户端：补齐会话列表与按回合的审批列表、把上游 item 生命周期投影成时间线（事件库 v15），Android 侧实现配对载荷解析、Keystore 凭据、固定指纹 HTTPS、SQLite 缓存与同步、四个屏幕与新回合/中断。设备验收用**真实 APK → 固定指纹 HTTPS → 真实 `HostRuntime` → 合成 app-server** 跑通九个场景，见 [DEV-007 设备验收](evidence/DEV-007-device-acceptance.md)。同日又用真实 Codex 执行 **1 次**核心闭环设备验收（`s/a/b/c/g/e`，1 次模型回合，`observed_runs=1`，未重试），见 [DEV-007 真实设备验收](evidence/DEV-007-device-acceptance-real.md)；真实中断/过期、真实文件审批、命令/产物明细端点、Android 生命周期与性能仍未覆盖。
+
+DEV-006 把真实 `HostRuntime` 接成可由独立 HTTPS 客户端操作的最小 Host：审批详情与禁止盲批闸门、Windows 命名管道本地管理入口、HTTPS 与设备认证/限流、最小业务端点。合成上游闭环见 [DEV-006 HTTPS Host](evidence/DEV-006-https-host.md)，真实 Codex 一次验收见 [DEV-006 真实验收](evidence/DEV-006-https-host-real.md)。
+
+旧受管上游进程的持久身份与启动隔离门见 [DEV-005 上游进程身份](evidence/DEV-005-upstream-process-identity.md)；无身份记录时的失败关闭与产品 Host 启动/崩溃重启闭环见 [DEV-005 Host 启动与重启](evidence/DEV-005-host-runtime-restart.md)。锁定版本真实 Codex、启动前版本门、审批决定入口和五个真实崩溃切点见 [DEV-005 真实 Codex 五切点](evidence/DEV-005-host-runtime-restart-real-codex.md)；AT-16 仍因首发 OS 等条件未整体通过。
 
 恢复后 Host 身份与配对、读取入口的内部组合见 [DEV-005 Host 设备访问](evidence/DEV-005-host-device-access.md)。
 

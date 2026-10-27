@@ -23,6 +23,9 @@ class OwnedEventLoopError(ValueError):
     """Safe validation refusal without upstream or database contents."""
 
 
+MAX_EVENTS_PER_ITERATION = 64
+
+
 def run_owned_event_loop(owner: OwnedUpstream, *, stop: threading.Event,
                          poll_timeout: float = 0.25,
                          max_handoffs: int | None = None,
@@ -84,17 +87,20 @@ def _run_owned_event_loop(owner: OwnedUpstream, *, stop: threading.Event,
     owner.journals.assert_owned_upstream(owner, epoch=owner.epoch)
     counts = {"approval_request": 0, "request_closed": 0,
               "turn_terminal": 0, "ignored_notification": 0,
+              "item_recorded": 0, "approval_details_updated": 0,
               "approval_dispatched": 0, "approval_skipped": 0,
               "thread_start_confirmed": 0, "thread_start_rejected": 0,
               "run_started": 0, "run_start_rejected": 0,
               "interrupt_dispatched": 0, "interrupt_uncertain": 0,
-              "interrupt_skipped": 0, "command_served": 0}
+              "interrupt_skipped": 0, "command_served": 0,
+              "timeline_recorded": 0, "timeline_ignored": 0}
     handoffs = 0
     while not stop.is_set():
         recorded_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         if commands is not None and commands.serve_once(
                 owner.journals, recorded_at=recorded_at,
-                run_starts=run_starts, interrupts=interrupts):
+                run_starts=run_starts, interrupts=interrupts,
+                approvals=approvals, thread_starts=thread_starts):
             counts["command_served"] += 1
         local_start = None if thread_starts is None else thread_starts.take_nowait()
         if local_start is not None:
@@ -161,4 +167,26 @@ def _run_owned_event_loop(owner: OwnedUpstream, *, stop: threading.Event,
         if max_handoffs is not None and handoffs >= max_handoffs:
             return {"reason": "handoff_limit", "handoffs": handoffs,
                     "counts": counts}
+        if max_handoffs is None:
+            # Streamed output arrives far faster than one message per
+            # iteration. Drain what is already buffered so the bounded stdio
+            # queue cannot overflow, then return to commands and approvals.
+            for _ in range(MAX_EVENTS_PER_ITERATION):
+                if stop.is_set():
+                    break
+                drained = pump_owned_event_once(
+                    owner, timeout=0.001,
+                    recorded_at=datetime.now(timezone.utc).isoformat().replace(
+                        "+00:00", "Z"))
+                if drained is None:
+                    break
+                if commands is not None:
+                    commands.notify_events()
+                if drained["kind"] == "upstream_recovered":
+                    return {"reason": "upstream_recovered",
+                            "handoffs": handoffs, "counts": counts,
+                            "cause": drained["cause"],
+                            "epoch": drained["recovery"]["epoch"]}
+                counts[drained["kind"]] += 1
+                handoffs += 1
     return {"reason": "stopped", "handoffs": handoffs, "counts": counts}

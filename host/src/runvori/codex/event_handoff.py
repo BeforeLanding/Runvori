@@ -5,6 +5,9 @@ from typing import Any
 from runvori.codex.approval_events import (
     record_approval_request_event, record_resolved_notification,
 )
+from runvori.codex.item_events import (
+    DELTA_METHODS, ITEM_METHODS, record_delta, record_item_event,
+)
 from runvori.codex.turn_events import record_turn_completed_notification
 
 
@@ -36,6 +39,10 @@ def route_observed_event(journals: Any, message: dict, *,
         return {"kind": "turn_terminal", "record":
                 record_turn_completed_notification(
                     journals, message, epoch=epoch, recorded_at=recorded_at)}
+    if method in ITEM_METHODS:
+        return record_item_event(journals, message, recorded_at=recorded_at)
+    if method in DELTA_METHODS:
+        return record_delta(journals, message, recorded_at=recorded_at)
     if "id" in message:
         raise EventHandoffError("unsupported_server_request")
     if "result" in message or "error" in message:

@@ -1,7 +1,10 @@
-"""M0 startup slice: acquire Host ownership before opening the approval journal.
+"""Locked Host startup: own one data directory, then recover one epoch.
 
-The journal epoch is intentionally not advanced here. A future Host must first
-isolate any old app-server process and then call start_epoch_after_isolation.
+A future Host must record the launcher identity when it starts an app-server
+(schema v12) so that the next startup can verify that process is gone instead
+of trusting a caller's claim. Schema v13 records whether each epoch ever
+launched an upstream; an epoch without that state is never treated as
+isolated.
 """
 
 from __future__ import annotations
@@ -10,14 +13,23 @@ import hashlib
 import json
 import sqlite3
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 
+from runvori.codex import approval_details
 from runvori.infrastructure.approval_journal import ApprovalJournal
 from runvori.infrastructure.event_journal import (
     MAX_EVENT_BYTES, MAX_SEQ, MAX_THREAD_ID_BYTES,
     EventJournal, EventJournalError, _json_bytes,
 )
 from runvori.infrastructure.instance_lock import InstanceLockUnavailable, WindowsInstanceLock
+from runvori.infrastructure.process_identity import (
+    ISOLATED_OUTCOMES, ProcessIdentityError, probe_process_identity,
+)
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 class LockedApprovalJournal:
@@ -65,8 +77,10 @@ class LockedApprovalJournal:
 class LockedHostJournals:
     """Own approval and event state on one SQLite connection under one lock.
 
-    This does not advance an approval epoch or recover an active run. Legacy
-    split probe databases are refused rather than silently ignored.
+    This does not spawn an app-server or verify the whole process tree. It
+    records the launcher's PID and creation time per epoch and refuses
+    recovery while that recorded process may still be alive.
+    Legacy split probe databases are refused rather than silently ignored.
     """
 
     def __init__(self, data_dir: Path):
@@ -97,18 +111,23 @@ class LockedHostJournals:
             events = EventJournal(
                 self.data_dir / "host.db", write_gate=lambda: self._recovered)
             approvals = ApprovalJournal(connection=events.connection)
+            self.lock = lock
+            self.approvals = approvals
+            self.events = events
+            self._recovered = False
+            self._closing = False
+            self._reconcile_upstream_epoch_state()
         except BaseException:
             try:
-                if events is not None:
-                    events.close()
+                if self.lock is None:
+                    if events is not None:
+                        events.close()
+                else:
+                    self.close()
             finally:
-                lock.close()
+                if self.lock is None:
+                    lock.close()
             raise
-        self.lock = lock
-        self.approvals = approvals
-        self.events = events
-        self._recovered = False
-        self._closing = False
         return self
 
     def close(self) -> None:
@@ -152,6 +171,86 @@ class LockedHostJournals:
         """Expose the authoritative identity only after startup recovery."""
         self._require_recovered()
         return self.events.get_host_id()
+
+    def startup_state(self) -> dict:
+        """Read the pre-recovery epoch without opening the write gate.
+
+        A missing epoch state is reported as None, never inferred as isolated.
+        """
+        if self.events is None or self.approvals is None:
+            raise InstanceLockUnavailable("locked_journals_not_open")
+        db = self.events.connection
+        epoch = self.approvals.current_epoch()
+        state = db.execute(
+            "SELECT state FROM upstream_epochs WHERE process_epoch=?",
+            (epoch,)).fetchone()
+        slot = db.execute(
+            "SELECT a.run_id, r.status, r.version FROM active_slot AS a "
+            "JOIN runs AS r ON r.run_id=a.run_id WHERE a.singleton=1").fetchone()
+        return {
+            "epoch": epoch,
+            "epoch_state": None if state is None else state["state"],
+            "first_start": epoch == 0,
+            "active_run": None if slot is None else {
+                "run_id": slot["run_id"], "status": slot["status"],
+                "version": slot["version"]},
+        }
+
+    def _reconcile_upstream_epoch_state(self) -> None:
+        """Give the current epoch an explicit identity state.
+
+        Epochs that predate v13 and have no recorded process are marked
+        legacy_unknown. They are never backfilled as isolated.
+        """
+        db = self.events.connection
+        db.execute("BEGIN IMMEDIATE")
+        try:
+            epoch = self.approvals.current_epoch()
+            states = db.execute(
+                "SELECT process_epoch, state FROM upstream_epochs "
+                "ORDER BY process_epoch").fetchall()
+            if any(row["process_epoch"] > epoch for row in states):
+                raise EventJournalError("upstream_epoch_state_invalid")
+            if epoch == 0:
+                if states or self._has_upstream_history():
+                    raise EventJournalError("upstream_epoch_state_invalid")
+                db.execute("COMMIT")
+                return
+            current = next(
+                (row for row in states if row["process_epoch"] == epoch), None)
+            if current is None:
+                recorded = db.execute(
+                    "SELECT 1 FROM upstream_processes WHERE process_epoch=?",
+                    (epoch,)).fetchone()
+                state = "recorded" if recorded is not None else "legacy_unknown"
+                db.execute(
+                    "INSERT INTO upstream_epochs(process_epoch, state, recorded_at) "
+                    "VALUES (?, ?, ?)", (epoch, state, _now()))
+            else:
+                state = current["state"]
+            recorded = db.execute(
+                "SELECT 1 FROM upstream_processes WHERE process_epoch=?",
+                (epoch,)).fetchone()
+            if state == "recorded":
+                if recorded is None:
+                    raise EventJournalError("upstream_epoch_state_invalid")
+            elif state in {"unlaunched", "legacy_unknown"}:
+                if recorded is not None:
+                    raise EventJournalError("upstream_epoch_state_invalid")
+            else:
+                raise EventJournalError("upstream_epoch_state_invalid")
+            db.execute("COMMIT")
+        except BaseException:
+            db.execute("ROLLBACK")
+            raise
+
+    def _has_upstream_history(self) -> bool:
+        db = self.events.connection
+        for table in ("upstream_processes", "upstream_turns", "runs",
+                      "approvals", "thread_starts", "sessions", "workspaces"):
+            if db.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone() is not None:
+                return True
+        return False
 
     def reserve_upstream_owner(self, owner, *, epoch: int) -> None:
         """Reserve the sole connection slot before starting a child process."""
@@ -203,6 +302,21 @@ class LockedHostJournals:
         if epoch != self.approvals.current_epoch():
             raise EventJournalError("stale_epoch")
         return self.events.get_session_thread(session_id)
+
+    def get_session_thread_view(self, session_id: str) -> dict:
+        """Return the durable thread binding, or null while none is bound."""
+        if self.events is None:
+            raise InstanceLockUnavailable("locked_journals_not_open")
+        if not isinstance(session_id, str) or not session_id:
+            raise EventJournalError("invalid_session_id")
+        row = self.events.connection.execute(
+            "SELECT s.session_id, st.thread_id FROM sessions AS s "
+            "LEFT JOIN session_threads AS st ON st.session_id=s.session_id "
+            "WHERE s.session_id=?", (session_id,)).fetchone()
+        if row is None:
+            raise EventJournalError("session_not_found")
+        return {"session_id": row["session_id"],
+                "thread_id": row["thread_id"]}
 
     def get_bound_interrupt_turn(self, run_id: str, *, epoch: int) -> dict:
         """Read only the active, bound turn on this Host's current epoch."""
@@ -486,18 +600,24 @@ class LockedHostJournals:
     def record_approval_request(
             self, session_id: str, run_id: str, *, approval_id: str,
             epoch: int, upstream_request_id: str, kind: str,
-            recorded_at: str) -> dict:
-        """Persist one approval and its normalized event in one transaction."""
+            recorded_at: str, details: dict | None = None,
+            turn_id: str | None = None) -> dict:
+        """Persist one approval and its normalized event in one transaction.
+
+        ``details`` is the review content; omitting it records the request as
+        insufficient, which forbids a one-time allow.
+        """
         return self._record_approval_request(
             session_id, run_id, approval_id=approval_id, epoch=epoch,
             upstream_request_id=upstream_request_id, kind=kind,
-            recorded_at=recorded_at, request_digest=None,
-            in_transaction=False)
+            recorded_at=recorded_at, request_digest=None, details=details,
+            turn_id=turn_id, in_transaction=False)
 
     def _record_approval_request(
             self, session_id: str, run_id: str, *, approval_id: str,
             epoch: int, upstream_request_id: str, kind: str,
             recorded_at: str, request_digest: bytes | None,
+            details: dict | None, turn_id: str | None,
             in_transaction: bool) -> dict:
         self._require_recovered()
         if (not session_id or not run_id or not approval_id
@@ -505,6 +625,9 @@ class LockedHostJournals:
                 or not upstream_request_id or kind not in {"command", "file_change"}
                 or (request_digest is not None and
                     (type(request_digest) is not bytes or len(request_digest) != 32))
+                or (details is not None and not isinstance(details, dict))
+                or (turn_id is not None and (not isinstance(turn_id, str)
+                                             or not turn_id))
                 or not recorded_at):
             raise EventJournalError("invalid_approval_request")
         db = self.events.connection
@@ -543,15 +666,33 @@ class LockedHostJournals:
             encoded = _json_bytes(snapshot)
             if len(encoded) > MAX_EVENT_BYTES:
                 raise EventJournalError("snapshot_too_large")
+            workspace = db.execute(
+                "SELECT w.root FROM session_workspaces AS sw JOIN workspaces AS w "
+                "ON w.workspace_id=sw.workspace_id WHERE sw.session_id=?",
+                (session_id,)).fetchone()
+            root = None if workspace is None else workspace["root"]
+            if details is not None:
+                review = approval_details.normalize(
+                    details, workspace_root=root, recorded_at=recorded_at)
+            else:
+                # No review content was supplied; the record stays inspectable
+                # but no allow can be offered.
+                review = approval_details.redacted(
+                    f"{kind}_details_unrecorded", recorded_at)
             db.execute(
                 "INSERT INTO approvals(approval_id, epoch, upstream_request_id, "
-                "kind, status, version, run_id, request_digest) "
-                "VALUES (?, ?, ?, ?, 'pending', 1, ?, ?)",
+                "kind, status, version, run_id, request_digest, turn_id, item_id, "
+                "upstream_approval_id, requested_at, details_json, details_status) "
+                "VALUES (?, ?, ?, ?, 'pending', 1, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (approval_id, epoch, upstream_request_id, kind, run_id,
-                 request_digest))
+                 request_digest, turn_id, review.get("item_id"),
+                 review.get("upstream_approval_id"), review.get("requested_at"),
+                 approval_details.encode(review),
+                 review.get("details_status")))
             event = self.events._append_in_tx(
                 session_id, run_id, "approval.requested",
-                {"approval_id": approval_id, "approval_version": 1},
+                {"approval_id": approval_id, "approval_version": 1,
+                 "kind": kind, "details_status": review.get("details_status")},
                 recorded_at, encoded)
             db.execute(
                 "UPDATE runs SET status='waiting_approval', version=version+1 "
@@ -570,7 +711,7 @@ class LockedHostJournals:
     def record_upstream_approval_request(
             self, *, thread_id: str, turn_id: str, epoch: int,
             upstream_request_id: str, kind: str, approval_id: str,
-            request_digest: bytes,
+            request_digest: bytes, details: dict,
             recorded_at: str) -> dict:
         """Bind one raw upstream request to its persisted run, once."""
         self._require_recovered()
@@ -582,6 +723,7 @@ class LockedHostJournals:
                 or not isinstance(approval_id, str) or not approval_id
                 or kind not in {"command", "file_change"}
                 or type(request_digest) is not bytes or len(request_digest) != 32
+                or not isinstance(details, dict)
                 or not isinstance(recorded_at, str) or not recorded_at):
             raise EventJournalError("invalid_upstream_approval_request")
         db = self.events.connection
@@ -610,7 +752,7 @@ class LockedHostJournals:
                     approval_id=approval_id, epoch=epoch,
                     upstream_request_id=upstream_request_id, kind=kind,
                     recorded_at=recorded_at, request_digest=request_digest,
-                    in_transaction=True)
+                    details=details, turn_id=turn_id, in_transaction=True)
                 result = self.approvals.get(approval_id)
             db.execute("COMMIT")
             return result
@@ -784,6 +926,7 @@ class LockedHostJournals:
             else:
                 row = db.execute(
                     "SELECT a.run_id, a.epoch, a.status, a.version, a.decision, "
+                    "a.details_json, a.requested_at, "
                     "r.session_id, r.status AS run_status, s.session_version, "
                     "s.snapshot_json FROM approvals AS a "
                     "JOIN runs AS r ON r.run_id=a.run_id "
@@ -810,6 +953,16 @@ class LockedHostJournals:
                         raise EventJournalError("approval_expired")
                     if row["version"] != expected_version:
                         raise EventJournalError("resource_changed")
+                    if decision == "allow_once":
+                        # Blind approval is forbidden: the reviewer must have
+                        # complete, non-truncated content for this request.
+                        review = approval_details.decode(
+                            row["details_json"], "approval_details_unrecorded",
+                            row["requested_at"] or recorded_at)
+                        if not approval_details.can_allow(
+                                review, status=row["status"], decided=False):
+                            raise EventJournalError(
+                                "approval_details_insufficient")
                     slot = db.execute(
                         "SELECT run_id FROM active_slot WHERE singleton=1").fetchone()
                     binding = db.execute(
@@ -983,12 +1136,10 @@ class LockedHostJournals:
             raise
 
     def _recover_approvals_after_isolation(
-            self, *, old_process_isolated: bool, recorded_at: str,
-            in_transaction: bool) -> int:
+            self, *, recorded_at: str, in_transaction: bool) -> int:
+        """Expire unconfirmed approvals; isolation is checked by the caller."""
         if self.events is None or self.approvals is None:
             raise InstanceLockUnavailable("locked_journals_not_open")
-        if not old_process_isolated:
-            raise EventJournalError("old_process_not_isolated")
         if not isinstance(recorded_at, str) or not recorded_at:
             raise EventJournalError("invalid_recovery")
         db = self.events.connection
@@ -1082,10 +1233,15 @@ class LockedHostJournals:
             raise
 
     def recover_host_after_isolation(
-            self, *, old_process_isolated: bool, old_process_epoch: int,
+            self, *, old_process_epoch: int,
             expected_run_id: str | None, expected_run_version: int | None,
             reason: str, recorded_at: str) -> dict:
-        """Recover approvals and the old active run as one startup transaction."""
+        """Recover one epoch after verifying its recorded process is gone.
+
+        The recorded PID and creation time come from this database, so a caller
+        cannot declare isolation. Epoch state is explicit (schema v13); a
+        missing record is never treated as evidence of isolation.
+        """
         if self.events is None or self.approvals is None:
             raise InstanceLockUnavailable("locked_journals_not_open")
         self._recovered = False
@@ -1097,17 +1253,18 @@ class LockedHostJournals:
                     or client._job.handle is not None
                     or client.process.poll() is None):
                 raise EventJournalError("upstream_isolation_unconfirmed")
-        if old_process_isolated is not True:
-            raise EventJournalError("old_process_not_isolated")
         if (type(old_process_epoch) is not int or old_process_epoch < 0
                 or (expected_run_id is None) != (expected_run_version is None)
                 or (expected_run_id is not None and
                     (not isinstance(expected_run_id, str) or not expected_run_id
                      or type(expected_run_version) is not int
                      or expected_run_version < 1 or old_process_epoch < 1))
-                or reason not in {"host_restart", "upstream_exit"}
+                or reason not in {"host_restart", "host_shutdown", "upstream_exit"}
                 or not isinstance(recorded_at, str) or not recorded_at):
             raise EventJournalError("invalid_recovery")
+        if old_process_epoch != self.approvals.current_epoch():
+            raise EventJournalError("stale_epoch")
+        self._require_epoch_process_isolated(old_process_epoch)
         db = self.events.connection
         db.execute("BEGIN IMMEDIATE")
         try:
@@ -1146,17 +1303,121 @@ class LockedHostJournals:
                 "WHERE status='dispatching' AND dispatch_epoch=?",
                 (old_process_epoch,))
             next_epoch = self._recover_approvals_after_isolation(
-                old_process_isolated=True, recorded_at=recorded_at,
-                in_transaction=True)
+                recorded_at=recorded_at, in_transaction=True)
             run_event = None
             if expected_run_id is not None:
                 run_event = self.events._recover_run_after_isolation_in_tx(
                     expected_run_id, expected_version=expected_run_version,
                     old_process_epoch=old_process_epoch, reason=reason,
                     recorded_at=recorded_at)
+            if db.execute(
+                    "SELECT 1 FROM upstream_epochs WHERE process_epoch=?",
+                    (next_epoch,)).fetchone():
+                raise EventJournalError("upstream_epoch_state_invalid")
+            db.execute(
+                "INSERT INTO upstream_epochs(process_epoch, state, recorded_at) "
+                "VALUES (?, 'unlaunched', ?)", (next_epoch, recorded_at))
             db.execute("COMMIT")
             self._recovered = True
             return {"epoch": next_epoch, "run_event": run_event}
+        except BaseException:
+            db.execute("ROLLBACK")
+            raise
+
+    def _require_epoch_process_isolated(self, epoch: int) -> None:
+        """Refuse recovery unless this epoch provably had no live upstream.
+
+        A missing record is never evidence of isolation: v13 marks epochs
+        explicitly, and pre-v13 epochs are legacy_unknown.
+        """
+        db = self.events.connection
+        state = db.execute(
+            "SELECT state FROM upstream_epochs WHERE process_epoch=?",
+            (epoch,)).fetchone()
+        process = db.execute(
+            "SELECT pid, created_at FROM upstream_processes "
+            "WHERE process_epoch=?", (epoch,)).fetchone()
+        if epoch == 0:
+            if state is not None or process is not None:
+                raise EventJournalError("upstream_epoch_state_invalid")
+            return
+        if state is None:
+            raise EventJournalError("upstream_epoch_state_invalid")
+        if state["state"] == "unlaunched":
+            if process is not None:
+                raise EventJournalError("upstream_epoch_state_invalid")
+            return
+        if state["state"] == "legacy_unknown":
+            if process is not None:
+                raise EventJournalError("upstream_epoch_state_invalid")
+            raise EventJournalError("legacy_upstream_unverified")
+        if state["state"] != "recorded" or process is None:
+            raise EventJournalError("upstream_epoch_state_invalid")
+        try:
+            outcome = probe_process_identity(
+                process["pid"], process["created_at"])
+        except ProcessIdentityError as error:
+            raise EventJournalError("upstream_isolation_unconfirmed") from error
+        if outcome not in ISOLATED_OUTCOMES:
+            raise EventJournalError("upstream_isolation_unconfirmed")
+
+    def record_upstream_process(self, owner, *, epoch: int, pid: int,
+                                created_at: int, recorded_at: str) -> dict:
+        """Persist the launcher identity of this epoch's owned connection.
+
+        A retry inside the same epoch (for example after a failed initialize)
+        replaces the record only once the previous process is confirmed gone,
+        so an overlapping process is never overwritten by a second launch.
+        """
+        self.assert_owned_upstream(owner, epoch=epoch)
+        if (type(pid) is not int or pid <= 0
+                or type(created_at) is not int or created_at <= 0
+                or not isinstance(recorded_at, str) or not recorded_at):
+            raise EventJournalError("invalid_process_identity")
+        db = self.events.connection
+        db.execute("BEGIN IMMEDIATE")
+        try:
+            epoch_state = db.execute(
+                "SELECT state FROM upstream_epochs WHERE process_epoch=?",
+                (epoch,)).fetchone()
+            if epoch_state is None:
+                raise EventJournalError("upstream_epoch_state_invalid")
+            prior = db.execute(
+                "SELECT pid, created_at FROM upstream_processes "
+                "WHERE process_epoch=?", (epoch,)).fetchone()
+            state = epoch_state["state"]
+            if state == "unlaunched":
+                if prior is not None:
+                    raise EventJournalError("upstream_epoch_state_invalid")
+                db.execute(
+                    "INSERT INTO upstream_processes(process_epoch, pid, "
+                    "created_at, recorded_at) VALUES (?, ?, ?, ?)",
+                    (epoch, pid, created_at, recorded_at))
+                db.execute(
+                    "UPDATE upstream_epochs SET state='recorded', recorded_at=? "
+                    "WHERE process_epoch=? AND state='unlaunched'",
+                    (recorded_at, epoch))
+            elif state == "recorded":
+                if prior is None:
+                    raise EventJournalError("upstream_epoch_state_invalid")
+                try:
+                    outcome = probe_process_identity(
+                        prior["pid"], prior["created_at"])
+                except ProcessIdentityError as error:
+                    raise EventJournalError(
+                        "upstream_isolation_unconfirmed") from error
+                if outcome not in ISOLATED_OUTCOMES:
+                    raise EventJournalError("upstream_isolation_unconfirmed")
+                db.execute(
+                    "UPDATE upstream_processes SET pid=?, created_at=?, "
+                    "recorded_at=? WHERE process_epoch=?",
+                    (pid, created_at, recorded_at, epoch))
+            elif state == "legacy_unknown":
+                raise EventJournalError("legacy_upstream_unverified")
+            else:
+                raise EventJournalError("upstream_epoch_state_invalid")
+            db.execute("COMMIT")
+            return {"epoch": epoch, "pid": pid}
         except BaseException:
             db.execute("ROLLBACK")
             raise
@@ -1337,6 +1598,177 @@ class LockedHostJournals:
             row["approval_id"], epoch=epoch,
             upstream_request_id=upstream_request_id,
             recorded_at=recorded_at)
+
+    def record_approval_item(
+            self, *, thread_id: str, turn_id: str, item_id: str,
+            summary: dict, recorded_at: str) -> dict:
+        """Store one fileChange item and fold it into a matching open approval.
+
+        The item may arrive before or after the approval request. Either order
+        ends with the same stored review; a review that gains complete content
+        bumps only the approval version, because tool output is not a control
+        state change for the session.
+        """
+        self._require_recovered()
+        if (not isinstance(thread_id, str) or not thread_id
+                or not isinstance(turn_id, str) or not turn_id
+                or not isinstance(item_id, str) or not item_id
+                or not isinstance(summary, dict)
+                or not isinstance(recorded_at, str) or not recorded_at):
+            raise EventJournalError("invalid_approval_item")
+        try:
+            summary_json = approval_details.encode(summary)
+        except (TypeError, ValueError) as error:
+            raise EventJournalError("invalid_approval_item") from error
+        db = self.events.connection
+        db.execute("BEGIN IMMEDIATE")
+        try:
+            db.execute(
+                "INSERT INTO approval_items(thread_id, turn_id, item_id, "
+                "details_json, updated_at) VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(thread_id, turn_id, item_id) DO UPDATE SET "
+                "details_json=excluded.details_json, updated_at=excluded.updated_at",
+                (thread_id, turn_id, item_id, summary_json, recorded_at))
+            row = db.execute(
+                "SELECT a.approval_id, a.status, a.version, a.run_id, a.item_id, "
+                "a.details_json, r.session_id, s.session_version, s.snapshot_json "
+                "FROM approvals AS a JOIN runs AS r ON r.run_id=a.run_id "
+                "JOIN sessions AS s ON s.session_id=r.session_id "
+                "WHERE a.item_id=? AND a.kind='file_change' "
+                "AND a.status='pending' AND a.turn_id=? "
+                "ORDER BY a.approval_id DESC LIMIT 1",
+                (item_id, turn_id)).fetchone()
+            if row is None or row["run_id"] is None:
+                db.execute("COMMIT")
+                return {"kind": "item_recorded"}
+            binding = db.execute(
+                "SELECT process_epoch, thread_id FROM upstream_turns WHERE run_id=?",
+                (row["run_id"],)).fetchone()
+            if (binding is None or binding["thread_id"] != thread_id
+                    or binding["process_epoch"] != self.approvals.current_epoch()):
+                db.execute("COMMIT")
+                return {"kind": "item_recorded"}
+            current = approval_details.decode(
+                row["details_json"], "file_change_details_unrecorded", recorded_at)
+            merged = approval_details.merge_item(current, summary)
+            if merged == current:
+                db.execute("COMMIT")
+                return {"kind": "item_recorded"}
+            if row["version"] >= MAX_SEQ:
+                raise EventJournalError("version_exhausted")
+            db.execute(
+                "UPDATE approvals SET details_json=?, details_status=?, "
+                "version=version+1 WHERE approval_id=? AND status='pending'",
+                (approval_details.encode(merged), merged.get("details_status"),
+                 row["approval_id"]))
+            snapshot = json.loads(row["snapshot_json"])
+            encoded = _json_bytes(snapshot)
+            if len(encoded) > MAX_EVENT_BYTES:
+                raise EventJournalError("snapshot_too_large")
+            self.events._append_in_tx(
+                row["session_id"], row["run_id"], "approval.updated",
+                {"approval_id": row["approval_id"],
+                 "approval_version": row["version"] + 1,
+                 "status": "pending",
+                 "details_status": merged.get("details_status")},
+                recorded_at, encoded)
+            db.execute("COMMIT")
+            return {"kind": "approval_details_updated",
+                    "approval_id": row["approval_id"]}
+        except BaseException:
+            db.execute("ROLLBACK")
+            raise
+
+    def list_run_approvals(self, run_id: str, *, status: str | None = None
+                           ) -> dict:
+        """List the approvals of one run, newest request first.
+
+        A run that never existed is a 404; a run without approvals is an
+        empty list, never a fabricated entry.
+        """
+        self._require_recovered()
+        if not isinstance(run_id, str) or not run_id:
+            raise EventJournalError("invalid_run_id")
+        if status is not None and status not in {
+                "pending", "decision_recorded", "dispatching", "resolved",
+                "expired", "unknown"}:
+            raise EventJournalError("invalid_request")
+        run = self.events.connection.execute(
+            "SELECT 1 FROM runs WHERE run_id=?", (run_id,)).fetchone()
+        if run is None:
+            raise EventJournalError("run_not_found")
+        rows = self.events.connection.execute(
+            "SELECT approval_id FROM approvals WHERE run_id=? "
+            "ORDER BY rowid DESC", (run_id,)).fetchall()
+        items = [self.get_approval_view(row["approval_id"]) for row in rows]
+        if status is not None:
+            items = [item for item in items if item["status"] == status]
+        return {"items": items, "next_cursor": None}
+
+    def get_approval_view(self, approval_id: str) -> dict:
+        """Return the protocol-shaped review resource for one approval."""
+        self._require_recovered()
+        if not isinstance(approval_id, str) or not approval_id:
+            raise EventJournalError("invalid_approval_id")
+        row = self.events.connection.execute(
+            "SELECT a.*, r.session_id, r.status AS run_status, "
+            "o.actor_id AS operation_actor, o.request_id AS operation_id, "
+            "o.status AS operation_status, o.outcome AS operation_outcome, "
+            "w.root AS workspace_root FROM approvals AS a "
+            "JOIN runs AS r ON r.run_id=a.run_id "
+            "LEFT JOIN session_workspaces AS sw ON sw.session_id=r.session_id "
+            "LEFT JOIN workspaces AS w ON w.workspace_id=sw.workspace_id "
+            "LEFT JOIN approval_operations AS o ON o.approval_id=a.approval_id "
+            "WHERE a.approval_id=?", (approval_id,)).fetchone()
+        if row is None:
+            raise EventJournalError("approval_not_found")
+        if row["session_id"] is None:
+            raise EventJournalError("approval_not_found")
+        recorded_at = row["requested_at"] or ""
+        review = approval_details.decode(
+            row["details_json"], f"{row['kind']}_details_unrecorded", recorded_at)
+        status = row["status"]
+        decided = row["decision"] is not None
+        allow = approval_details.can_allow(review, status=status, decided=decided)
+        deny = status == "pending" and not decided
+        changes = [
+            {**change,
+             "diff_reference": approval_details.diff_reference(
+                 change, run_id=row["run_id"])}
+            for change in review.get("changes", [])
+            if isinstance(change, dict)]
+        return {
+            "approval_id": row["approval_id"],
+            "run_id": row["run_id"],
+            "kind": row["kind"],
+            "turn_id": row["turn_id"],
+            "item_id": row["item_id"],
+            "version": row["version"],
+            "status": status,
+            "requested_at": row["requested_at"] or recorded_at,
+            "expires_at": None,
+            "operation_id": row["operation_id"],
+            "operation_status": row["operation_status"],
+            "operation_outcome": row["operation_outcome"],
+            "workspace_name": approval_details.workspace_name(row["workspace_root"]),
+            "command": review.get("command"),
+            "command_truncated": bool(review.get("command_truncated")),
+            "command_kind": review.get("command_kind"),
+            "cwd_inside_workspace": bool(review.get("cwd_inside_workspace")),
+            "cwd": review.get("cwd"),
+            "reason": review.get("reason"),
+            "changes": changes,
+            "review_truncated": bool(review.get("review_truncated")),
+            "details_status": review.get("details_status"),
+            "missing_details": list(review.get("missing", [])),
+            "allowed_decisions": (["allow_once", "deny"] if allow and deny
+                                 else ["deny"] if deny else []),
+            "effective_decision": ({"accept": "allow_once", "decline": "deny"}.get(
+                row["decision"])),
+            "can_allow": allow,
+            "can_deny": deny,
+            "resolution_kind": row["resolution_kind"],
+        }
 
     def __enter__(self) -> LockedHostJournals:
         return self.open()

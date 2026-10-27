@@ -1,7 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Runvori · 续行</string>
-    <string name="preview_title">Runvori 技术预览</string>
-    <string name="preview_status">尚未连接 Host</string>
-    <string name="preview_description">移动端连接与审批功能仍在开发中。</string>
+    <string name="app_name">Runvori</string>
 </resources>

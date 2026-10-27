@@ -2,6 +2,52 @@
 
 采用开发批次记录；正式发布前不把开发批次称为已发布版本。
 
+## Unreleased · DEV-007 Android 最小业务闭环 · 2026-10-27
+
+- Host 新增 `GET /v1/sessions`（`session_id` 不透明游标、稳定分页，含标题、工作区别名、会话版本、快照序号、活动/最近回合与待审批计数）与 `GET /v1/runs/{run_id}/approvals`（按状态过滤，最新请求在前，空回合返回空列表）。
+- 事件库 v15：新增 `run_timeline_budget`，把上游 item 生命周期投影为 `message.*` / `command.*` 时间线事件。写入按持久 `(thread_id, turn_id)` 绑定定位活动回合；只推进 `seq`，不改 `session_version`（否则持续输出会让待审批的期望版本立刻过期）；单回合文本 2 MiB、单块 8 KiB，耗尽后写 `text_omitted`/`dropped_bytes` 并追加一次 `timeline.truncated`，不静默丢弃。
+- Android 新增 `data/`（Keystore AES-GCM 凭据信封、`X509ExtendedTrustManager`+SPKI 固定的 HTTPS、手工 HTTP/1.1、SQLite 缓存、会话同步）、`domain/`（配对解析、主机名匹配、严格 JSON、时间线投影）与 `ui/`（配对、会话列表、时间线、审批四屏 + ViewModel）。`allowBackup=false` 且备份/迁移规则排除凭据与缓存库。
+- 新增 `scripts/accept_device.py` 与 instrumented `DeviceAcceptanceTest`（九个场景）：真实 APK → 固定指纹 HTTPS → 真实 `HostRuntime` → 合成 app-server，连续三轮全绿。Host 只监听 `127.0.0.1`，证书带 `IP:10.0.2.2` SAN。
+- 真实 Codex 设备验收（同日，1 次模型回合）：真实 APK → 固定指纹 HTTPS → 真实 `HostRuntime` → 真实 app-server，跑通 `s/a/b/c/g/e`。真实模式使用独立场景集与 `ACCEPT_PROMPT`，不依赖合成标记或合成文本；`expected_model_turns=1`、`observed_runs=1`，未重试。`d/f/h`、真实文件审批与真实中断/过期仍未覆盖。见 [真实设备验收](docs/evidence/DEV-007-device-acceptance-real.md)。
+- 删除 `DeviceRelay.kt`、`scripts/device_bridge.py`、`scripts/check_device_bridge.py` 及相关诊断脚本：实验证明模拟器 `10.0.2.2` 经自身 NAT 到达宿主机回环，**不需要** `adb reverse` 或防火墙放行。上一轮“需人工放行防火墙”的判断是错的，README/证据已更正。
+- 修复四个产品缺陷：审批页期间存活轮询停摆；决定提交后从不回查操作状态（缓存永远停在 `accepted`）；TLS 握手在 worker 线程交错导致客户端 EOF（[ERR-029](docs/ERRORS.md)）；拒绝原因被随后的同步逻辑抹掉、横幅关闭只清一半（[ERR-030](docs/ERRORS.md)）。
+- **DEV-007 状态：核心真实链路通过，剩余专项待验收。** 真实 Codex 设备验收仅覆盖 1 次核心闭环（见上条）；真实文件审批、真实中断/过期、命令/产物明细、旋转/杀进程/TalkBack/性能未覆盖。
+- 374 项测试运行（371 通过、3 项跳过）、Android JVM 单测 19 项通过、16 份契约通过。合成九场景见 [设备验收](docs/evidence/DEV-007-device-acceptance.md)，真实核心闭环见 [真实设备验收](docs/evidence/DEV-007-device-acceptance-real.md)。
+
+## Unreleased · DEV-006 可通过 HTTPS 操作的最小 Host · 2026-10-27
+
+- 事件库 v14：审批保存有界详情（命令、cwd、reason、item/时间；文件审批的路径与差异来自 item 事件）。详情缺失、截断、cwd 不在登记工作区内或类型非普通命令时 `details_status=insufficient`，`allow_once` 返回 `409 approval_details_insufficient`；v13 旧审批迁移为 `insufficient`，不人工回填。
+- 新增标准库 HTTPS 服务（`runvori.api`）：TLS ≥1.2、SPKI 指纹、Bearer 令牌由服务端解析为 `device_id`、协议头先校验、配对交换限流（来源 5 次/分、全局 20 次/分，`Retry-After`）、16 并发与请求体/响应页上限。实现 `/v1/host`、快照、事件（含长轮询）、新回合、审批详情与决定、中断、操作查询；写请求 202 仅表示已持久受理。
+- 新增 Windows 命名管道本地管理入口（`admin.key` + 固定命令白名单，全部经命令邮箱执行）与对应 CLI：`host-status / pairing-info / register-workspace / create-session / start-thread`；`revoke-device` 优先走运行中的 Host 并取消在途长轮询，Host 未运行时回落离线撤销并标注 `mode`。
+- `HostRuntime` 增加 `--listen / --tls-cert / --tls-key / --host-name / --admin-pipe`；入口在上游启动后按“管道 → HTTPS”启动，任一失败整体回滚；事件循环结束和 `stop()` 都先停入口再关邮箱、隔离上游、关库。
+- 新增 `scripts/probe_https_host.py` 独立 HTTPS 客户端闭环（15 步，含断线补拉、insufficient 禁止允许、撤销 401）与 `scripts/accept_https_host_real.py` 真实 Codex 验收；新增 `test_approval_details.py`、`test_api_handlers.py`、`test_https_host_flow.py`。
+- 362 项测试运行（359 通过、3 项环境跳过），全量检查连续 3 次通过；16 份契约、离线 wheel 隔离安装与模块导入通过；真实 Codex `0.164.0-alpha.11.1` 显式运行 1 次通过。
+- 限制见 [合成证据](docs/evidence/DEV-006-https-host.md) 与 [真实验收](docs/evidence/DEV-006-https-host-real.md)：会话列表、命令/产物明细、Android 联调未实现；AT-16 缺口未关闭。
+
+## Unreleased · DEV-005 真实 Codex 与五切点验收 · 2026-10-26
+
+- Host 启动前核验实际将启动的 Codex 绝对路径和精确版本；版本不符、不可执行、超时或输出异常在取得锁、打开数据库、创建配对库和推进 epoch 之前稳定拒绝。`--codex` 支持绝对路径，默认读取 `RUNVORI_CODEX`。
+- 命令邮箱新增审批决定入口：决定经 SQLite 所有者持久化，只有 `accepted` 才进入一次派发队列；新增审批操作查询和 session thread 读取。`accepted` 不代表上游确认。
+- 修复真实 Codex 新建 thread 在首回合前无法 `thread/resume`（`no rollout found`）：仅当前连接新建的 thread 跳过首次 resume，重启后仍必须成功 resume，见 [ERR-028](docs/ERRORS.md)。
+- 在真实 HostRuntime 和真实 Codex 上完成 starting、running、等待审批、决定派发、中断五个崩溃切点；验证旧回合 interrupted、审批 expired/unknown、操作 unknown/dispatch_unconfirmed、旧审批不可重用、不自动重跑，以及 launcher、测试 relay、真实 Codex 及观测后代的 PID＋创建时间隔离。共 5 次真实模型回合；另 1 次失败联调在首回合前被 ERR-028 拦截，未进入模型回合。修复后每切点 1 次通过，未自动重试。
+- 336 项测试运行（333 通过、3 项跳过：2 项环境限制、1 项真实测试未启用），16 份契约与离线 wheel 隔离安装通过。AT-16 仍未整体通过；限制见 [真实 Codex 五切点](docs/evidence/DEV-005-host-runtime-restart-real-codex.md)。
+
+## Unreleased · DEV-005 产品 Host 启动与崩溃重启闭环 · 2026-10-26
+
+- 事件库 v13 增加 `upstream_epochs`：每个 epoch 显式记录 `unlaunched`／`recorded`／`legacy_unknown`；恢复门禁不再把缺少身份记录当作已隔离，旧库失败关闭并按归档重建迁移。
+- 新增 `HostRuntime` 与 `python -m runvori.host`，固定组合单实例锁、状态对账、统一恢复、写门禁、命令邮箱、设备访问和唯一上游；正常停止使用 `host_shutdown`，上游故障恢复后进程退出等待外部重启。
+- 真实 Host 子进程在 starting、running、等待审批和中断切点完成崩溃重启测试，验证 launcher／上游／后代真实 PID 的 Job 隔离、旧回合 interrupted、审批失效和不自动重跑。
+- 修复测试后代继承协议管道掩盖上游 EOF 的问题（[ERR-027](docs/ERRORS.md)）；后续真实 Codex 测试已观测到 `codex-code-mode-host.exe` 与 `conhost.exe` 后代，但正常退出 EOF 场景仍未覆盖。
+- 317 项测试运行（315 通过、2 项环境限制跳过），16 份契约与离线 wheel 隔离安装通过。
+- 验证和限制见 [记录](docs/evidence/DEV-005-host-runtime-restart.md)。
+
+## Unreleased · DEV-005 上游进程身份与启动隔离门 · 2026-10-26
+
+- 事件库 v12 在目标进程放行前持久记录启动器 PID＋创建时间；恢复入口删除调用方声明的 `old_process_isolated` 布尔值，改为按记录核实，存活或无法查询时拒绝恢复并保持写门禁关闭。
+- 修复 TLS 回环探针发送后立即关闭导致的间歇丢包（同一轮验证中发现，见 [ERR-026](docs/ERRORS.md)）。
+- 294 项测试运行（292 通过、2 项环境限制跳过），16 份契约与离线 wheel 安装通过。
+- 验证和限制见 [记录](docs/evidence/DEV-005-upstream-process-identity.md)。
+
 ## Unreleased · DEV-005 内部事件等待取消 · 2026-10-26
 
 - 内部事件等待支持可信调用方取消：唤醒等待线程，跳过已取消的排队读取，读取完成后仍检查取消状态。

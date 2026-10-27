@@ -1,5 +1,6 @@
 """Compose recovered Host identity with its local pairing and read boundary."""
 
+import sqlite3
 from pathlib import Path
 
 from runvori.application.command_mailbox import HostCommandMailbox
@@ -59,6 +60,15 @@ class HostDeviceAccess:
         self._require_active()
         with PairingJournal(self._pairing_db) as journal:
             return journal.exchange(secret, host_id=self.host_id)
+
+    def authenticate(self, token: bytes) -> str | None:
+        """Resolve a bearer token to the device identity on the server side."""
+        self._require_active()
+        try:
+            with PairingJournal(self._pairing_db) as journal:
+                return journal.authenticate(token, host_id=self.host_id)
+        except sqlite3.Error as error:
+            raise HostDeviceAccessError("authentication_unavailable") from error
 
     def revoke_local_device(self) -> None:
         self._require_active()

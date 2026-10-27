@@ -1,6 +1,6 @@
 # Host—Android 接口与状态协议
 
-协议：`runvori.v1`。更新日期：2026-10-24。状态：首版拟定契约，无已部署服务。这里定义的是 Runvori 自有 HTTPS API，不是 Codex 的原生接口。
+协议：`runvori.v1`。更新日期：2026-10-27。状态：首版契约，已有最小 HTTPS 服务（DEV-006），未发布。这里定义的是 Runvori 自有 HTTPS API，不是 Codex 的原生接口。
 
 ## 1. 公共约定
 
@@ -22,16 +22,34 @@
 - `GET /v1/host`：认证后返回 `host_id`、Host 版本、协议、Codex 兼容状态、执行是否可用、活动 run ID、server_time。
 - `POST /v1/pairings/exchange`：唯一不要求设备令牌的接口；提交短时 `pairing_secret` 和设备显示名，返回 `device_id`、`device_token`、`host_id`。交换事务原子消费秘密，限流，且最多一个有效设备。
 
-配对秘密、TLS 身份绑定和撤销策略见 [SECURITY.md](../SECURITY.md)。交换响应丢失时不重复发令牌；在 Host 本地撤销可能创建的设备并重新配对。生成配对信息、登记工作区和撤销设备仅由 Host 本地入口提供，不新增远端管理接口。现有 `revoke-device` CLI 只在 Host 单实例锁空闲时离线撤销独立配对库；它不是运行中管理通道，锁冲突不得直接修改数据库。
+配对秘密、TLS 身份绑定和撤销策略见 [SECURITY.md](../SECURITY.md)。交换响应丢失时不重复发令牌；在 Host 本地撤销可能创建的设备并重新配对。生成配对信息、登记工作区和撤销设备仅由 Host 本地入口提供，不新增远端管理接口。运行中的 Host 通过本机 Windows 命名管道接受这些命令（`host-status / pairing-info / register-workspace / create-session / start-thread / revoke-device`），CLI 是唯一客户端；Host 未运行时 `revoke-device` 回落为单实例锁下的离线撤销，输出标注 `mode: offline`，该模式不会取消在途长轮询。
 
 ### 会话与快照
 
-- `GET /v1/sessions?cursor=...&limit=...`：会话摘要分页。
-- `GET /v1/sessions/{session_id}/snapshot`：一致性快照。
-- `GET /v1/sessions/{session_id}/runs?cursor=...&limit=...`：历史回合分页，最近优先。
-- `GET /v1/runs/{run_id}`：单回合状态和验证摘要。
+- `GET /v1/sessions?cursor=...&limit=...`：会话摘要分页。（已实现，DEV-007）
+- `GET /v1/sessions/{session_id}/snapshot`：一致性快照。（已实现）
+- `GET /v1/sessions/{session_id}/runs?cursor=...&limit=...`：历史回合分页，最近优先。（未实现）
+- `GET /v1/runs/{run_id}`：单回合状态和验证摘要。（未实现）
 
-手机无远端创建工作区/首会话接口；首会话由本地入口调用同一应用服务创建。快照示例：
+手机无远端创建工作区/首会话接口；首会话由本地入口调用同一应用服务创建。以下为实际部署的最小接口；标注“未实现”的端点仍属计划。
+
+`GET /v1/sessions` 的游标是不透明的最后一个 `session_id`，按 `session_id` 升序分页，因此在追加事件时不会重排。每项含：
+
+```json
+{
+  "session_id": "sess_demo",
+  "title": "device session 1",
+  "workspace_name": "demo-repo",
+  "session_version": 16,
+  "snapshot_seq": 128,
+  "active_run": {"run_id": "run_demo", "status": "waiting_approval", "version": 7},
+  "latest_run": {"run_id": "run_demo", "status": "waiting_approval", "version": 7},
+  "pending_approval_count": 1,
+  "updated_at": "2026-10-23T04:00:01Z"
+}
+```
+
+`active_run`/`latest_run` 可为 null；`pending_approval_count` 统计 `pending / decision_recorded / dispatching / unknown`，与快照 `open_approval_ids` 同口径，不能据此判断每一项都可批准。`updated_at` 取该会话最近一个已终态事件的时间；没有终态事件时为 null。分页与快照在同一读事务内取得。快照示例：
 
 ```json
 {
@@ -80,9 +98,17 @@
 - `GET /v1/approvals/{approval_id}`：审批详情、版本和关联操作。
 - `POST /v1/approvals/{approval_id}/decision`：提交 `request_id`、`expected_version`、`decision`（`allow_once` 或 `deny`）。
 
-审批资源包含 `approval_id / run_id / kind / version / status / requested_at / expires_at / operation_id`，以及结构化的命令、cwd、变更路径或差异引用、reason、allowed_decisions。`expires_at` 无可靠上游期限时为 null，不人为以手机时间判定过期；回合终止/请求被清理也会使审批失效。
+审批资源包含 `approval_id / run_id / kind / turn_id / item_id / version / status / requested_at / expires_at / operation_id / operation_status / operation_outcome / workspace_name`，以及结构化的 `command / command_truncated / command_kind / cwd / cwd_inside_workspace / reason / changes[] / review_truncated / details_status / missing_details / allowed_decisions / effective_decision / can_allow / can_deny`。`expires_at` 无可靠上游期限时为 null，不人为以手机时间判定过期；回合终止/请求被清理也会使审批失效。
+
+`details_status` 为 `complete` 表示展示内容足以判断该请求；`insufficient` 表示缺少命令、文件路径、差异或 cwd 无法证明在工作区内。**`insufficient` 与任何 `review_truncated` 的审批都不提供 `allow_once`**，`allowed_decisions` 只含 `deny`，提交允许返回 `409 approval_details_insufficient`。文件审批的路径与差异来自同 `turnId/itemId` 的 `item/started`、`item/completed` 文件项；item 晚到时详情补齐并递增审批 `version`，客户端需重新读取。
 
 Host 校验当前 epoch、请求仍待处理、回合未终止且版本匹配。一个审批只接受一个不可变决定；同请求标识返回原操作，不同标识对同一决定返回已有操作，对相反决定返回 `409 decision_conflict`。版本冲突返回 `409 resource_changed` 并要求刷新，已失效返回 `410 approval_expired`。
+
+Host 内部命令邮箱已实现决定入口和同一幂等键：返回 `accepted` 只表示决定与操作已持久化并进入一次派发队列，不表示上游已收到或副作用已发生。崩溃重启后已领取但未确认的审批保持 `unknown`，不会被自动重发。
+
+2026-10-27 DEV-006：`GET /v1/approvals/{approval_id}` 与决定入口已由产品 HTTPS 服务接通，详情来自事件库 v14（见 4.1）；尚未实现 `GET /v1/runs/{run_id}/approvals` 列表。`GET /v1/operations/{request_id}` 需带 `kind=run|interrupt|approval`。真实 Codex 一次 HTTPS 闭环见 [证据](evidence/DEV-006-https-host-real.md)。
+
+2026-10-27 DEV-007：`GET /v1/runs/{run_id}/approvals` 已实现，可按 `status` 过滤（取值限六种审批状态），**最新请求在前**，`next_cursor` 恒为 null（单回合审批数量有界，暂不分页，`cursor`/`limit` 参数被忽略）。不存在的 run 返回 404，没有审批的 run 返回空列表而不是伪造条目。Android 审批页依赖 `GET /v1/approvals/{approval_id}` 的 `command / cwd / changes[] / details_status / allowed_decisions / can_allow / can_deny`：`allow_once` 只在详情完整且未被截断时提供，`insufficient` 的审批 `allowed_decisions` 只含 `deny`。合成设备验收见 [DEV-007 证据](evidence/DEV-007-device-acceptance.md)，真实核心闭环见 [真实设备验收](evidence/DEV-007-device-acceptance-real.md)。
 
 ### 中断与后续输入
 
@@ -159,6 +185,16 @@ stateDiagram-v2
 
 `pending → decision_recorded → dispatching → resolved` 是正常流程；尚未确认的状态都可能进入 expired 或 unknown，且必须保留已记录的决定。unknown 只有取得证据后才转 resolved/expired，不回到 pending 自动重发。上游“请求已清理”不能证明本次批准生效，原因必须分别保存。
 
+### 4.1 审批详情存储（事件库 v14）
+
+`approvals` 表新增 `turn_id / item_id / upstream_approval_id / requested_at / details_json / details_status`，并新增按 `(thread_id, turn_id, item_id)` 唯一索引的 `approval_items` 表承接文件改动摘要。
+
+- 详情为有界 JSON：整体 ≤32 KiB、单条 diff ≤16 KiB、命令 ≤8 KiB、reason ≤2 KiB、路径 ≤1 KiB、变更条目 ≤64；超出部分截断并置 `review_truncated`，被截断的审批不提供允许。
+- 命令审批的 `cwd` 必须解析后位于登记工作区内，否则丢弃该值并记录 `cwd_unverified`；`kind` 不是 `command` 时记录 `unsupported_command_kind`。
+- 文件审批请求本身不含路径；详情在 `item/started`、`item/completed` 到达时补齐。item 先到时先存 `approval_items`，审批后到时直接合并。
+- v13 及更早的审批没有详情记录，升级时一律标为 `insufficient`，不人工回填；这些请求只能拒绝。
+- 详情补齐只递增审批 `version` 并写 `approval.updated`，不改变 `session_version`。
+
 匹配 epoch、上游请求标识与已绑定回合的“请求已结束”证据使 `pending/decision_recorded` 审批失效，使 `dispatching/unknown` 审批变为 `resolved`。未派发操作记 `failed/request_closed_before_dispatch`；已领取操作可记 `confirmed/request_closed`，其中 `request_closed` 只确认请求结束，不证明允许决定被采用、工具副作用发生或命令成功。重复同一关闭证据不追加事件；不同请求身份不能复用该证据。
 
 上游 `requestId` 的整数和字符串形态按类型编码，结束通知还须以 `threadId`、当前 epoch 和已绑定回合定位审批；不能只按请求号或调用方给出的审批 ID 处理通知。未知或不匹配的通知不改变状态。
@@ -189,9 +225,13 @@ Host 消费一条上游消息时，应在继续读取或答复审批前完成其
 
 本地工作区登记记录不可改写的 ID、规范化根目录和 `read-only|workspace-write` 策略；本地新建会话与其工作区归属须同事务提交。`thread/start` 适配器只读取已登记的会话工作区与策略，发送前再次检查目录仍存在且未穿过符号链接或 junction。旧库升级不猜测已有会话的工作区归属；未登记的旧会话不能创建上游 thread，原有已绑定 thread 的恢复不受影响。工作区登记、修改和会话创建均不开放手机远端入口。
 
-Host 恢复入口在持有单实例锁且确认旧进程已隔离后，将旧审批状态、操作结果、epoch 推进与匹配活动回合的中断/活动槽释放作为一个数据库事务提交。任一写入失败则全部回滚，保持写入口关闭；不能因审批先恢复而提前接受新回合。
+Host 恢复入口在持有单实例锁后，先按权威库中该 epoch 记录的启动器身份核实旧进程已不在运行，再把旧审批状态、操作结果、epoch 推进与匹配活动回合的中断/活动槽释放作为一个数据库事务提交。任一写入失败则全部回滚，保持写入口关闭；不能因审批先恢复而提前接受新回合。
 
-当前 Host 的 Windows app-server 连接须在持锁且已恢复的 epoch 下先预留唯一连接位，再启动并初始化；初始化失败且进程确认隔离后释放连接位。重复启动和伪造的连接归属拒绝。当前归属连接退出时，先关闭共享写门控，再关闭 stdio 连接和 kill-on-close Job；只有连接关闭、受管父进程退出且 Job 句柄释放后，才读取活动回合 ID/版本并提交 `upstream_exit` 恢复。关闭失败时不推进 epoch，保持写门控关闭；Host 关闭时也须先隔离其归属连接再释放数据库锁。此入口只证明当前进程内的连接归属；崩溃后遗留进程的隔离证明仍需独立启动编排。
+启动器身份记录 `pid` 与 Windows 进程创建时间（`GetProcessTimes`），以 `process_epoch` 为主键写在 `host.db`（事件库 v12）；写入发生在目标进程被放行之前。恢复只接受查询结果为 `absent`（不存在）、`exited`（同创建时间且退出码非 `STILL_ACTIVE`）或 `replaced`（PID 相同但创建时间不同，即 PID 复用）；`running` 与 `inaccessible` 一律拒绝，且拒绝时不进入恢复事务、不推进 epoch、不打开写门禁。查询失败不降级为“不存在”。同一 epoch 内的重试启动只有在旧记录已可放行时才能覆盖。该记录只证明启动器进程，不证明后代进程树已停止；进程树由 kill-on-close Job 约束。
+
+事件库 v13 增加 `upstream_epochs`，为当前 epoch 显式记录 `unlaunched`、`recorded` 或 `legacy_unknown`。恢复时状态缺失、状态与身份行不一致、`recorded` 却无身份行、`unlaunched` 却有身份行，均以 `upstream_epoch_state_invalid` 拒绝；`legacy_unknown` 以 `legacy_upstream_unverified` 拒绝。恢复成功时在同一事务为下一 epoch 写 `unlaunched`。无身份记录不再是放行条件：v13 之前已推进 epoch 且没有记录的库一律标为 `legacy_unknown`，只能按迁移说明归档旧数据目录、新建 Host 并重新配对；不回填、不推进 epoch、不打开写门禁。正常 Host 停止的旧回合中断原因为 `host_shutdown`，区别于崩溃重启 `host_restart` 与上游退出 `upstream_exit`。
+
+当前 Host 的 Windows app-server 连接须在持锁且已恢复的 epoch 下先预留唯一连接位，再启动并初始化；初始化失败且进程确认隔离后释放连接位。重复启动和伪造的连接归属拒绝。当前归属连接退出时，先关闭共享写门控，再关闭 stdio 连接和 kill-on-close Job；只有连接关闭、受管父进程退出且 Job 句柄释放后，才读取活动回合 ID/版本并提交 `upstream_exit` 恢复。关闭失败时不推进 epoch，保持写门控关闭；Host 关闭时也须先隔离其归属连接再释放数据库锁。此入口只证明当前进程内的连接归属；崩溃后遗留进程由下一个启动周期的持久身份核对拒绝恢复，两者都不能替代进程树证据。
 
 归属连接上的事件交接须逐条读取并先核对连接归属与 epoch。已识别的审批请求、请求结束和回合终态通过既有事务写入；读取或持久化失败时，先隔离连接并执行 `upstream_exit` 恢复，不能继续消费可能失序的消息。恢复事务失败则保持写门控关闭和原 epoch。单步交接的空等待不改变状态；产品长期事件循环与审批答复调度仍待实现。
 
@@ -207,9 +247,17 @@ Host 恢复入口在持有单实例锁且确认旧进程已隔离后，将旧审
 
 内部邮箱现提供增量事件等待入口，`wait_ms` 限定 0–25000，0 为一次读取；等待只发生在请求线程，SQLite 所有者仍处理其他命令和上游消息。持久写入及归属连接事件交接完成后可通知等待线程立即复查；通知只表示可能变化，响应仍以数据库页为准。通知与查询之间用代次核对避免丢唤醒，最多 250 毫秒的定时复查覆盖尚未接入通知的写路径。结果沿用事件库的 `events / next_after_seq / latest_seq / has_more`；超时返回空页和未推进的游标，不插入心跳事件。游标错误及所有者处理超时须返回错误，不能伪装为空页。可信调用方可向内部等待传入取消信号；信号触发后唤醒等待者，排队中或读取后的请求返回 `request_cancelled`，不返回事件页。归属事件循环停止、上游恢复或异常退出时关闭邮箱并唤醒等待者；测试用有界交接返回仍可继续运行。关闭后读取返回 `host_stopped`，已提交情况不明的写请求返回 `command_result_unknown`，新请求拒绝。取消与读完成的并发边界仍要求未来 HTTP 入口在发送响应前重新核验设备权限。该切片尚未接入 HTTP，配对撤销也尚未连接到取消信号。
 
-内部 `DeviceReadGateway` 现用唯一有效设备令牌和可信启动路径提供的当前 `host_id` 保护快照与事件读取：先鉴权、交给邮箱、读取后复核授权；长轮询每次最多等待 250 毫秒后复核，设备已撤销则拒绝该次结果。历史页不允许等待，取消信号传入邮箱。可信 Host 本地调用 `revoke_local_device` 提交撤销后主动取消该网关实例中的在途读取；直接修改配对库只由分段复核发现。此入口尚未映射 HTTP/TLS，返回的是内部存储模型；正式 HTTP 响应发送前仍须重新鉴权，不能把内部复核当作无竞态的交付保证。
+内部 `DeviceReadGateway` 现用唯一有效设备令牌和可信启动路径提供的当前 `host_id` 保护快照与事件读取：先鉴权、交给邮箱、读取后复核授权；长轮询每次最多等待 250 毫秒后复核，设备已撤销则拒绝该次结果。历史页不允许等待，取消信号传入邮箱。可信 Host 本地调用 `revoke_local_device` 提交撤销后主动取消该网关实例中的在途读取；直接修改配对库只由分段复核发现。
 
-审批决定已落库后，可将调用方和请求标识放入有界内存队列，作为唤醒当前连接所有者的信号；队列不承载决定或上游请求内容，也不是持久化事实。所有者从数据库重取、核对并领取一次派发权后才答复 stdio。重复或已失效的队列项不重发；队列满或 Host 崩溃不能抹去已记录决定，也不授权新 epoch 自动补发。派发结果未知或写入失败时隔离当前连接并执行恢复，旧循环立即退出。其他 stdio RPC 的同线程调度和产品 API 仍待实现。
+2026-10-27 DEV-006：该读取入口已映射为标准库 HTTPS 适配层（`host/src/runvori/api/`），服务端解析 Bearer 令牌得到 `device_id` 作为幂等身份，请求体不能指定 actor；协议头在鉴权前校验；响应发送前重新鉴权仍由网关的分段复核承担，但 TCP 写入与最后一次检查之间仍存在理论竞态。停止服务或撤销设备都会取消在途长轮询（见 [证据](evidence/DEV-006-https-host.md)）。
+
+审批决定已落库后，可将调用方和请求标识放入有界内存队列，作为唤醒当前连接所有者的信号；队列不承载决定或上游请求内容，也不是持久化事实。所有者从数据库重取、核对并领取一次派发权后才答复 stdio。重复或已失效的队列项不重发；队列满或 Host 崩溃不能抹去已记录决定，也不授权新 epoch 自动补发。派发结果未知或写入失败时隔离当前连接并执行恢复，旧循环立即退出。
+
+### 4.2 本地管理通道（Windows 命名管道）
+
+运行中的 Host 可选启用命名管道 `\\.\pipe\runvori-host-<sha256(数据目录)[:16]>`，使用 `multiprocessing.connection` 的 `authkey` 校验，密钥保存在数据目录 `admin.key`（首次启动生成，32 字节）。请求为单条有界 JSON（≤4 KiB）：`{"command": ..., "arguments": {...}}`，命令在固定白名单内，全部经命令邮箱在 SQLite 所有者线程执行，管理线程不直接改库。响应 ≤32 KiB；失败只返回稳定 `code`。
+
+该通道不监听网络、不经过 TLS、无法从手机访问；它依赖当前 Windows 用户会话作为信任边界。`pairing-info` 返回 `https_url / host_id / host_name / spki_sha256 / pairing_secret / expires_at`，不返回已有令牌。`create-session` 可同时排队首个 `thread/start`（信号在同一次邮箱命令中入队，避免所有者线程自我等待）。
 
 受信任本地 `thread/start` 信号也使用有界队列，队列项仅含已登记会话 ID、本地操作者 ID 和请求 ID；入队不是持久受理。当前连接所有者消费时先从本地工作区登记读取并核对参数，再由原有一次创建适配器记录意图、领取发送权和核对绑定。重复已确认信号只返回绑定，未知创建不重发；响应丢失则隔离连接、恢复 epoch 并结束旧循环。队列满或进程退出前未消费的信号没有持久操作记录，调用方必须查询状态，不能宣称已开始创建。
 
@@ -221,16 +269,31 @@ Host 恢复入口在持有单实例锁且确认旧进程已隔离后，将旧审
 
 首版规范化事件包括：
 
-- `run.created / run.started / run.completed / run.failed / run.interrupted`。
-- `message.started / message.delta / message.completed`，payload 带稳定 `item_id`，delta 带块序号。
-- `command.started / command.output / command.completed`，payload 带 `item_id` 与输出块或产物引用。
-- `file_change.updated / artifact.created / artifact.unavailable`。
-- `approval.requested / approval.updated / operation.updated`。
-- `verification.updated / diagnostic.recorded`。
+- `run.created / run.started / run.completed / run.failed / run.interrupted`。（已实现）
+- `message.user / message.started / message.delta / message.completed`，payload 带稳定 `item_id`。（已实现，DEV-007）
+- `command.started / command.output / command.completed`，payload 带 `item_id` 与输出块。（已实现，DEV-007；产物引用仍未实现，见 5.1）
+- `timeline.truncated`：单回合文本预算耗尽后的缺口标记。（已实现，DEV-007，见 5.1）
+- `approval.requested / approval.updated / operation.updated`。（已实现）
+- `file_change.updated / artifact.created / artifact.unavailable`。（未实现）
+- `verification.updated / diagnostic.recorded`。（未实现）
 
 所有增量事件均按 `(session_id, seq)` 去重。item 更新按同一事件流归并；客户端在应用事件并提交缓存事务后才推进连续游标。未知事件也记录已收到的 seq，并显示“此内容需升级客户端”，不能悄悄省略审批/终态后继续开放操作。发现未知控制语义时进入 incompatible 只读态。
 
 连接状态由客户端推导，不伪装成服务端执行事实。快照重新加载不能丢失阅读锚点；锚点引用的 item/seq 尚未加载时，先定位对应历史页，再恢复偏移。
+
+### 5.1 时间线投影与文本预算（事件库 v15）
+
+时间线事件由上游 item 生命周期通知投影而来，**只从持久绑定定位回合**：投影层用 `(thread_id, turn_id)` 找到已绑定且活动的 run，调用方给出的标识不能把内容挂到别的回合。当前投影的消息与命令两类：
+
+- `item/started|item/completed` 的 Agent 消息与命令执行项 → `message.started` / `message.completed`、`command.started` / `command.completed`。
+- `item/agentMessage/delta`、`item/commandExecution/outputDelta` → `message.delta` / `command.output`，单块上限 8 KiB。
+- 用户输入 → `message.user`。
+
+时间线事件**只推进 `seq`，不改变 `session_version` 与快照**。否则持续输出会让所有待审批的 `expected_version` 立刻过期。
+
+单回合文本预算为 2 MiB（`MAX_RUN_TIMELINE_BYTES`），由 `run_timeline_budget` 表逐回合记录。预算耗尽后仍会写入后续事件的元数据，但不带正文：`payload.text_omitted=true` 与 `payload.dropped_bytes=<本次丢掉的字节数>`，并追加一条 `timeline.truncated`。缺口是一次性记录的，不会每条再写一个标记事件；客户端必须把“没有正文”显示为明确缺口，不能渲染成空输出。命令文本（`command.started`）另有 8 KiB 上限并置 `command_truncated`。
+
+以下情况丢弃该条时间线事件并返回稳定原因，不关闭上游连接（回合终态仍是权威）：`upstream_turn_not_found`、`run_not_active`、`session_mismatch`、`timeline_chunk_too_large`、`invalid_timeline_event`。存储故障仍然向上抛出。
 
 ## 6. 验证汇总
 
@@ -253,6 +316,7 @@ Host 恢复入口在持有单实例锁且确认旧进程已隔离后，将旧审
 - `409` 版本/活动槽/幂等冲突；`410` 审批或资源失效；`413` 超限；`416` 无效内容区间。
 - `429` 限流，带 `Retry-After`；`503` 执行不可用；`507` 存储不足。
 - 协议不兼容返回 `409 protocol_incompatible`，带受支持的协议主版本列表。
+- `409 approval_details_insufficient`：审批详情不足或已截断，只能拒绝；刷新详情或中断回合。
 - `retryable=true` 只说明可以在条件改善后核对/重试，不授权对副作用生成新 request_id。
 
 重连顺序：认证/Host 身份 → 检查协议 → 快照与游标核对 → 补齐事件 → 刷新待审批及未确认操作 → 开放写操作。若 host_id 改变或游标倒退，停止合并缓存，提示重新配对/重建，不能静默接续旧执行。

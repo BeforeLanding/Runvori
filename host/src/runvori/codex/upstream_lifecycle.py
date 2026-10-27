@@ -1,13 +1,19 @@
 """Single in-process app-server ownership and bounded exit recovery."""
 
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 
 from runvori.codex.stdio import StdioClient
+from runvori.infrastructure.process_identity import capture_process_identity
 
 
 class UpstreamLifecycleError(RuntimeError):
     """Safe lifecycle refusal without process output or workspace paths."""
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 class OwnedUpstream:
@@ -20,15 +26,24 @@ class OwnedUpstream:
 
 
 def launch_owned_upstream(journals, *, epoch: int, command: list[str],
-                          cwd: Path, env: dict[str, str]) -> OwnedUpstream:
-    """Reserve the only connection slot before spawning and initializing."""
+                          cwd: Path, env: dict[str, str],
+                          recorded_at: str | None = None) -> OwnedUpstream:
+    """Reserve the only connection slot, record identity, then spawn."""
     if os.name != "nt":
         raise UpstreamLifecycleError("windows_job_required")
     owner = OwnedUpstream(journals, epoch)
     journals.reserve_upstream_owner(owner, epoch=epoch)
     client = None
     try:
-        client = StdioClient(command, cwd=cwd, env=env)
+        def record_identity(process) -> None:
+            identity = capture_process_identity(process)
+            journals.record_upstream_process(
+                owner, epoch=epoch, pid=identity["pid"],
+                created_at=identity["created_at"],
+                recorded_at=recorded_at or _now())
+
+        client = StdioClient(command, cwd=cwd, env=env,
+                             before_start=record_identity)
         owner.client = client
         client.initialize()
         return owner
@@ -49,10 +64,13 @@ def launch_owned_upstream(journals, *, epoch: int, command: list[str],
 
 
 def isolate_and_recover_upstream(owner: OwnedUpstream, *,
-                                 recorded_at: str) -> dict:
+                                 recorded_at: str,
+                                 reason: str = "upstream_exit") -> dict:
     """Freeze writes, close the owned Windows Job, then recover its epoch."""
     if not isinstance(owner, OwnedUpstream):
         raise UpstreamLifecycleError("unowned_upstream_connection")
+    if reason not in {"host_shutdown", "upstream_exit"}:
+        raise UpstreamLifecycleError("invalid_recovery_reason")
     client = owner.client
     if client is None or client._job is None:
         raise UpstreamLifecycleError("unowned_upstream_connection")
@@ -76,8 +94,8 @@ def isolate_and_recover_upstream(owner: OwnedUpstream, *,
             raise UpstreamLifecycleError("active_run_missing")
         version = row["version"]
     result = journals.recover_host_after_isolation(
-        old_process_isolated=True, old_process_epoch=owner.epoch,
+        old_process_epoch=owner.epoch,
         expected_run_id=run_id, expected_run_version=version,
-        reason="upstream_exit", recorded_at=recorded_at)
+        reason=reason, recorded_at=recorded_at)
     journals.release_upstream_owner(owner)
     return result

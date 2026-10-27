@@ -146,14 +146,22 @@ class PairingJournal:
         return device_id, token
 
     def authenticates(self, token: bytes, *, host_id: str) -> bool:
+        return self.authenticate(token, host_id=host_id) is not None
+
+    def authenticate(self, token: bytes, *, host_id: str) -> str | None:
+        """Return the active device identity, or None; never guess a match."""
         if (not valid_host_id(host_id) or not isinstance(token, bytes)
                 or len(token) != SECRET_BYTES):
-            return False
+            return None
         row = self.connection.execute(
-            "SELECT token_digest, host_id FROM paired_devices WHERE active = 1"
-        ).fetchone()
-        return bool(row and row["host_id"] == host_id and hmac.compare_digest(
-            hashlib.sha256(token).digest(), row["token_digest"]))
+            "SELECT device_id, token_digest, host_id FROM paired_devices "
+            "WHERE active = 1").fetchone()
+        if row is None or row["host_id"] != host_id:
+            return None
+        if not hmac.compare_digest(hashlib.sha256(token).digest(),
+                                   row["token_digest"]):
+            return None
+        return row["device_id"]
 
     def revoke_local_device(self) -> None:
         """A Host-local action; invalidate the active token and pending secret."""

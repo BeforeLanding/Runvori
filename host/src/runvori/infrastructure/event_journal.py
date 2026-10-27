@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import hashlib
 import sqlite3
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any, Callable
 
 from runvori.infrastructure.host_identity import new_host_id, valid_host_id
@@ -23,6 +23,30 @@ MAX_INPUT_BYTES = 16 * 1024
 MAX_THREAD_ID_BYTES = 256
 # Leave room for the response envelope, list separators, and cursor fields.
 PAGE_EVENT_BUDGET = MAX_PAGE_BYTES - 2048
+# A single run's timeline text is capped so one long answer cannot grow the
+# database without bound. The cut is recorded and shown, never hidden.
+MAX_RUN_TIMELINE_BYTES = 2 * 1024 * 1024
+MAX_TIMELINE_CHUNK_BYTES = 8 * 1024
+MAX_COMMAND_TEXT_BYTES = 8 * 1024
+MAX_TIMELINE_ID_BYTES = 256
+TIMELINE_KINDS = (
+    "message.user", "message.started", "message.delta", "message.completed",
+    "command.started", "command.output", "command.completed",
+    "timeline.truncated")
+# Text-bearing kinds are charged against the run's timeline budget.
+TIMELINE_TEXT_KINDS = frozenset({
+    "message.user", "message.delta", "command.started", "command.output"})
+# Schema v14 review columns; the shared approvals table is owned by the
+# approval journal, so both migrators must agree on this list.
+V14_APPROVAL_COLUMNS = (
+    ("turn_id", "TEXT"),
+    ("item_id", "TEXT"),
+    ("upstream_approval_id", "TEXT"),
+    ("requested_at", "TEXT"),
+    ("details_json", "TEXT"),
+    ("details_status", "TEXT CHECK (details_status IN "
+     "('complete', 'insufficient'))"),
+)
 
 
 class EventJournalError(ValueError):
@@ -50,7 +74,8 @@ class EventJournal:
             self.connection.execute("PRAGMA journal_mode=WAL")
             self.connection.execute("PRAGMA synchronous=FULL")
             version = self.connection.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11):
+            if version not in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
+                               15):
                 raise EventJournalError("unsupported_schema")
             self.connection.executescript("""
                 CREATE TABLE IF NOT EXISTS sessions (
@@ -166,6 +191,32 @@ class EventJournal:
                     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
                     host_id TEXT NOT NULL UNIQUE
                 );
+                CREATE TABLE IF NOT EXISTS upstream_processes (
+                    process_epoch INTEGER PRIMARY KEY CHECK (process_epoch > 0),
+                    pid INTEGER NOT NULL CHECK (pid > 0),
+                    created_at INTEGER NOT NULL CHECK (created_at > 0),
+                    recorded_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS upstream_epochs (
+                    process_epoch INTEGER PRIMARY KEY CHECK (process_epoch > 0),
+                    state TEXT NOT NULL CHECK (state IN
+                        ('unlaunched', 'recorded', 'legacy_unknown')),
+                    recorded_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS approval_items (
+                    thread_id TEXT NOT NULL,
+                    turn_id TEXT NOT NULL,
+                    item_id TEXT NOT NULL,
+                    details_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (thread_id, turn_id, item_id)
+                );
+                CREATE TABLE IF NOT EXISTS run_timeline_budget (
+                    run_id TEXT PRIMARY KEY REFERENCES runs(run_id),
+                    used_bytes INTEGER NOT NULL DEFAULT 0 CHECK (used_bytes >= 0),
+                    truncated INTEGER NOT NULL DEFAULT 0
+                        CHECK (truncated IN (0, 1))
+                );
             """)
             if version < 11:
                 self.connection.execute("BEGIN IMMEDIATE")
@@ -177,6 +228,58 @@ class EventJournal:
                             "INSERT INTO host_identity VALUES (1, ?)",
                             (new_host_id(),))
                     self.connection.execute("PRAGMA user_version=11")
+                    self.connection.execute("COMMIT")
+                except BaseException:
+                    self.connection.execute("ROLLBACK")
+                    raise
+            if version < 12:
+                # Older epochs have no recorded identity; they stay unbackfilled
+                # rather than being marked isolated by guess.
+                self.connection.execute("BEGIN IMMEDIATE")
+                try:
+                    self.connection.execute("PRAGMA user_version=12")
+                    self.connection.execute("COMMIT")
+                except BaseException:
+                    self.connection.execute("ROLLBACK")
+                    raise
+            if version < 13:
+                # Epoch state needs journal_meta, which the shared approval
+                # journal owns; LockedHostJournals reconciles it after opening.
+                self.connection.execute("BEGIN IMMEDIATE")
+                try:
+                    self.connection.execute("PRAGMA user_version=13")
+                    self.connection.execute("COMMIT")
+                except BaseException:
+                    self.connection.execute("ROLLBACK")
+                    raise
+            if version < 14:
+                # Approvals recorded before v14 never stored review content.
+                # They stay insufficient rather than being backfilled by guess.
+                # A new database has no approvals table yet: ApprovalJournal
+                # creates it with these columns right after this constructor.
+                self.connection.execute("BEGIN IMMEDIATE")
+                try:
+                    columns = {row["name"] for row in self.connection.execute(
+                        "PRAGMA table_info(approvals)")}
+                    for name, definition in V14_APPROVAL_COLUMNS:
+                        if columns and name not in columns:
+                            self.connection.execute(
+                                f"ALTER TABLE approvals ADD COLUMN {name} {definition}")
+                    if columns:
+                        self.connection.execute(
+                            "UPDATE approvals SET details_status='insufficient' "
+                            "WHERE details_status IS NULL")
+                    self.connection.execute("PRAGMA user_version=14")
+                    self.connection.execute("COMMIT")
+                except BaseException:
+                    self.connection.execute("ROLLBACK")
+                    raise
+            if version < 15:
+                # v15 adds the per-run timeline byte budget; existing runs keep
+                # zero usage and are never backfilled with historical output.
+                self.connection.execute("BEGIN IMMEDIATE")
+                try:
+                    self.connection.execute("PRAGMA user_version=15")
                     self.connection.execute("COMMIT")
                 except BaseException:
                     self.connection.execute("ROLLBACK")
@@ -301,7 +404,8 @@ class EventJournal:
 
     def _append_in_tx(self, session_id: str, run_id: str | None, kind: str,
                       payload: dict[str, Any], recorded_at: str,
-                      snapshot_bytes: bytes) -> dict[str, Any]:
+                      snapshot_bytes: bytes, *,
+                      update_snapshot: bool = True) -> dict[str, Any]:
         row = self.connection.execute(
             "SELECT last_seq FROM sessions WHERE session_id=?", (session_id,)).fetchone()
         if row is None:
@@ -319,9 +423,17 @@ class EventJournal:
             "INSERT INTO events(session_id, seq, event_json, event_bytes) "
             "VALUES (?, ?, ?, ?)",
             (session_id, seq, event_bytes.decode("utf-8"), len(event_bytes)))
-        self.connection.execute(
-            "UPDATE sessions SET last_seq=?, snapshot_json=? WHERE session_id=?",
-            (seq, snapshot_bytes.decode("utf-8"), session_id))
+        if update_snapshot:
+            self.connection.execute(
+                "UPDATE sessions SET last_seq=?, snapshot_json=? WHERE session_id=?",
+                (seq, snapshot_bytes.decode("utf-8"), session_id))
+        else:
+            # Timeline chunks advance the cursor without rewriting the
+            # snapshot: they carry no control state, so control versions and
+            # the stored snapshot stay untouched.
+            self.connection.execute(
+                "UPDATE sessions SET last_seq=? WHERE session_id=?",
+                (seq, session_id))
         return event
 
     def reserve_run(self, session_id: str, run_id: str, *,
@@ -1038,7 +1150,7 @@ class EventJournal:
         if (not isinstance(run_id, str) or not run_id
                 or type(expected_version) is not int or expected_version < 1
                 or type(old_process_epoch) is not int or old_process_epoch < 1
-                or reason not in {"host_restart", "upstream_exit"}
+                or reason not in {"host_restart", "host_shutdown", "upstream_exit"}
                 or not isinstance(recorded_at, str) or not recorded_at):
             raise EventJournalError("invalid_recovery")
         self.connection.execute("BEGIN IMMEDIATE")
@@ -1170,6 +1282,273 @@ class EventJournal:
             "WHERE session_id=?", (needed_versions, row["session_id"]))
         return event
 
+    def append_timeline(self, session_id: str, run_id: str, *, kind: str,
+                        payload: dict[str, Any], text: str | None,
+                        recorded_at: str) -> dict[str, Any]:
+        """Append one display-only timeline event for a bound, live run.
+
+        These events advance ``seq`` but never rewrite the stored snapshot or
+        bump ``session_version``: output is not a control-state change, so a
+        long answer must not force every open approval to conflict. The run
+        binding, active slot and epoch are checked here so no item can be
+        attached to an arbitrary session by a caller-supplied identifier.
+        """
+        self._require_write_ready()
+        if (kind not in TIMELINE_KINDS
+                or not isinstance(session_id, str) or not session_id
+                or not isinstance(run_id, str) or not run_id
+                or not isinstance(payload, dict)
+                or not isinstance(recorded_at, str) or not recorded_at):
+            raise EventJournalError("invalid_timeline_event")
+        if text is not None and kind not in TIMELINE_TEXT_KINDS:
+            raise EventJournalError("invalid_timeline_event")
+        if text is not None and not isinstance(text, str):
+            raise EventJournalError("invalid_timeline_event")
+        text_bytes = 0 if text is None else len(text.encode("utf-8"))
+        if text_bytes > MAX_TIMELINE_CHUNK_BYTES:
+            raise EventJournalError("timeline_chunk_too_large")
+        self.connection.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.connection.execute(
+                "SELECT r.status, s.session_id FROM runs AS r "
+                "JOIN sessions AS s ON s.session_id=r.session_id "
+                "WHERE r.run_id=?", (run_id,)).fetchone()
+            if row is None or row["session_id"] != session_id:
+                raise EventJournalError("run_not_found")
+            if row["status"] not in {"starting", "running", "waiting_approval",
+                                     "interrupting"}:
+                # Output that arrives after the terminal is not merged into a
+                # finished run; the terminal event is the last word on it.
+                raise EventJournalError("run_not_active")
+            if payload.get("run_id") not in (None, run_id):
+                raise EventJournalError("invalid_timeline_event")
+            event = self._append_timeline_in_tx(
+                session_id, run_id, kind=kind, payload=payload,
+                text_bytes=text_bytes, text=text, recorded_at=recorded_at)
+            self.connection.execute("COMMIT")
+            return event
+        except BaseException:
+            self.connection.execute("ROLLBACK")
+            raise
+
+    def append_timeline_bound(self, session_id: str | None, *, thread_id: str,
+                              turn_id: str, kind: str, payload: dict,
+                              text: str | None, recorded_at: str) -> dict:
+        """Append a timeline event located by its upstream thread/turn pair.
+
+        ``session_id=None`` means the binding alone decides the owner, which is
+        the only safe way to accept an upstream-identified event.
+        """
+        self._require_write_ready()
+        if (kind not in TIMELINE_KINDS
+                or (session_id is not None and (not isinstance(session_id, str)
+                                                or not session_id))
+                or not isinstance(thread_id, str) or not thread_id
+                or not isinstance(turn_id, str) or not turn_id
+                or not isinstance(payload, dict)
+                or not isinstance(recorded_at, str) or not recorded_at):
+            raise EventJournalError("invalid_timeline_event")
+        if text is not None and kind not in TIMELINE_TEXT_KINDS:
+            raise EventJournalError("invalid_timeline_event")
+        if text is not None and not isinstance(text, str):
+            raise EventJournalError("invalid_timeline_event")
+        text_bytes = 0 if text is None else len(text.encode("utf-8"))
+        if text_bytes > MAX_TIMELINE_CHUNK_BYTES:
+            raise EventJournalError("timeline_chunk_too_large")
+        self.connection.execute("BEGIN IMMEDIATE")
+        try:
+            binding = self.connection.execute(
+                "SELECT u.run_id, r.session_id, r.status FROM upstream_turns AS u "
+                "JOIN runs AS r ON r.run_id=u.run_id "
+                "WHERE u.thread_id=? AND u.turn_id=?", (thread_id, turn_id)).fetchone()
+            if binding is None:
+                raise EventJournalError("upstream_turn_not_found")
+            if session_id is not None and binding["session_id"] != session_id:
+                raise EventJournalError("session_mismatch")
+            if binding["status"] not in {"starting", "running", "waiting_approval",
+                                         "interrupting"}:
+                raise EventJournalError("run_not_active")
+            if payload.get("run_id") not in (None, binding["run_id"]):
+                raise EventJournalError("invalid_timeline_event")
+            event = self._append_timeline_in_tx(
+                binding["session_id"], binding["run_id"], kind=kind,
+                payload=payload, text_bytes=text_bytes, text=text,
+                recorded_at=recorded_at)
+            self.connection.execute("COMMIT")
+            return event
+        except BaseException:
+            self.connection.execute("ROLLBACK")
+            raise
+
+    def item_has_text(self, *, thread_id: str, turn_id: str,
+                      item_id: str) -> bool:
+        """True when streamed text for this item was already persisted."""
+        if (not isinstance(thread_id, str) or not thread_id
+                or not isinstance(turn_id, str) or not turn_id
+                or not isinstance(item_id, str) or not item_id):
+            return False
+        try:
+            encoded = json.dumps(item_id, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return False
+        row = self.connection.execute(
+            "SELECT 1 FROM events WHERE session_id = ("
+            "  SELECT r.session_id FROM upstream_turns AS u "
+            "  JOIN runs AS r ON r.run_id=u.run_id "
+            "  WHERE u.thread_id=? AND u.turn_id=?) "
+            "AND event_json LIKE ? AND event_json LIKE '%\"text\"%' LIMIT 1",
+            (thread_id, turn_id,
+             '%"item_id":' + encoded + '%')).fetchone()
+        return row is not None
+
+    def _append_timeline_in_tx(self, session_id: str, run_id: str, *,
+                               kind: str, payload: dict, text_bytes: int,
+                               text: str | None, recorded_at: str
+                               ) -> dict[str, Any]:
+        db = self.connection
+        row = db.execute(
+            "SELECT used_bytes, truncated FROM run_timeline_budget WHERE run_id=?",
+            (run_id,)).fetchone()
+        used = 0 if row is None else row["used_bytes"]
+        truncated = 0 if row is None else row["truncated"]
+        dropped = 0
+        newly_truncated = False
+        if text_bytes and truncated:
+            # Budget already spent: keep the event as a visible gap, not a
+            # silent drop and not an unbounded write.
+            dropped = text_bytes
+            payload = {**payload, "text_omitted": True, "dropped_bytes": dropped}
+            text_bytes = 0
+        elif text_bytes and used + text_bytes > MAX_RUN_TIMELINE_BYTES:
+            dropped = text_bytes
+            truncated = 1
+            newly_truncated = True
+            payload = {**payload, "text_omitted": True, "dropped_bytes": dropped}
+            text_bytes = 0
+        if text is not None and dropped:
+            text = None
+        if text is not None:
+            payload = {**payload, "text": text}
+        snapshot = b"{}"
+        event = self._append_in_tx(
+            session_id, run_id, kind, payload, recorded_at, snapshot,
+            update_snapshot=False)
+        if newly_truncated:
+            # One marker where the gap begins. Every later event carries its
+            # own text_omitted flag, so repeating the marker would only add
+            # noise to a timeline the user is already reading as incomplete.
+            self._append_in_tx(
+                session_id, run_id, "timeline.truncated",
+                {"reason": "run_timeline_budget", "dropped_bytes": dropped,
+                 "budget_bytes": MAX_RUN_TIMELINE_BYTES},
+                recorded_at, snapshot, update_snapshot=False)
+        if row is None:
+            db.execute(
+                "INSERT INTO run_timeline_budget(run_id, used_bytes, truncated) "
+                "VALUES (?, ?, ?)", (run_id, text_bytes, truncated))
+        else:
+            db.execute(
+                "UPDATE run_timeline_budget SET used_bytes=used_bytes+?, "
+                "truncated=? WHERE run_id=?", (text_bytes, truncated, run_id))
+        return event
+
+    def list_sessions(self, *, after_session_id: str | None = None,
+                      limit: int = 50) -> dict[str, Any]:
+        """Return a stable, cursor-paginated session summary page.
+
+        The cursor is the last session ID of the previous page; ordering by
+        that immutable key keeps pagination stable while events are appended.
+        """
+        if (type(limit) is not int or not 1 <= limit <= MAX_PAGE_ITEMS
+                or (after_session_id is not None
+                    and (not isinstance(after_session_id, str)
+                         or not after_session_id))):
+            raise EventJournalError("invalid_cursor")
+        db = self.connection
+        db.execute("BEGIN")
+        try:
+            rows = db.execute(
+                "SELECT session_id, last_seq, snapshot_json, session_version "
+                "FROM sessions WHERE session_id > ? ORDER BY session_id ASC "
+                "LIMIT ?", (after_session_id or "", limit + 1)).fetchall()
+            items = [self._session_summary_in_tx(row) for row in rows[:limit]]
+            result = {
+                "items": items,
+                "next_cursor": (items[-1]["session_id"]
+                                if len(rows) > limit and items else None),
+            }
+            db.execute("COMMIT")
+            return result
+        except BaseException:
+            db.execute("ROLLBACK")
+            raise
+
+    def _session_summary_in_tx(self, row: sqlite3.Row) -> dict[str, Any]:
+        db = self.connection
+        session_id = row["session_id"]
+        snapshot = json.loads(row["snapshot_json"])
+        title = snapshot.get("title")
+        if not isinstance(title, str) or not title:
+            title = None
+        workspace = db.execute(
+            "SELECT w.root FROM session_workspaces AS sw "
+            "JOIN workspaces AS w ON w.workspace_id=sw.workspace_id "
+            "WHERE sw.session_id=?", (session_id,)).fetchone()
+        try:
+            workspace_name = (None if workspace is None
+                              else PurePath(workspace["root"]).name or None)
+        except (TypeError, ValueError):
+            workspace_name = None
+        active = db.execute(
+            "SELECT a.run_id, r.status, r.version FROM active_slot AS a "
+            "JOIN runs AS r ON r.run_id=a.run_id WHERE r.session_id=?",
+            (session_id,)).fetchone()
+        latest = db.execute(
+            "SELECT run_id, status, version, terminal_event_seq FROM runs "
+            "WHERE session_id=? ORDER BY rowid DESC LIMIT 1",
+            (session_id,)).fetchone()
+        pending = 0
+        if db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='approvals'").fetchone() is not None:
+            # The shared approvals table belongs to the approval journal; a
+            # standalone event database has none and reports zero.
+            pending = db.execute(
+                "SELECT COUNT(*) FROM approvals AS a JOIN runs AS r "
+                "ON r.run_id=a.run_id WHERE r.session_id=? AND a.status IN "
+                "('pending', 'decision_recorded', 'dispatching', 'unknown')",
+                (session_id,)).fetchone()[0]
+        updated_at = None
+        seq = latest["terminal_event_seq"] if latest is not None else None
+        if type(seq) is not int:
+            seq = row["last_seq"]
+        if seq:
+            last_event = db.execute(
+                "SELECT event_json FROM events WHERE session_id=? AND seq=?",
+                (session_id, seq)).fetchone()
+            if last_event is not None:
+                try:
+                    value = json.loads(last_event["event_json"]).get("recorded_at")
+                except (TypeError, ValueError):
+                    value = None
+                if isinstance(value, str):
+                    updated_at = value
+        return {
+            "session_id": session_id,
+            "title": title,
+            "workspace_name": workspace_name,
+            "session_version": row["session_version"],
+            "snapshot_seq": row["last_seq"],
+            "active_run": (None if active is None else {
+                "run_id": active["run_id"], "status": active["status"],
+                "version": active["version"]}),
+            "latest_run": (None if latest is None else {
+                "run_id": latest["run_id"], "status": latest["status"],
+                "version": latest["version"]}),
+            "pending_approval_count": int(pending),
+            "updated_at": updated_at,
+        }
+
     def snapshot(self, session_id: str) -> dict[str, Any]:
         self.connection.execute("BEGIN")
         try:
@@ -1194,13 +1573,26 @@ class EventJournal:
         db.execute("BEGIN")
         try:
             row = db.execute(
-                "SELECT last_seq, snapshot_json FROM sessions WHERE session_id=?",
-                (session_id,)).fetchone()
+                "SELECT last_seq, snapshot_json, session_version FROM sessions "
+                "WHERE session_id=?", (session_id,)).fetchone()
             if row is None:
                 raise EventJournalError("session_not_found")
             result = json.loads(row["snapshot_json"])
             result["session_id"] = session_id
             result["snapshot_seq"] = row["last_seq"]
+            # The column is authoritative; the stored JSON may lag a slice.
+            result["session_version"] = row["session_version"]
+            # The display alias comes from the registered root, never the path.
+            workspace = db.execute(
+                "SELECT w.root FROM session_workspaces AS sw "
+                "JOIN workspaces AS w ON w.workspace_id=sw.workspace_id "
+                "WHERE sw.session_id=?", (session_id,)).fetchone()
+            try:
+                result["workspace_name"] = (
+                    None if workspace is None
+                    else PurePath(workspace["root"]).name or None)
+            except (TypeError, ValueError):
+                result["workspace_name"] = None
             result["recent_events"] = []
             result["history_before_seq"] = row["last_seq"] + 1
             budget = MAX_PAGE_BYTES - len(_json_bytes(result)) - 2048

@@ -16,7 +16,7 @@ class InterruptJournalTests(unittest.TestCase):
     @staticmethod
     def _starting(startup):
         epoch = startup.recover_host_after_isolation(
-            old_process_isolated=True, old_process_epoch=0,
+            old_process_epoch=0,
             expected_run_id=None, expected_run_version=None,
             reason="host_restart", recorded_at="2026-10-25T00:00:00Z")["epoch"]
         startup.events.create_session("session", {})
@@ -132,7 +132,7 @@ class InterruptJournalTests(unittest.TestCase):
                     "run", actor_id="device", request_id="stop",
                     expected_version=1, recorded_at="2026-10-25T00:00:03Z")
                 startup.recover_host_after_isolation(
-                    old_process_isolated=True, old_process_epoch=epoch,
+                    old_process_epoch=epoch,
                     expected_run_id="run", expected_run_version=2,
                     reason="upstream_exit", recorded_at="2026-10-25T00:00:04Z")
                 self.assertEqual(startup.events.get_run_operation(
@@ -171,7 +171,7 @@ class InterruptJournalTests(unittest.TestCase):
     @staticmethod
     def _running(startup):
         epoch = startup.recover_host_after_isolation(
-            old_process_isolated=True, old_process_epoch=0,
+            old_process_epoch=0,
             expected_run_id=None, expected_run_version=None,
             reason="host_restart", recorded_at="2026-10-25T00:00:00Z")["epoch"]
         startup.events.create_session("session", {})
@@ -277,7 +277,7 @@ class InterruptJournalTests(unittest.TestCase):
                                 "device", "stop", process_epoch=epoch,
                                 recorded_at="2026-10-25T00:00:05Z")
                         startup.recover_host_after_isolation(
-                            old_process_isolated=True, old_process_epoch=epoch,
+                            old_process_epoch=epoch,
                             expected_run_id="run", expected_run_version=3,
                             reason="upstream_exit",
                             recorded_at="2026-10-25T00:00:06Z")
@@ -321,7 +321,7 @@ class InterruptJournalTests(unittest.TestCase):
                     recorded_at="2026-10-25T00:00:06Z")
                 before = startup.events.snapshot("session")["snapshot_seq"]
                 startup.recover_host_after_isolation(
-                    old_process_isolated=True, old_process_epoch=epoch,
+                    old_process_epoch=epoch,
                     expected_run_id="run", expected_run_version=3,
                     reason="upstream_exit",
                     recorded_at="2026-10-25T00:00:07Z")
@@ -373,7 +373,7 @@ class InterruptJournalTests(unittest.TestCase):
                 startup.events.connection.execute("PRAGMA user_version=9")
             with LockedHostJournals(folder) as reopened:
                 self.assertEqual(reopened.events.connection.execute(
-                    "PRAGMA user_version").fetchone()[0], 11)
+                    "PRAGMA user_version").fetchone()[0], 15)
                 self.assertEqual(reopened.events.connection.execute(
                     "SELECT status FROM runs WHERE run_id='run'"
                 ).fetchone()[0], "running")

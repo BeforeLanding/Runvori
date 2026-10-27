@@ -60,17 +60,69 @@ DEV-002 实现补充：Windows 通过不可继承的 kill-on-close Job 持有进
 
 原因：模型摘要、部分命令结果和脏工作区差异都不足以证明任务验证成功。后果：证据不完整时结果可为 unknown/not_run；不会为了界面整齐补造成功。
 
+## ADR-008：真实上游启动前锁定，首次回合不依赖 rollout
+
+状态：DEV-005 真实 Codex 实测补充。
+
+选择：Host 只接受精确版本 `codex-cli 0.164.0-alpha.11.1`；在取得单实例锁、打开数据库、创建配对库和推进 epoch 之前，核验实际将启动的 `upstream_command[0]`，不提供“核验 A、启动 B”的旁路。当前 app-server 连接刚刚创建的 thread 在首次回合前跳过 `thread/resume`；该标记只在内存中，Host 重启后旧 thread 仍必须成功 resume。审批决定只能经命令邮箱进入既有持久化和单次派发，`accepted` 不等于上游确认。
+
+原因：真实 Codex 新建 thread 在首个 turn 产生 rollout 之前无法被 resume，无条件 resume 会让“新建会话后立即开始第一回合”失败；版本不符或不可执行必须在产生任何持久状态之前拒绝。后果：真实测试中需要注入时序的 relay 不能启用 Host pin，必须单独验证真实二进制并在证据中披露；重启后不复用首次回合的跳过逻辑，保持失败关闭。验证见 [真实 Codex 五切点](evidence/DEV-005-host-runtime-restart-real-codex.md) 与 [ERR-028](ERRORS.md)。
+
+## ADR-009：最小 HTTPS 服务用标准库，协议与邮箱边界不变
+
+状态：DEV-006 实现并验证（合成闭环 + 真实 Codex 一次）。
+
+选择：HTTPS 入口用 `http.server.ThreadingHTTPServer` + `ssl`，单进程、16 并发上限、30 秒连接超时、64 KiB 请求体与 256 KiB 响应页上限；TLS 必需且最低 1.2，SPKI 指纹由实际证书计算。所有业务读写仍经命令邮箱，HTTP 线程不打开 SQLite。
+
+原因：仓库 `dependencies = []`，离线 wheel 安装与 smoke 检查是既有交付条件；PRD 中的 FastAPI 可后续替换，但不得改变协议、认证和邮箱边界。后果：标准库服务器不是经审计的生产实现，日志必须不记正文与凭据；未来替换框架时，`api/handlers.py` 的映射与 `DeviceReadGateway` 的鉴权复核应保留。
+
+## ADR-010：审批详情不足一律禁止允许（事件库 v14）
+
+状态：DEV-006 实现并验证。
+
+选择：审批请求落库时附带规范化详情：命令、cwd（必须证明在登记工作区内）、reason、item 标识与时间；文件审批的路径与差异来自 `item/started|item/completed`，两种到达顺序都支持。详情缺失、被截断、类型不是普通命令或路径不安全时 `details_status=insufficient`，`allowed_decisions` 只含 `deny`，允许请求返回 `409 approval_details_insufficient`。v13 及更早的审批迁移为 `insufficient`，不人工回填。
+
+原因：没有可核实内容的审批只能盲批，违反 SECURITY.md 的审批范围要求。后果：旧数据中尚在等待的审批只能拒绝；文件审批在 item 事件始终缺失时不可允许，需要中断回合并在电脑处理。真实 Codex 在 Windows 上可能以 shell 包装串发起命令，详情展示保留原始串但不宣称与探针字面量一致。
+
+## ADR-011：本地管理入口只用 Windows 命名管道
+
+状态：DEV-006 实现并验证。
+
+选择：运行中的 Host 通过 `\\.\pipe\runvori-host-<digest>`（`multiprocessing.connection` + `admin.key` authkey）接受 `status / issue-pairing / revoke-device / register-workspace / create-session / start-thread`。命令全部经邮箱在 SQLite 所有者线程执行；CLI 是唯一客户端。
+
+原因：SECURITY.md 要求生成配对信息、登记工作区与撤销只能经本地入口，且撤销需取消在途长轮询；HTTP 管理接口会扩大攻击面。后果：管理通道依赖同一 Windows 用户会话，不支持 Linux/macOS；Host 未运行时 `revoke-device` 回落离线撤销，该模式不能取消在途请求，CLI 必须标注 `mode: offline`。
+
+## ADR-012：时间线只推进 seq，文本预算耗尽要留可见缺口（事件库 v15）
+
+状态：DEV-007 核心真实链路通过，剩余专项待验收（合成上游 + 真实设备，合成验收三轮全绿；另有 1 次真实 Codex 核心闭环设备验收，见 [真实设备验收](evidence/DEV-007-device-acceptance-real.md)）。
+
+选择：上游 item 生命周期投影成时间线事件（`message.*` / `command.*`），**只推进 `seq`，不改变 `session_version` 与快照**。单回合文本预算 2 MiB，由 `run_timeline_budget` 逐回合记账；耗尽后仍写事件元数据但去掉正文，标 `text_omitted` / `dropped_bytes` 并追加一次 `timeline.truncated`。每条写入都以持久化的 `(thread_id, turn_id)` 绑定定位活动回合，解析不到就返回 `upstream_turn_not_found` 而不写。
+
+原因：如果时间线也递增 `session_version`，一段持续输出的回答会让屏幕上每个待审批的 `expected_version` 在提交前就过期，用户永远批不掉。文本必须有上限，否则一条超长回答能把数据库撑爆；但上限不能表现为“看起来是空的输出”，那会把截断伪装成模型没说话。不信任调用方标识是因为时间线写入来自上游通知，任何一条被错误归属的输出都会让用户在错误的回合里读别人的内容。
+
+后果：客户端必须把 `text_omitted` 渲染成明确缺口，不能当成空串；`timeline.truncated` 每回合只写一次，所以缺口位置由第一条被截断的事件给出，不是逐条通告。2 MiB 是首版选择，未经真实长回答验证，可能需要按实际观测调整。
+
+## ADR-013：设备联调走模拟器别名 + 回环监听，不引入任何转发装置
+
+状态：DEV-007 实现并验证。
+
+选择：Host 在设备验收中只监听 `127.0.0.1`，模拟器通过 `10.0.2.2` 直连；验收证书额外带 `IP:10.0.2.2` 的 SAN。删除 `DeviceRelay`、`device_bridge.py`、`adb forward` 与相关诊断脚本。物理手机需要自己的可达路径，`host_alias()` 对非模拟器直接报 `emulator_required_for_alias`。
+
+原因：上一轮把联调失败归因为 `adb reverse` 故障加 Windows 防火墙拦截，并请用户手动放行。实验推翻了该判断——从模拟器内 `toybox nc` 直连 `10.0.2.2:<port>`，连接在宿主机侧以 `('127.0.0.1', …)` 到达，说明别名由模拟器自身 SLIRP NAT 转成回环连接，**从不经过防火墙**。既然转发装置解决的是不存在的问题，它就只是多一层可能出错的组件。
+
+后果：验收路径就是产品路径，没有任何测试专用的中转；客户端“证书必须命名我所连的地址”这条校验照常生效，SAN 是把真实地址写进证书，不是放宽检查。代价是该编排器只适用于模拟器；真机验收需要另建可达性方案，且必须同样保持指纹与主机名校验。
+
 ## 待决策清单
 
-DEV-001 更新：实验环境已确认 Windows、Python 3.12.10、Codex CLI 0.163.0-alpha.11.2 和 SQLite 3.49.1；初始化与 schema 导出已验证。上述仅为探针基线，Q-01～Q-08 仍开放，尤其未证明生产进程树监督、真实审批及 Android 组合。证据见 [DEV-001](evidence/DEV-001.md)。
+DEV-001 更新：实验环境已确认 Windows、Python 3.12.10、Codex CLI 0.164.0-alpha.11.1 和 SQLite 3.49.1；0.163 历史证据保留原版本标注。初始化与 schema 导出已验证。上述仅为探针基线，Q-01～Q-08 仍开放，尤其未证明首发 OS、真实审批详情与 Android 组合。证据见 [DEV-001](evidence/DEV-001.md)。
 
 以下没有默认的“已支持”答案。每项记录验证人、环境、实际证据和结论后才能关闭；当前均开放。
 
 - **Q-01，M0 阻断**：首发 Host OS/架构。用启动、stdio、进程树停止、路径/junction 和重启探针决定；首版只承诺经过实测的组合。
-- **Q-02，M0 阻断**：Codex CLI 精确版本/安装来源/schema 哈希，以及命令/文件审批、请求清理与终态信号。不能只填写版本号，必须有真实夹具和确认语义。
-- **Q-03，M0 阻断**：Android 最低版本、SDK/JDK/Kotlin/Compose/Gradle/AGP 组合；需能在干净环境构建并安装基准机。
+- **Q-02，M0 阻断**：Codex CLI 精确版本/安装来源/schema 哈希，以及命令/文件审批、请求清理与终态信号。不能只填写版本号，必须有真实夹具和确认语义。DEV-005 已记录 `0.164.0-alpha.11.1`、桌面应用随附来源、二进制 SHA-256、真实命令审批和五个崩溃切点；生产分发校验、审批详情和正常退出 EOF 仍开放。
+- **Q-03，M0 阻断**：Android 最低版本、SDK/JDK/Kotlin/Compose/Gradle/AGP 组合；需能在干净环境构建并安装基准机。DEV-007 已在 API 37 模拟器（x86_64）上跑通九个设备验收场景，`minSdk 26` 仍未在 API 26 设备或实机验证。
 - **Q-04，M0 阻断**：Python/依赖/SQLite 版本与打包方式；需验证单实例锁、持久化和包安装。
-- **Q-05，M0 阻断**：TLS 证书配置、指纹分发、手动配对和过期/轮换路径；不可选择关闭证书校验来绕过。
+- **Q-05，M0 阻断**：TLS 证书配置、指纹分发、手动配对和过期/轮换路径；不可选择关闭证书校验来绕过。DEV-007 已验证 Android 侧的真实信任实现：自实现 `X509ExtendedTrustManager` 保留链与主机名校验后核对 SPKI，错误指纹在写出任何请求字节前拒绝，令牌由 Keystore 加密并排除备份。证书轮换与过期路径仍未实现。
 - **Q-06，M0 完成基线、M5 验收**：性能基准机、固定事件数据和跟踪工具。PRD 数字是初始目标，修订必须保留原目标、实测和理由。
 - **Q-07，M0/M2**：差异采集、未跟踪/脏工作区/二进制支持程度与验证命令匹配规则；无法可靠关联的内容明确降级。
 
@@ -106,7 +158,13 @@ DEV-001 更新：实验环境已确认 Windows、Python 3.12.10、Codex CLI 0.16
 
 2026-10-24 HTTPS 联动补充：Q-05 的一次性回环夹具先完成 TLS 链/主机名与本地 SPKI 核对，才发送携带秘密的 POST body；已提交但响应丢失后重放被拒，见 [证据](evidence/M0-Q05-https-pairing.md)。仅为测试路径，不决定生产 HTTP 框架或配对限流实现。
 
-2026-10-24 工具链基线：Q-03 本机有 JDK/Javac 21.0.12、Android Studio、SDK 和 adb；已加入 Gradle 8.13 wrapper 与 Android 占位工程，完成本机 Debug APK 构建及 API 37 模拟器安装启动。实机、干净环境复现和产品最低版本决策待验证，见 [记录](evidence/DEV-004-toolchain.md)。
+2026-10-26 工具链基线：Q-03 本机有 JDK/Javac 21.0.12、Android Studio、SDK 和 adb；已加入 Gradle 8.13 wrapper 与 Android 占位工程，完成本机 Debug APK 构建及 API 37 模拟器安装启动。实机、干净环境复现和产品最低版本决策待验证，见 [记录](evidence/DEV-004-toolchain.md)。
+
+2026-10-26 进程隔离补充：Q-01 的 Windows 进程身份改由 PID＋创建时间共同核对，事件库 v12 在目标进程放行前持久记录启动器身份，恢复入口不再接受调用方声明。跨进程崩溃用例验证了 Job 内启动器被杀后放行、Job 外遗留进程拒绝。该记录不证明后代进程树已停止，Q-01 仍开放，见 [证据](evidence/DEV-005-upstream-process-identity.md)。
+
+2026-10-26 旧库无身份记录策略：事件库 v13 为每个已完成 epoch 增加 `unlaunched`／`recorded`／`legacy_unknown` 状态。v12 之前已推进 epoch 且没有身份记录的库标为 `legacy_unknown`，Host 失败关闭、保持只读、不推进 epoch。选择不提供人工“旧进程已停止”声明，也不做无记录回填，因为无法证明遗留进程已隔离；迁移路径是归档旧数据目录、新建 Host 并重新配对。代价是旧数据不可自动继续，且会更换 `host_id`。触发问题：v12 恢复门禁把缺少记录当作已隔离；证据见 [记录](evidence/DEV-005-host-runtime-restart.md)。
+
+2026-10-26 产品 Host 生命周期：新增 `HostRuntime` 与 `python -m runvori.host`，固定持锁 → 对账 → 统一恢复 → 写门禁 → 设备访问组合 → 上游启动的顺序；正常停止用 `host_shutdown` 恢复并推进 epoch。上游连接故障完成隔离恢复后 Host 进程退出（退出码 3），由外部监督决定何时重启；本轮不做进程内重拉上游或自动重跑旧回合。触发问题：各启动组件只有独立探针，崩溃重启没有真实 Host 证据；证据见 [记录](evidence/DEV-005-host-runtime-restart.md)。真实 Codex 执行树与审批决定派发切点仍开放。
 - **Q-08，公开发布前**：许可证、第三方依赖/素材声明、发布包分发与私密问题报告入口。由维护者选择，不擅自补默认许可证。
 
 ## 更新方式

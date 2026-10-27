@@ -24,7 +24,6 @@ class HostDeviceAccessTests(unittest.TestCase):
     @staticmethod
     def _recover(journals):
         journals.recover_host_after_isolation(
-            old_process_isolated=True,
             old_process_epoch=journals.approvals.current_epoch(),
             expected_run_id=None, expected_run_version=None,
             reason="host_restart", recorded_at="2026-10-26T00:00:00Z")

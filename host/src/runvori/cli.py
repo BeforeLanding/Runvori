@@ -18,11 +18,13 @@ from pathlib import Path
 from runvori.application.local_device_admin import (
     LocalDeviceAdminError, revoke_device_offline,
 )
+from runvori.application.local_admin_server import LocalAdminClient, LocalAdminError
 from runvori.codex.stdio import StdioClient, TransportError
+from runvori.codex.version_probe import PINNED_CODEX, require_codex_version
 from runvori.infrastructure.instance_lock import InstanceLockUnavailable
-
-PINNED_CODEX = "codex-cli 0.164.0-alpha.11.1"
 ROOT = Path(__file__).resolve().parents[3]
+LOCAL_COMMANDS = ("host-status", "pairing-info", "register-workspace",
+                  "create-session", "start-thread")
 SELECTED = (
     "v1/InitializeParams.json", "v1/InitializeResponse.json",
     "v2/ThreadStartParams.json", "v2/ThreadStartResponse.json",
@@ -35,13 +37,42 @@ SELECTED = (
 )
 
 
+def local_command(args: argparse.Namespace) -> dict:
+    """Talk to a running Host over its local pipe; never edit the database."""
+    if args.data_dir is None:
+        raise LocalAdminError("host_data_dir_required")
+    data_dir = args.data_dir
+    if not data_dir.is_absolute() or not data_dir.is_dir():
+        raise LocalAdminError("invalid_host_data_dir")
+    client = LocalAdminClient(data_dir)
+    if args.command == "host-status":
+        return client.call("status")
+    if args.command == "pairing-info":
+        return client.call("issue-pairing")
+    if args.command == "register-workspace":
+        if args.root is None or not args.workspace_id:
+            raise LocalAdminError("workspace_arguments_required")
+        return client.call("register-workspace", workspace_id=args.workspace_id,
+                           root=str(args.root.resolve()),
+                           sandbox=args.sandbox)
+    if args.command == "create-session":
+        if not args.workspace_id or not args.session_id:
+            raise LocalAdminError("session_arguments_required")
+        return client.call(
+            "create-session", session_id=args.session_id,
+            workspace_id=args.workspace_id, title=args.title,
+            create_thread=args.create_thread, request_id=args.request_id)
+    if args.command == "start-thread":
+        if not args.session_id or not args.request_id:
+            raise LocalAdminError("thread_arguments_required")
+        return client.call("start-thread", session_id=args.session_id,
+                           request_id=args.request_id)
+    raise LocalAdminError("invalid_admin_command")
+
+
 def run_metadata(executable: str, env: dict[str, str], home: Path) -> str:
-    result = subprocess.run([executable, "--version"], env=env, cwd=home,
-                            capture_output=True, timeout=15, check=True)
-    version = result.stdout.decode("utf-8").strip()
-    if version != PINNED_CODEX:
-        raise TransportError("codex_version_mismatch")
-    return version
+    return require_codex_version(
+        executable, PINNED_CODEX, env, home, timeout=15)
 
 
 def verify_contracts(directory: Path) -> int:
@@ -67,10 +98,26 @@ def execute(args: argparse.Namespace) -> dict:
     contracts = root / "contracts/codex"
     if args.command == "verify-contracts":
         return {"status": "passed", "schema_count": verify_contracts(contracts)}
+    if args.command in LOCAL_COMMANDS:
+        return local_command(args)
     if args.command == "revoke-device":
         if args.data_dir is None:
             raise LocalDeviceAdminError("host_data_dir_required")
-        return revoke_device_offline(args.data_dir)
+        # Prefer the running Host so in-flight polls are cancelled; the offline
+        # path is only safe while no Host owns the directory lock.
+        if args.data_dir.is_absolute() and args.data_dir.is_dir():
+            try:
+                revoked = LocalAdminClient(args.data_dir).call(
+                    "revoke-device")
+            except LocalAdminError as error:
+                if str(error) != "host_not_running":
+                    raise
+            else:
+                revoked["mode"] = "running_host"
+                return revoked
+        offline = revoke_device_offline(args.data_dir)
+        offline["mode"] = "offline"
+        return offline
     executable = shutil.which(args.codex)
     if not executable:
         raise TransportError("codex_not_found")
@@ -128,13 +175,24 @@ def execute(args: argparse.Namespace) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=[
-        "doctor", "export-schema", "verify-contracts", "revoke-device"])
+        "doctor", "export-schema", "verify-contracts", "revoke-device",
+        *LOCAL_COMMANDS])
     parser.add_argument("--codex", default="codex")
     parser.add_argument("--timeout", type=float, default=15)
     parser.add_argument("--replace", action="store_true", help="explicitly replace schema baseline")
     parser.add_argument("--workspace", type=Path, default=Path.cwd())
     parser.add_argument("--data-dir", type=Path,
-                        help="existing absolute Host data directory for offline revocation")
+                        help="existing absolute Host data directory")
+    parser.add_argument("--root", type=Path,
+                        help="workspace root to register (local administration)")
+    parser.add_argument("--sandbox", default="read-only",
+                        choices=["read-only", "workspace-write"])
+    parser.add_argument("--workspace-id")
+    parser.add_argument("--session-id")
+    parser.add_argument("--title")
+    parser.add_argument("--request-id")
+    parser.add_argument("--create-thread", action="store_true",
+                        help="also queue the first upstream thread creation")
     args = parser.parse_args()
     try:
         result = execute(args)
@@ -144,7 +202,8 @@ def main() -> int:
         # Do not echo exception messages from filesystem/subprocess: may contain secrets.
         code = (str(error) if isinstance(
             error, (TransportError, LocalDeviceAdminError,
-                    InstanceLockUnavailable)) else type(error).__name__)
+                    LocalAdminError, InstanceLockUnavailable))
+            else type(error).__name__)
         print(json.dumps({"status": "failed", "code": code}))
         return 1
     print(json.dumps(result, indent=2))

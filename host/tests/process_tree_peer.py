@@ -8,7 +8,9 @@ import time
 
 mode, marker = sys.argv[1:3]
 if mode == "leaf":
-    Path(marker).write_text(str(os.getpid()), encoding="ascii")
+    staging = Path(marker).with_name(Path(marker).name + ".tmp")
+    staging.write_text(str(os.getpid()), encoding="ascii")
+    os.replace(staging, marker)
     time.sleep(60)
 elif mode in ("tree", "exit"):
     child = subprocess.Popen([sys.executable, __file__, "middle", marker])

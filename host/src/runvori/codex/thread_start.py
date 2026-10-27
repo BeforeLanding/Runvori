@@ -60,6 +60,9 @@ def create_session_thread_once(
         thread_id = thread.get("id") if isinstance(thread, dict) else None
         if not isinstance(thread_id, str) or not thread_id:
             raise ThreadStartError("invalid_thread_start_response")
+        mark_fresh = getattr(client, "mark_fresh_thread", None)
+        if callable(mark_fresh):
+            mark_fresh(thread_id)
         return journals.confirm_thread_start(
             session_id=session_id, actor_id=actor_id,
             request_id=request_id, epoch=epoch, thread_id=thread_id)

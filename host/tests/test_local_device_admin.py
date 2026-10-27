@@ -33,7 +33,11 @@ class LocalDeviceAdminTests(unittest.TestCase):
                 _, token = journal.exchange(secret, host_id=HOST_ID)
             code, output = self._invoke(directory)
             self.assertEqual(code, 0)
-            self.assertEqual(output, {"status": "passed", "device": "revoked"})
+            self.assertEqual(output, {"status": "passed", "device": "revoked",
+                                      "mode": "offline"})
+            # Without a running Host the CLI must say the revocation was
+            # offline: in-flight polls are not cancelled in that mode.
+            self.assertIn("offline", output["mode"])
             self.assertNotIn(token.hex(), json.dumps(output))
             with PairingJournal(directory / "pairing.db") as journal:
                 self.assertFalse(journal.authenticates(token, host_id=HOST_ID))

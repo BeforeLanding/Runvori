@@ -1,8 +1,10 @@
 # 测试、验收与证据计划
 
-日期：2026-10-23。状态：测试设计，所有用例尚未执行，不代表通过。需求来源：[PRD](PRD.md)。
+日期：2026-10-23（2026-10-27 增补 DEV-007 真实设备验收）。状态：测试设计与已执行证据并存；各节标注覆盖范围，未标注的用例仍未执行，不代表通过。需求来源：[PRD](PRD.md)。
 
 DEV-001 补充：已建立 stdio 探针的合成故障测试和真实握手检查，见 [本轮证据](evidence/DEV-001.md)；它们是 M0 前置检查，本文 AT 产品验收仍未执行。
+
+DEV-007 真实设备验收（2026-10-27）：除合成九场景外，已用真实 Codex 执行 1 次核心闭环设备验收（`s/a/b/c/g/e`，`expected_model_turns=1`、`observed_runs=1`，未重试）。真实模式使用独立场景集与 `ACCEPT_PROMPT`，不跑 `d/f/h` 的合成指令；见 [真实设备验收](evidence/DEV-007-device-acceptance-real.md)。**状态：核心真实链路通过，剩余专项待验收。**
 
 ## 1. 验证层次
 
@@ -23,9 +25,13 @@ DEV-001 补充：已建立 stdio 探针的合成故障测试和真实握手检�
 
 证据：脱敏 API 结果、设备代次变化、无敏感信息的访问日志。TLS 不匹配不能通过“跳过检查”成功。
 
+DEV-006 部分覆盖（2026-10-27）：合成 HTTPS 闭环验证了错误 SPKI 指纹不发出任何请求、有效秘密配对成功、同秘密重放 409、第 6 次交换 429 且有 `Retry-After`、运行中撤销后业务请求 401 且在途长轮询被终止。未覆盖：过期秘密、第二台手机、交换响应丢失后的人工重配（旧回环探针仍覆盖重放拒绝）、访问日志审计与 Android 信任。见 [证据](evidence/DEV-006-https-host.md)。
+
 ### AT-02 会话归属与列表（FR-02）
 
 本地启动登记工作区中的会话，检查列表、分页和快照；运行在 Host 外部的 Codex thread 不出现在受管集合。手机不能创建任意工作区，伪造 session/run/artifact ID 不能跨资源读取。
+
+DEV-007 部分覆盖（2026-10-27）：`GET /v1/sessions` 已实现并被真实 APK 使用——设备验收的 `b` 场景从手机列出 Host 登记的两个会话并打开其一；Host 侧 `test_host_timeline.py` 验证游标按 `session_id` 稳定分页、返回最近回合与待审批计数。未覆盖：运行在 Host 之外的 Codex thread 不出现在列表、伪造 ID 的跨资源读取、分页在真机上的连续翻页。见 [证据](evidence/DEV-007-device-acceptance.md)。同日真实 Codex 设备验收也从手机列出两个会话并打开 `devsess0`，见 [真实设备验收](evidence/DEV-007-device-acceptance-real.md)。
 
 ### AT-03 时间线与内容（FR-03）
 
@@ -35,15 +41,27 @@ DEV-001 补充：已建立 stdio 探针的合成故障测试和真实握手检�
 
 分别触发命令和文件审批，核对真实操作、范围与原因。允许/拒绝仅作用于本次。Host 受理后 UI 先显示处理中；上游请求结束和命令结果分别显示。审批被拒绝不应被渲染为执行成功。
 
+DEV-006 部分覆盖（2026-10-27）：合成上游的 HTTPS 闭环验证命令审批详情含 command、cwd 在登记工作区内、`allowed_decisions=[allow_once,deny]`；决定受理 202，操作最终 `confirmed/request_closed`。文件审批缺少 item 证据时 `details_status=insufficient`，允许 409、拒绝 202。真实 Codex 一次回合同样验证了详情完整性与决定链路，但 Windows 命令串带 shell 包装，未宣称与探针字面量一致。
+
+DEV-007 补充（2026-10-27）：真实 APK 在设备验收 `b` 场景完成一次完整审批：审批页展示上游给出的完整命令串与 cwd（原样展示，不简化成裸命令），`details_status=complete`，允许按钮可用；双击只产生**一个**决定操作（缓存中 `kind=approval` 的操作数断言为 1），提交后 202 文案是“Host 已受理，等待发送与处理”，随后操作经 `/v1/operations?kind=approval` 轮询到终态、审批转 `resolved`、回合转终态，时间线出现命令与输出。`f` 场景验证 `insufficient` 的文件审批只给拒绝。**真实文件审批的 `complete` 路径仍未覆盖**（设备的 `f` 走合成 `insufficient`），`command_matches_probe=false` 依旧成立。见 [设备验收](evidence/DEV-007-device-acceptance.md)。
+
+DEV-007 真实验收补充（2026-10-27）：真实 Codex 设备验收的 `b` 场景完成一次真实命令审批：详情 `complete`、命令非空、cwd 在登记工作区内、允许/拒绝可用；双击只产生一个操作，`allow_once` 后操作 `confirmed`、审批 `resolved`、回合 `run.completed`，时间线命令 exit 0 且输出非空。真实命令串可能带 shell 包装，本轮 `command_match_asserted=false`，不宣称与探针字面量一致。见 [真实设备验收](evidence/DEV-007-device-acceptance-real.md)。
+
 ### AT-05 重复、冲突和丢失确认（FR-04、NFR-01）
 
 对同一审批双击、相同 request_id 重试、不同标识相同决定、相反决定及版本过期分别测试。只接受一个决定；同 key 不同请求返回冲突。模拟 Host 已记录决定但 HTTP 响应丢失，重连查询原操作，不二次派发。
 
 进一步在“事务提交前、提交后、领取派发后、上游发送后、确认落库前”注入终止。检查旧 epoch 决定不重放；无法判定的结果显示 unknown。统计上游实际收到的响应次数，不能仅检查手机按钮被禁用。
 
+DEV-007 补充（2026-10-27）：设备验收 `b` 场景在真实 APK 上对同一审批连点两次——第一次点击后两个按钮立即不可用，紧接着再调用一次决定入口，缓存中的 `kind=approval` 操作数仍为 **1**。`g` 场景对同一 `request_id` 连续查询两次，状态一致。未覆盖：不同标识的相同/相反决定、版本过期冲突的 UI 呈现、HTTP 响应丢失后的原操作核对，以及“上游实际收到几次”的服务端计数。
+
 ### AT-06 失效与未知审批（FR-04、NFR-02）
 
 等待审批时结束/中断回合、重启 app-server，再提交旧请求，应失效且不能批准新 epoch 的同号请求。注入不支持的控制请求和缺失命令/差异内容，允许按钮不可用；安全拒绝或中断并给出原因，不形成无限等待。
+
+DEV-006 补充（2026-10-27）：详情不足、被截断、cwd 无法证明在登记工作区内、类型非普通命令，或 v13 旧审批迁移后，`allow_once` 均返回 409 `approval_details_insufficient`，只保留拒绝；由 `test_approval_details.py` 与合成 HTTPS 闭环覆盖。未知控制请求仍按既有规则关闭连接并恢复。
+
+DEV-007 补充（2026-10-27）：设备验收 `d` 场景在真实 APK 上验证——请求被上游结束、审批转 `expired` 后，UI 的允许与拒绝**都不可用**（`can_allow=false`、`can_deny=false`），绕过 UI 直接用 API 对同一审批提交 `allow_once` 被 Host 拒绝。`c` 场景验证回合终态后重连不会让旧审批重新可用。未覆盖：等待审批时重启 app-server 使新 epoch 复用同号请求。真实模式本轮未跑 `d`；真实中断/过期需要第二次显式授权的模型回合。
 
 ### AT-07 中断与终态竞争（FR-05）
 
@@ -59,11 +77,17 @@ DEV-001 补充：已建立 stdio 探针的合成故障测试和真实握手检�
 
 离线审批/中断/后续输入不可提交，重连前不启用旧审批；Host 执行不因手机离线被错误标失败。
 
+DEV-006 部分覆盖（2026-10-27）：合成闭环在一次完整回合后，用新客户端从 `after_seq=0` 补齐 12 条事件，验证 seq 连续且无重复；协同的 `next_after_seq`/`has_more` 由既有邮箱测试覆盖。未覆盖：真实断网 30 秒、缺口/超前/身份变化注入、客户端缓存事务与 Android 重连顺序。
+
+DEV-007 补充（2026-10-27）：设备验收的 `c` 场景在真实 APK 上制造历史后丢弃内存连接，用新建 ViewModel 从磁盘游标重同步，断言缓存事件 seq 无重复、从 1 连续、`syncGap=false` 且终态事件仍在。这是**进程内重建**，不等于系统杀进程或断网 30 秒；缺口、超前游标与身份变化的注入仍未在设备侧覆盖。真实 Codex 设备验收的 `c` 复用 `b` 已写入 `devsess0` 的历史重同步，不额外产生模型回合，见 [真实设备验收](evidence/DEV-007-device-acceptance-real.md)。
+
 ### AT-10 Android 生命周期（FR-06）
 
 分别旋转、切后台、系统杀进程、清除缓存后重新打开。保留缓存的场景恢复正确会话与锚点；清除缓存后重新读取，不伪造恢复成功。模拟 Room 写事务失败，游标不得超过已落盘事件。
 
 后台不要求审批实时到达；回到前台必须核对当前审批与原未确认操作后才开放写入口。
+
+DEV-007 部分覆盖（2026-10-27）：设备验收 `c` 场景丢弃内存中的 `HostSession`/ViewModel，保留磁盘缓存后新建 ViewModel 重连，得到正确的会话、连续游标与终态事件。这只等价于“进程内重建”，**不是**系统杀进程；旋转、切后台、清除缓存、Room 写事务失败（本实现用 `SQLiteOpenHelper`，尚无注入写失败的用例）均未执行。
 
 ### AT-11 阅读与可访问性（FR-03、FR-06、NFR-03、NFR-04）
 
@@ -87,11 +111,17 @@ DEV-001 补充：已建立 stdio 探针的合成故障测试和真实握手检�
 
 完成一次任务后加载原 thread，明确发送新输入，生成新的 run/turn，保留旧结果。工作区丢失、thread 不可加载和已有活动回合时返回明确错误。仅重新打开手机不会启动任何新回合。
 
+DEV-007 部分覆盖（2026-10-27）：设备验收 `b` 在 `devsess0` 完成一个回合并结束审批后，输入框重新可用（`activeRun == null` 且 `writable`），证明同一会话可以再次发起；`c` 则在 `devsess1` 上先制造历史再重连并保留终态事件。都走合成上游。未覆盖：`thread_unavailable`、工作区丢失、`active_run_exists` 的 UI 呈现（该错误此前被同步逻辑抹掉，本轮已修复但无自动化断言），以及真实 Codex 上的历史 thread 加载。
+
 ### AT-16 Host/上游重启（FR-09、NFR-01）
 
 在 starting、running、等待审批、决定派发和中断过程中终止 Host/app-server。重启后保留已提交事件，旧回合标 interrupted 且带原因，旧审批不可再用，不自动重跑。确认遗留进程停止/隔离前保持只读，不开放新执行。
 
 检查崩溃前未落盘输出的说明和不确定操作；不能在没有证据时把整段执行称为已恢复。以真实首发 OS 进行进程树验证，不能仅使用 mock PID。
+
+DEV-005 补充（2026-10-26）：真实 `HostRuntime` 子进程已在 starting、running、等待审批、决定派发和中断五个切点完成崩溃重启测试。合成 peer 证据见 [DEV-005 Host 启动与重启](evidence/DEV-005-host-runtime-restart.md)；真实 Codex 证据见 [五切点](evidence/DEV-005-host-runtime-restart-real-codex.md)。真实运行使用锁定版本 `codex-cli 0.164.0-alpha.11.1`、绝对路径、独立 `CODEX_HOME` 和真实 Windows Job；验证了启动前版本门、审批决定邮箱入口、旧回合 interrupted、审批 expired/unknown、操作 unknown、不自动重跑，以及 launcher、relay、真实 Codex 及观测后代的 PID＋创建时间隔离。
+
+AT-16 仍不能整体标记为通过：首发 Host 操作系统尚未决定；starting、决定派发和中断三个切点由测试 relay 注入杀点；审批详情读取、HTTP/TLS 与 Android 联调未实现；真实上游正常退出且后代继承 stdio 的 EOF 检测未覆盖（ERR-027）。这些限制必须在发布候选验收前逐项关闭。
 
 ### AT-17 容量与故障（FR-10、NFR-01、NFR-02）
 

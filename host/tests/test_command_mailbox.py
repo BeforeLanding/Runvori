@@ -12,12 +12,15 @@ from runvori.application.command_mailbox import (
     CommandMailboxError, HostCommandMailbox,
 )
 from runvori.cli import ROOT
+from runvori.codex.owned_approval_queue import OwnedApprovalQueue
 from runvori.codex.owned_event_loop import run_owned_event_loop
 from runvori.codex.owned_interrupt_queue import OwnedInterruptQueue
 from runvori.codex.owned_run_start import OwnedRunStartQueue
 from runvori.codex.upstream_lifecycle import launch_owned_upstream
 from runvori.infrastructure.event_journal import EventJournalError
 from runvori.infrastructure.locked_journal import LockedHostJournals
+
+from approval_fixtures import reviewable_command, seed_workspace_session
 
 
 PEER = Path(__file__).with_name("fake_app_server.py")
@@ -61,21 +64,46 @@ class MailboxShutdownTests(unittest.TestCase):
         with self.assertRaisesRegex(CommandMailboxError, "host_stopped"):
             mailbox.get_session_snapshot(session_id="session")
 
+    def test_close_after_approval_enqueue_reports_unknown(self):
+        mailbox = HostCommandMailbox()
+        outcome = {}
+
+        def decide():
+            try:
+                mailbox.decide_approval(
+                    approval_id="apr_test", actor_id="device",
+                    request_id="approval-op", expected_version=1,
+                    decision="allow_once")
+            except CommandMailboxError as error:
+                outcome["error"] = str(error)
+
+        worker = threading.Thread(target=decide)
+        worker.start()
+        deadline = time.monotonic() + 1
+        while mailbox._items.qsize() == 0 and time.monotonic() < deadline:
+            time.sleep(0.005)
+        self.assertEqual(mailbox._items.qsize(), 1)
+        mailbox.close()
+        worker.join(timeout=1)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(outcome, {"error": "command_result_unknown"})
+
 
 @unittest.skipUnless(os.name == "nt", "Windows locked Host integration")
 class CommandMailboxTests(unittest.TestCase):
     @staticmethod
     def _ready(startup):
         epoch = startup.recover_host_after_isolation(
-            old_process_isolated=True, old_process_epoch=0,
+            old_process_epoch=0,
             expected_run_id=None, expected_run_version=None,
             reason="host_restart", recorded_at="2026-10-26T00:00:00Z")["epoch"]
-        startup.events.create_session("session", {})
+        seed_workspace_session(startup, epoch)
         startup.events.bind_session_thread("session", "thread_demo")
         return epoch
 
     @staticmethod
-    def _call_and_serve(mailbox, journals, call, *, runs, interrupts):
+    def _call_and_serve(mailbox, journals, call, *, runs, interrupts,
+                        approvals=None):
         outcome = {}
 
         def caller():
@@ -90,7 +118,8 @@ class CommandMailboxTests(unittest.TestCase):
         while time.monotonic() < deadline:
             if mailbox.serve_once(
                     journals, recorded_at="2026-10-26T00:00:01Z",
-                    run_starts=runs, interrupts=interrupts):
+                    run_starts=runs, interrupts=interrupts,
+                    approvals=approvals):
                 break
             time.sleep(0.005)
         else:
@@ -101,6 +130,26 @@ class CommandMailboxTests(unittest.TestCase):
         if "error" in outcome:
             raise outcome["error"]
         return outcome["result"]
+
+    @staticmethod
+    def _approval_ready(startup, epoch):
+        startup.events.reserve_run_request(
+            "session", "run", actor_id="device", request_id="start",
+            expected_session_version=0, input_text="go",
+            recorded_at="2026-10-26T00:00:01Z")
+        startup.events.claim_run_dispatch(
+            "device", "start", process_epoch=epoch,
+            recorded_at="2026-10-26T00:00:02Z")
+        startup.events.confirm_run_started(
+            "device", "start", process_epoch=epoch,
+            thread_id="thread_demo", turn_id="turn_demo",
+            recorded_at="2026-10-26T00:00:03Z")
+        startup.record_approval_request(
+            "session", "run", approval_id="apr_test", epoch=epoch,
+            upstream_request_id="str:approval_demo", kind="command",
+            details=reviewable_command(startup.data_dir),
+            turn_id="turn_demo",
+            recorded_at="2026-10-26T00:00:04Z")
 
     def test_start_and_interrupt_are_persisted_before_wakeup(self):
         with tempfile.TemporaryDirectory(dir=ROOT / ".dev") as temp:
@@ -143,6 +192,130 @@ class CommandMailboxTests(unittest.TestCase):
                 self.assertEqual(startup.events.get_interrupt_operation(
                     "device", "stop"), stopped)
                 self.assertEqual(interrupts.take_nowait(), ("device", "stop"))
+
+    def test_approval_decision_is_persisted_then_queued_once(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / ".dev") as temp:
+            with LockedHostJournals(Path(temp)) as startup:
+                epoch = self._ready(startup)
+                self._approval_ready(startup, epoch)
+                mailbox = HostCommandMailbox()
+                approvals = OwnedApprovalQueue()
+                runs = OwnedRunStartQueue()
+                interrupts = OwnedInterruptQueue()
+
+                def decide(request_id="approval-op"):
+                    return mailbox.decide_approval(
+                        approval_id="apr_test", actor_id="device",
+                        request_id=request_id, expected_version=1,
+                        decision="allow_once")
+
+                accepted = self._call_and_serve(
+                    mailbox, startup, decide, runs=runs,
+                    interrupts=interrupts, approvals=approvals)
+                self.assertEqual(accepted["status"], "accepted")
+                self.assertEqual(accepted["resource_id"], "apr_test")
+                self.assertEqual(approvals.take_nowait(),
+                                 ("device", "approval-op"))
+                self.assertEqual(startup.get_approval_operation(
+                    "device", "approval-op"), accepted)
+                approval = startup.approvals.get("apr_test")
+                self.assertEqual(approval["status"], "decision_recorded")
+                self.assertEqual(approval["decision"], "accept")
+                self.assertEqual(approval["version"], 2)
+
+                self.assertEqual(self._call_and_serve(
+                    mailbox, startup, decide, runs=runs,
+                    interrupts=interrupts, approvals=approvals), accepted)
+                self.assertEqual(approvals.take_nowait(),
+                                 ("device", "approval-op"))
+                replayed = self._call_and_serve(
+                    mailbox, startup,
+                    lambda: decide("approval-replay"), runs=runs,
+                    interrupts=interrupts, approvals=approvals)
+                self.assertEqual(replayed["request_id"], "approval-op")
+                self.assertEqual(approvals.take_nowait(),
+                                 ("device", "approval-op"))
+                self.assertIsNone(approvals.take_nowait())
+                found = self._call_and_serve(
+                    mailbox, startup,
+                    lambda: mailbox.get_operation(
+                        kind="approval", actor_id="device",
+                        request_id="approval-op"),
+                    runs=runs, interrupts=interrupts)
+                self.assertEqual(found, accepted)
+
+    def test_approval_decision_without_dispatcher_commits_nothing(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / ".dev") as temp:
+            with LockedHostJournals(Path(temp)) as startup:
+                epoch = self._ready(startup)
+                self._approval_ready(startup, epoch)
+                mailbox = HostCommandMailbox()
+                with self.assertRaisesRegex(CommandMailboxError,
+                                            "execution_unavailable"):
+                    self._call_and_serve(
+                        mailbox, startup,
+                        lambda: mailbox.decide_approval(
+                            approval_id="apr_test", actor_id="device",
+                            request_id="approval-op", expected_version=1,
+                            decision="allow_once"),
+                        runs=OwnedRunStartQueue(),
+                        interrupts=OwnedInterruptQueue())
+                self.assertEqual(startup.approvals.get("apr_test")["status"],
+                                 "pending")
+                self.assertIsNone(startup.events.connection.execute(
+                    "SELECT 1 FROM approval_operations").fetchone())
+
+    def test_approval_queue_full_keeps_decision_queryable_and_retryable(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / ".dev") as temp:
+            with LockedHostJournals(Path(temp)) as startup:
+                epoch = self._ready(startup)
+                self._approval_ready(startup, epoch)
+                mailbox = HostCommandMailbox()
+                approvals = OwnedApprovalQueue(capacity=1)
+                approvals.submit("other", "other")
+                decide = lambda: mailbox.decide_approval(
+                    approval_id="apr_test", actor_id="device",
+                    request_id="approval-op", expected_version=1,
+                    decision="deny")
+                with self.assertRaisesRegex(CommandMailboxError,
+                                            "dispatch_signal_unavailable"):
+                    self._call_and_serve(
+                        mailbox, startup, decide,
+                        runs=OwnedRunStartQueue(),
+                        interrupts=OwnedInterruptQueue(),
+                        approvals=approvals)
+                accepted = startup.get_approval_operation(
+                    "device", "approval-op")
+                self.assertEqual(accepted["status"], "accepted")
+                self.assertEqual(startup.approvals.get("apr_test")[
+                    "status"], "decision_recorded")
+                self.assertEqual(approvals.take_nowait(), ("other", "other"))
+                self.assertEqual(self._call_and_serve(
+                    mailbox, startup, decide,
+                    runs=OwnedRunStartQueue(),
+                    interrupts=OwnedInterruptQueue(),
+                    approvals=approvals), accepted)
+                self.assertEqual(approvals.take_nowait(),
+                                 ("device", "approval-op"))
+
+    def test_session_thread_read_reports_bound_and_unbound(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / ".dev") as temp:
+            with LockedHostJournals(Path(temp)) as startup:
+                epoch = self._ready(startup)
+                startup.events.create_session("unbound", {})
+                mailbox = HostCommandMailbox()
+                runs = OwnedRunStartQueue()
+                interrupts = OwnedInterruptQueue()
+                self.assertEqual(self._call_and_serve(
+                    mailbox, startup,
+                    lambda: mailbox.get_session_thread(session_id="session"),
+                    runs=runs, interrupts=interrupts),
+                    {"session_id": "session", "thread_id": "thread_demo"})
+                self.assertEqual(self._call_and_serve(
+                    mailbox, startup,
+                    lambda: mailbox.get_session_thread(session_id="unbound"),
+                    runs=runs, interrupts=interrupts),
+                    {"session_id": "unbound", "thread_id": None})
 
     def test_timeout_reports_unknown_then_same_key_can_be_queried(self):
         with tempfile.TemporaryDirectory(dir=ROOT / ".dev") as temp:

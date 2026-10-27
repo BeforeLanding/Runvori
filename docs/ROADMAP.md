@@ -38,9 +38,9 @@ DEV-003 Windows 路径边界补充：一次性夹具中的真实 junction 父目
 
 Q-04 当前包复验：当前 Host 探针 wheel 离线构建、一次性虚拟环境安装及仓库外 CLI 入口校验通过；单实例锁集成、业务服务与独立部署仍开放，见 [证据](evidence/DEV-001-package-recheck.md)。
 
-Q-04 单实例锁前提：Windows 文件句柄锁的跨进程竞争、正常关闭与持锁进程退出后重取已实测；尚未接入产品 Host 启动和 SQLite 活动槽，见 [证据](evidence/M0-Q04-instance-lock.md)。
+Q-04 单实例锁前提：Windows 文件句柄锁的跨进程竞争、正常关闭与持锁进程退出后重取已实测；已接入 `HostRuntime` 启动顺序，活动槽产品行为仍由后续 Host 证据覆盖，见 [证据](evidence/M0-Q04-instance-lock.md)。
 
-Q-04 启动顺序补充：最小切片已验证先持锁再打开审批 SQLite、失败释放锁以及进程异常退出后重开不自动推进 epoch；旧 app-server 隔离、产品 Host 生命周期和活动槽仍开放，见 [证据](evidence/M0-Q04-locked-journal.md)。
+Q-04 启动顺序补充：最小切片已验证先持锁再打开审批 SQLite、失败释放锁以及进程异常退出后重开不自动推进 epoch；旧 app-server 隔离与产品 Host 生命周期已由后续 `HostRuntime` 切片接入，HTTP 入口和手机控制仍开放，见 [证据](evidence/M0-Q04-locked-journal.md)。
 
 Q-05 TLS 身份前提：本机回环握手已验证信任链、主机名及本地 SPKI 指纹，换公钥时不自动接受；Android 信任实现、配对秘密及产品证书轮换仍开放，见 [证据](evidence/M0-Q05-tls-identity.md)。
 
@@ -68,6 +68,16 @@ DEV-005 读取边界补充：内部邮箱具备快照/分页/等待读取及停�
 
 DEV-005 Host 身份补充：权威数据库 v11 已保存稳定随机 `host_id`，旧库升级及损坏拒绝有行为测试；独立配对库现按该身份约束秘密与设备令牌。恢复后的内部组合层已把权威身份用于配对、读取与撤销，并拒绝关闭后的旧对象。产品 Host 启动编排、HTTPS 联调与旧备份回滚时的身份轮换仍开放，见 [身份](evidence/DEV-005-host-identity.md)、[配对绑定](evidence/DEV-005-pairing-host-binding.md)和[组合验证](evidence/DEV-005-host-device-access.md)。
 
+DEV-005 进程隔离补充：事件库 v12 在目标进程放行前记录启动器 PID＋创建时间；恢复入口改为按该记录核实，不再接受调用方声明的 `old_process_isolated`，存活或无法查询时拒绝恢复并保持写门禁关闭。跨进程崩溃用例覆盖 Job 内被杀放行与 Job 外遗留拒绝。该记录只覆盖启动器，不证明后代进程树；产品启动编排已由后续 `HostRuntime` 组合，见 [证据](evidence/DEV-005-upstream-process-identity.md)。
+
+DEV-005 Host 启动与重启补充：事件库 v13 显式记录每个 epoch 的上游身份状态，旧库无记录标为 `legacy_unknown` 并失败关闭，迁移只能归档重建。新增 `HostRuntime` 与 `python -m runvori.host`，按固定顺序组合单实例锁、对账、统一恢复、写门禁、设备访问和唯一上游；正常停止使用 `host_shutdown`，上游故障恢复后进程退出等待外部重启。真实 Host 子进程在 starting、running、等待审批和中断切点完成崩溃重启测试，并验证 launcher／上游／后代真实 PID 与 Job 隔离，见 [证据](evidence/DEV-005-host-runtime-restart.md)。
+
+DEV-005 真实 Codex 补充：锁定 `codex-cli 0.164.0-alpha.11.1`，在取得锁和打开数据库前核验绝对路径与版本；命令邮箱接入审批决定；产品 `thread/start` 创建真实 thread 后，在 starting、running、等待审批、决定派发和中断五个切点完成真实 Codex 崩溃重启。验证审批 expired/unknown、操作 unknown、不自动重跑及真实进程树隔离。首发 OS、relay 注入时序、审批详情读取和正常退出 EOF 仍开放，AT-16 未整体通过；见 [证据](evidence/DEV-005-host-runtime-restart-real-codex.md) 与 [ERR-028](ERRORS.md)。
+
+DEV-006 HTTPS 补充：真实 `HostRuntime` 已接上标准库 HTTPS 服务与 Windows 命名管道管理入口，独立 HTTPS 客户端完成配对、快照、回合、审批详情与决定、操作查询、断线补拉和撤销 401 的完整闭环；审批详情落库（事件库 v14），详情不足时禁止允许。合成上游闭环与真实 Codex 一次验收均通过；会话列表、命令/产物明细、Android 联调与 AT-16 未覆盖项仍开放，见 [合成证据](evidence/DEV-006-https-host.md) 与 [真实验收](evidence/DEV-006-https-host-real.md)。M1 尚未整体验收。
+
+DEV-007 Android 最小业务闭环（2026-10-27）：`GET /v1/sessions` 与会话摘要、`GET /v1/runs/{run_id}/approvals`、上游 item 生命周期投影为时间线（事件库 v15，单回合 2 MiB 文本预算 + 显式截断标记）。Android 侧补齐配对载荷解析、Keystore 凭据、固定指纹的 HTTPS、SQLite 缓存与同步、四个屏幕与新回合/中断。设备验收用**真实 APK → 固定指纹 HTTPS → 真实 `HostRuntime` → 合成 app-server** 跑通九个场景（凭据往返、错误指纹预先拒绝、完整闭环、进程内重建重同步、过期审批不可允许、详情不足只给拒绝、中断二次确认、重复操作查询稳定、撤销后拒绝），连续三轮全绿；`python scripts/check.py` 374 项（3 跳过）、Android JVM 单测 19 项通过。**真实 Codex 设备验收已执行 1 次核心闭环**（`s/a/b/c/g/e`，1 次模型回合，`observed_runs=1`，未重试）。**DEV-007 状态：核心真实链路通过，剩余专项待验收**——`d/f/h`、真实文件审批与真实中断/过期仍未覆盖，见 [真实设备验收](evidence/DEV-007-device-acceptance-real.md)。顺带修正上一轮对传输层的错误判断：模拟器 `10.0.2.2` 经其自身 NAT 到达宿主机回环，不需要防火墙放行或 `adb reverse`，相关 relay/桥接代码已删除。未覆盖：真实文件审批 `complete` 路径、命令/产物明细端点、旋转/杀进程/清除缓存/TalkBack/性能，见 [设备验收](evidence/DEV-007-device-acceptance.md)。M2 主路径尚未整体验收。
+
 依赖 M0。交付：
 
 - 数据库迁移、单实例锁、全局活动槽、会话/回合模型。
@@ -88,6 +98,8 @@ DEV-005 Host 身份补充：权威数据库 v11 已保存稳定随机 `host_id`�
 - 可安装调试版本与真实 Host 联调说明。
 
 退出条件：FR-01～FR-05、FR-07、FR-08 主路径可端到端运行；AT-03、AT-04、AT-07、AT-13～AT-15 有手机侧证据，状态显示无“HTTP 202 即成功”。
+
+DEV-007 进度（2026-10-27）：FR-01（配对/凭据/撤销）、FR-02（会话列表）、FR-03（时间线读取、增量与历史分页）、FR-04（审批展示与决定）、FR-05（中断）、FR-06（重连补拉）、FR-08（原会话新回合）在**合成上游**上已有手机侧证据；FR-04 的“202 不等于成功”在 UI 与测试里都按协议表述。AT-03 只覆盖命令与消息，文件改动与产物仍是时间线缺口；AT-04 只覆盖命令审批的完整详情，文件审批只有 `insufficient` 路径；AT-07 覆盖 running 中断，starting 与 waiting_approval 中断未做设备侧验证；AT-13/AT-14 的验证汇总与差异来源在手机侧尚未呈现（Host 侧 `verification.*` / `file_change.*` 事件未实现）。M2 退出条件不因此视为满足。
 
 ## M3：恢复与稳定阅读（第 5 周）
 

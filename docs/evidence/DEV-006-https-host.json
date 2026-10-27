@@ -1,0 +1,99 @@
+{
+  "status": "passed",
+  "steps": [
+    {
+      "result": "no_http_request",
+      "step": "tls_pin_mismatch"
+    },
+    {
+      "https_url_scheme": "https",
+      "pin_matches_host": true,
+      "session": "created",
+      "step": "local_admin",
+      "thread_start": "queued",
+      "workspace": "registered"
+    },
+    {
+      "step": "auth_gate",
+      "unauthenticated": 401
+    },
+    {
+      "host_id_present": true,
+      "status": 200,
+      "step": "pairing"
+    },
+    {
+      "status": 409,
+      "step": "pairing_replay"
+    },
+    {
+      "retry_after": true,
+      "status": 429,
+      "step": "rate_limit"
+    },
+    {
+      "execution_available": true,
+      "status": 200,
+      "step": "host_view"
+    },
+    {
+      "snapshot_seq": 0,
+      "status": 200,
+      "step": "snapshot",
+      "workspace_named": true
+    },
+    {
+      "operation_status": "accepted",
+      "status": 202,
+      "step": "run_accepted"
+    },
+    {
+      "observed": true,
+      "step": "approval_event"
+    },
+    {
+      "allowed_decisions": [
+        "allow_once",
+        "deny"
+      ],
+      "command_present": true,
+      "cwd_inside_workspace": true,
+      "details_status": "complete",
+      "status": 200,
+      "step": "approval_detail"
+    },
+    {
+      "status": 202,
+      "step": "decision_accepted"
+    },
+    {
+      "operation_outcome": "request_closed",
+      "operation_status": "confirmed",
+      "step": "run_completed",
+      "terminal": "run.completed"
+    },
+    {
+      "after_seq": 0,
+      "continuous": true,
+      "duplicate_count": 0,
+      "event_count": 12,
+      "step": "resync"
+    },
+    {
+      "allow_blocked": true,
+      "allow_status": 409,
+      "deny_status": 202,
+      "missing": [
+        "file_changes_missing"
+      ],
+      "step": "insufficient_review"
+    },
+    {
+      "long_poll_ended": true,
+      "step": "revocation",
+      "subsequent_status": 401
+    }
+  ],
+  "transport": "https_loopback",
+  "upstream": "synthetic_app_server"
+}

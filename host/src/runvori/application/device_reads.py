@@ -66,6 +66,16 @@ class DeviceReadGateway:
             for signal in self._active:
                 self._mailbox.cancel_wait(signal)
 
+    def cancel_all(self) -> None:
+        """Cancel every in-flight read; used when the listener stops."""
+        with self._active_lock:
+            signals = list(self._active)
+        for signal in signals:
+            try:
+                self._mailbox.cancel_wait(signal)
+            except CommandMailboxError:
+                pass
+
     def _require_host_available(self) -> None:
         if self._host_available is not None and not self._host_available():
             raise DeviceReadError("host_unavailable")
@@ -95,6 +105,20 @@ class DeviceReadGateway:
             try:
                 result = self._mailbox.get_session_view(
                     session_id=session_id, limit=limit, cancelled=signal)
+            finally:
+                self._require_authorized(journal, token, signal)
+            return result
+
+    def sessions(self, *, token: bytes, after_session_id: str | None = None,
+                 limit: int = 50,
+                 cancelled: threading.Event | None = None) -> dict:
+        with self._tracked(cancelled) as signal, PairingJournal(
+                self._pairing_db) as journal:
+            self._require_authorized(journal, token, signal)
+            try:
+                result = self._mailbox.list_sessions(
+                    after_session_id=after_session_id, limit=limit,
+                    cancelled=signal)
             finally:
                 self._require_authorized(journal, token, signal)
             return result

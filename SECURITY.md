@@ -31,14 +31,22 @@
 
 2026-10-26 内部读取切片：配对令牌保护快照和事件读取，可信本地撤销提交后主动取消同一网关实例的在途请求，见 [设备读取](docs/evidence/DEV-005-device-reads.md)与[撤销联动](docs/evidence/DEV-005-device-revocation.md)。产品本地管理入口和 HTTP 响应发送前的鉴权仍待实现。
 
+2026-10-26 上游进程隔离：事件库 v12 在目标进程放行前记录启动器 PID＋创建时间，恢复入口据此核实；存活或无法查询时拒绝恢复，不自动终止进程，见 [进程身份证据](docs/evidence/DEV-005-upstream-process-identity.md)。该记录只覆盖启动器，不证明后代进程树已停止。
+
 2026-10-26 离线撤销入口：CLI 仅在取得与 Host 相同的 Windows 单实例锁后修改已有配对库；Host 持锁运行时拒绝，见 [离线撤销证据](docs/evidence/DEV-005-offline-device-revoke.md)。运行中撤销仍需产品本地管理通道接入进程内取消机制。
 
 2026-10-26 Host 身份前提：权威数据库 v11 保存稳定随机 `host_id`，重开保持不变，身份缺失或损坏时拒绝继续，见 [身份验证](docs/evidence/DEV-005-host-identity.md)。独立配对库要求秘密与令牌绑定该身份，旧无归属记录失效，见 [绑定证据](docs/evidence/DEV-005-pairing-host-binding.md)；恢复后内部组合已验证旧令牌与关闭后旧对象的拒绝，见 [组合证据](docs/evidence/DEV-005-host-device-access.md)。产品启动编排、旧备份回滚后的换身份和重新配对仍待实现。
 
+2026-10-27 运行中撤销与 HTTPS 入口：Host 可选启用 Windows 命名管道（同用户会话 + 数据目录 `admin.key` authkey）承载配对、登记与撤销；撤销提交后立即取消同一网关的在途长轮询，后续请求返回 401，见 [证据](docs/evidence/DEV-006-https-host.md)。HTTPS 服务只在显式 `--listen` 且同时给定证书/私钥时启动，最低 TLS 1.2，SPKI 指纹由实际证书计算并随配对信息下发；Bearer 令牌的 `device_id` 只由服务端解析产生，请求体不能指定 actor；配对交换按来源 5 次/分、全局 20 次/分限流并返回 `Retry-After`。标准库 HTTP 层为单进程有界实现（16 并发、30 秒连接超时、64 KiB 请求体），不是经过审计的生产服务器。
+
+2026-10-27 审批详情闸门：审批详情缺失、被截断、cwd 无法证明在登记工作区内、或上游类型不是普通命令时，`allow_once` 被拒绝（`409 approval_details_insufficient`），只保留拒绝；v13 及更早的旧审批迁移为 `insufficient`，不人工回填，见 [协议 4.1](docs/PROTOCOL.md) 与 [证据](docs/evidence/DEV-006-https-host.md)。真实 Codex 在 Windows 上的命令串可能带 shell 包装，不保证与探针字面量一致（见 [真实验收](docs/evidence/DEV-006-https-host-real.md)）。
+
+2026-10-27 Android 凭据与传输：设备令牌用 Android Keystore 中不可导出的 AES-256-GCM 密钥加密后落盘，密钥永不离开 Keystore；`allowBackup=false` 且 `data_extraction_rules` 同时排除凭据 SharedPreferences 与缓存数据库，云备份和设备迁移都带不走（设备验收 `s` 场景核对落盘字节确为密文、不含令牌）。TLS 校验由自实现的 `X509ExtendedTrustManager` 承担：链与主机名照常验证，再核对配对信息里的 SPKI 指纹，指纹不符时在写出任何请求字节前拒绝（`a` 场景）。Android 网络安全配置禁用明文，且不信任用户安装的 CA。**设备联调不需要开放防火墙**：模拟器的 `10.0.2.2` 由模拟器自身 NAT 转成宿主机回环连接，Host 只监听 `127.0.0.1`；证书把该别名写进 IP SAN，主机名校验照常生效，没有跳过校验的开关。见 [DEV-007 合成证据](docs/evidence/DEV-007-device-acceptance.md) 与 [真实设备验收](docs/evidence/DEV-007-device-acceptance-real.md)（真实 Codex 核心闭环 1 次模型回合）。
+
 ## 3. 凭据生命周期
 
 - 设备令牌至少 32 字节安全随机数，Host 仅存不可逆摘要并用恒定时间比较。令牌只放 Authorization header，不放 URL。
-- 客户端通过 Android Keystore 保护的密钥加密令牌，排除系统备份；退出配对清除令牌及该 Host 缓存。
+- 客户端通过 Android Keystore 保护的密钥加密令牌，排除系统备份；退出配对清除令牌及该 Host 缓存。（2026-10-27 已实现，见第 2 节末条）
 - v0.1 长期令牌以本地撤销为失效机制；不支持静默跨设备迁移或自动续签。有效期策略如需变化，须同步协议与测试。
 - 撤销按设备代次即时生效，后续所有读写返回未授权；已开始的长轮询也须结束，不能继续返回新事件。
 - 模型认证由电脑上的 Codex 管理，Runvori 不提供手机录入/读取模型密钥接口，不把模型凭据写入事件、SQLite 业务字段、二维码或诊断包。

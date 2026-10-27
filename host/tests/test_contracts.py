@@ -22,7 +22,8 @@ class ContractTests(unittest.TestCase):
                 verify_contracts(directory)
 
     def test_new_cli_version_requires_explicit_review(self):
-        with patch("runvori.cli.subprocess.run") as run:
+        with patch("runvori.codex.version_probe.subprocess.run") as run:
+            run.return_value.returncode = 0
             run.return_value.stdout = b"codex-cli 999.0.0\n"
             with self.assertRaisesRegex(TransportError, "codex_version_mismatch"):
                 run_metadata("codex", {}, ROOT)

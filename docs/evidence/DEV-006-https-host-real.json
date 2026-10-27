@@ -1,0 +1,51 @@
+{
+  "status": "passed",
+  "steps": [
+    {
+      "epoch": 1,
+      "step": "host_started"
+    },
+    {
+      "step": "paired"
+    },
+    {
+      "snapshot_seq": 0,
+      "step": "thread_bound"
+    },
+    {
+      "status": 202,
+      "step": "run_accepted"
+    },
+    {
+      "allowed_decisions": [
+        "allow_once",
+        "deny"
+      ],
+      "command_matches_probe": false,
+      "command_present": true,
+      "cwd_inside_workspace": true,
+      "details_status": "complete",
+      "step": "approval_detail"
+    },
+    {
+      "operation_outcome": "request_closed",
+      "operation_status": "confirmed",
+      "step": "run_terminal",
+      "terminal": "run.completed"
+    },
+    {
+      "operation_outcome": "turn_started",
+      "operation_status": "confirmed",
+      "step": "run_operation"
+    },
+    {
+      "approval_requested": true,
+      "approval_updated": true,
+      "event_count": 12,
+      "step": "event_kinds",
+      "terminal": true
+    }
+  ],
+  "transport": "https_loopback",
+  "upstream": "real_codex"
+}

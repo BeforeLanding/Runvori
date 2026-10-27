@@ -20,6 +20,8 @@ from runvori.codex.stdio import TransportError
 from runvori.codex.upstream_lifecycle import launch_owned_upstream
 from runvori.infrastructure.locked_journal import LockedHostJournals
 
+from approval_fixtures import reviewable_command, seed_workspace_session
+
 
 PEER = Path(__file__).with_name("fake_app_server.py")
 
@@ -50,10 +52,10 @@ class OwnedEventLoopTests(unittest.TestCase):
 
     def _start(self, startup, *, confirmed=False, mode="event_handoff"):
         epoch = startup.recover_host_after_isolation(
-            old_process_isolated=True, old_process_epoch=0,
+            old_process_epoch=0,
             expected_run_id=None, expected_run_version=None,
             reason="host_restart", recorded_at="2026-10-25T00:00:00Z")["epoch"]
-        startup.events.create_session("session", {})
+        seed_workspace_session(startup, epoch)
         startup.events.reserve_run_request(
             "session", "run", actor_id="local", request_id="start",
             expected_session_version=0, input_text="hello",
@@ -69,7 +71,8 @@ class OwnedEventLoopTests(unittest.TestCase):
         owner = launch_owned_upstream(
             startup, epoch=epoch,
             command=[sys.executable, str(PEER), mode],
-            cwd=ROOT, env=dict(os.environ))
+            cwd=ROOT, env={**os.environ,
+                           "RUNVORI_FAKE_WORKSPACE": str(startup.data_dir)})
         return epoch, owner
 
     def test_consumes_ordered_handoffs_and_stops_at_limit(self):

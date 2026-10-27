@@ -47,13 +47,22 @@ def certificate_der(certificate_pem: Path) -> bytes:
     return openssl("x509", "-in", str(certificate_pem), "-outform", "DER")
 
 
-def generate_certificate(folder: Path, name: str) -> tuple[Path, Path]:
+def generate_certificate(folder: Path, name: str,
+                         extra_sans: list[str] | None = None) -> tuple[Path, Path]:
+    """A throw-away certificate for a loopback Host.
+
+    ``extra_sans`` lets a device acceptance run name the address the device
+    actually dials (the emulator reaches the host through `10.0.2.2`); the
+    client refuses a certificate that does not name its endpoint, so the SAN
+    has to be real rather than bypassed.
+    """
     certificate = folder / f"{name}.pem"
     key = folder / f"{name}.key"
+    sans = ["DNS:localhost", *(extra_sans or [])]
     openssl("req", "-x509", "-newkey", "rsa:2048", "-sha256", "-nodes",
             "-days", "2", "-keyout", str(key), "-out", str(certificate),
             "-subj", f"/CN=Runvori Probe {name}",
-            "-addext", "subjectAltName=DNS:localhost")
+            "-addext", "subjectAltName=" + ",".join(sans))
     return certificate, key
 
 
@@ -61,6 +70,15 @@ def connect_pinned(port: int, trust_bundle: Path, expected_pin: str,
                    *, hostname: str = "localhost") -> None:
     with open_pinned(port, trust_bundle, expected_pin, hostname=hostname) as secure:
         secure.sendall(b"probe")
+        # Closing straight after sendall can reset the connection before the
+        # peer reads, which looks like a missing pin acceptance. Wait for the
+        # peer's close so the probe records delivery, not socket teardown luck.
+        secure.settimeout(5)
+        try:
+            while secure.recv(32):
+                pass
+        except (TimeoutError, ssl.SSLError):
+            raise ProbeError("probe_ack_timeout") from None
 
 
 def open_pinned(port: int, trust_bundle: Path, expected_pin: str,

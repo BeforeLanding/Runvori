@@ -7,6 +7,8 @@ isolate the old process before advancing an epoch and must never retry a claim.
 import sqlite3
 from pathlib import Path
 
+from runvori.infrastructure.event_journal import V14_APPROVAL_COLUMNS
+
 
 class JournalError(Exception):
     """A stable local journal rejection code."""
@@ -46,6 +48,13 @@ class ApprovalJournal:
                     ('absent', 'matches', 'different', 'unsafe_path')),
                 run_id TEXT,
                 request_digest BLOB,
+                turn_id TEXT,
+                item_id TEXT,
+                upstream_approval_id TEXT,
+                requested_at TEXT,
+                details_json TEXT,
+                details_status TEXT CHECK (details_status IN
+                    ('complete', 'insufficient')),
                 UNIQUE (epoch, upstream_request_id)
             );
         """)
@@ -55,6 +64,17 @@ class ApprovalJournal:
         if "request_digest" not in {
                 row["name"] for row in self.connection.execute("PRAGMA table_info(approvals)")}:
             self.connection.execute("ALTER TABLE approvals ADD COLUMN request_digest BLOB")
+        columns = {row["name"] for row in self.connection.execute(
+            "PRAGMA table_info(approvals)")}
+        for name, definition in V14_APPROVAL_COLUMNS:
+            if name not in columns:
+                self.connection.execute(
+                    f"ALTER TABLE approvals ADD COLUMN {name} {definition}")
+        # Rows written before v14 have no review content; they can only be
+        # denied. Backfilling a "complete" status would be a lie.
+        self.connection.execute(
+            "UPDATE approvals SET details_status='insufficient' "
+            "WHERE details_status IS NULL")
 
     def close(self) -> None:
         if self._owns_connection:

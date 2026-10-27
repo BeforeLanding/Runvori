@@ -1,14 +1,24 @@
 # 开发进度与下一步计划
 
-最后更新：2026-10-26（Asia/Shanghai）。本文件是当前进度的维护入口；历史变化见 [CHANGELOG.md](CHANGELOG.md)，错误与修复见 [错误记录](docs/ERRORS.md)。
+最后更新：2026-10-27（Asia/Shanghai）。本文件是当前进度的维护入口；历史变化见 [CHANGELOG.md](CHANGELOG.md)，错误与修复见 [错误记录](docs/ERRORS.md)。
 
 ## 当前阶段
 
-**DEV-003 已观察真实命令与文件审批、受控执行、进程切断、命令完成后中断的两种回合结局、脏工作区中的固定文件新增、固定文件移动与二进制命令写入、验证命令的通过与非零失败，并完成 Git 工作区大文件等本地元信息探针；确认丢失有合成故障注入，审批派发持久边界有独立 SQLite 行为验证。DEV-004 的 Android 占位 APK 已完成本机构建和模拟器安装启动。Q-04 已复验包安装、单实例锁及持锁打开审批记录；Q-05 已完成回环 TLS 身份、一次性配对记录及二者的本地 HTTPS 联动探针。产品 Host 集成与 M0 退出条件仍未完成。**
+**DEV-003 已观察真实命令与文件审批、受控执行、进程切断、命令完成后中断的两种回合结局、脏工作区中的固定文件新增、固定文件移动与二进制命令写入、验证命令的通过与非零失败，并完成 Git 工作区大文件等本地元信息探针；确认丢失有合成故障注入，审批派发持久边界有独立 SQLite 行为验证。DEV-004 的 Android 占位 APK 已完成本机构建和模拟器安装启动。Q-04 已复验包安装、单实例锁及持锁打开审批记录；Q-05 已完成回环 TLS 身份、一次性配对记录及二者的本地 HTTPS 联动探针。DEV-005 已有恢复前写门控、上游调度、读取邮箱、设备鉴权与配对身份组合、按持久 PID＋创建时间核实的启动隔离门、事件库 v13 与真实 `HostRuntime` 启动/崩溃重启闭环，并接入锁定版本真实 Codex 完成启动前版本门、审批决定邮箱入口与五个真实崩溃切点。DEV-006 把真实 `HostRuntime` 接成可由独立 HTTPS 客户端操作的最小 Host：审批详情落库与“详情不足禁止允许”闸门、Windows 命名管道本地管理入口、标准库 HTTPS 服务与设备认证/限流、九个最小业务端点、合成上游完整闭环与真实 Codex 一次验收。DEV-007 把 Android 接成最小业务客户端：会话列表与按回合的审批列表、时间线投影（事件库 v15）、Keystore 凭据与固定指纹 HTTPS、SQLite 缓存与断线补拉、四个屏幕与新回合/中断，并用真实 APK 对真实 `HostRuntime` 跑通九个合成设备验收场景；随后用真实 Codex 完成 1 次核心闭环设备验收（`s/a/b/c/g/e`，1 次模型回合，`observed_runs=1`）。**DEV-007 状态：核心真实链路通过，剩余专项待验收**——真实模式的中断/过期、真实文件审批、命令/产物明细、Android 生命周期/性能、M0 退出条件与 AT-16 剩余项仍未完成。**
 
-当前可运行的是本地技术验证工具和 Android 静态占位 APK，不是可供手机连接的产品。没有 FastAPI 业务 API、数据库任务管理、TLS 配对或 Android 业务交互。PRD 的 AT-01～AT-17 尚未完成产品验收。
+当前可运行的是本地技术验证工具、可被独立 HTTPS 客户端操作的最小 Host，以及能完成「配对 → 列会话 → 读时间线 → 决策 → 看结果」的设备客户端（上游为合成 app-server）。PRD 的 AT-01～AT-17 尚未完成产品验收。
 
 ## 已完成
+
+- DEV-007 / FR-01、FR-02、FR-03、FR-04、FR-05、FR-06、FR-08 Android 最小业务闭环：Host 新增 `GET /v1/sessions`（`session_id` 不透明游标稳定分页，返回标题、工作区别名、会话版本、快照序号、活动/最近回合与待审批计数）与 `GET /v1/runs/{run_id}/approvals`（可过滤六种审批状态，最新请求在前，空回合返回空列表而非伪造条目）。事件库 v15 新增 `run_timeline_budget`，把上游 item 生命周期投影为 `message.*` / `command.*` 时间线事件：写入只按持久 `(thread_id, turn_id)` 绑定定位活动回合，只推进 `seq` 不改 `session_version`（避免持续输出让待审批的期望版本过期），单回合文本 2 MiB 预算、单块 8 KiB，耗尽后写 `text_omitted`/`dropped_bytes` 并追加一次 `timeline.truncated`，不静默丢弃。Android 侧实现配对载荷解析与校验、`X509ExtendedTrustManager` + SPKI 固定 + SAN 主机名校验、Keystore AES-GCM 凭据信封（`allowBackup=false`，云备份与设备迁移均排除）、SQLite 缓存（`(host_id, session_id, seq)` 唯一，游标与事件同事务提交）、手工 HTTP/1.1 over `SSLSocket`（无重试）、四个屏幕与新回合/中断。`scripts/accept_device.py` 用真实 APK → 固定指纹 HTTPS → 真实 `HostRuntime` → 合成 app-server 跑通九个场景并连续三轮全绿：凭据密文往返、错误指纹预先拒绝、完整闭环（列会话→时间线→审批→决定→看结果）、进程内重建重同步无重复无缺口、过期审批不可允许、详情不足只给拒绝、中断二次确认、重复操作查询稳定、撤销后拒绝。同轮修复四个产品缺陷：审批页期间轮询停摆、决定提交后从不回查操作状态、TLS 握手在 worker 线程交错导致客户端 EOF、拒绝原因被同步逻辑抹掉（见 [ERR-029](docs/ERRORS.md)、[ERR-030](docs/ERRORS.md)）。并推翻上一轮对传输层的错误判断：模拟器 `10.0.2.2` 经其自身 NAT 到达宿主机回环，不需要防火墙放行或 `adb reverse`，相关 relay/桥接代码已删除。374 项测试运行（371 通过、3 项跳过）、Android JVM 单测 19 项通过、16 份契约通过；合成设备验收见 [证据](docs/evidence/DEV-007-device-acceptance.md)。同日又用真实 Codex 执行 **1 次**核心闭环设备验收（`s/a/b/c/g/e`，`expected_model_turns=1`、`observed_runs=1`，未重试），见 [真实设备验收](docs/evidence/DEV-007-device-acceptance-real.md)；真实模式编排的版本门、独立场景集与回合计数修正见 [ERR-031](docs/ERRORS.md)。**状态：核心真实链路通过，剩余专项待验收**；真实中断/过期、真实文件审批、命令/产物明细、Android 生命周期/性能仍未覆盖。
+
+- DEV-006 / FR-01、FR-04、FR-05、FR-06、FR-08 可通过 HTTPS 操作的最小 Host：事件库 v14 保存审批有界详情（命令、cwd、reason、item/时间；文件审批的路径与差异来自 `item/started|item/completed` 的 `changes[]`），`details_status` 不是 `complete` 或内容被截断时 `allow_once` 返回 `409 approval_details_insufficient`，v13 旧审批迁移为 `insufficient` 且不人工回填。新增标准库 HTTPS 服务（TLS ≥1.2、SPKI 指纹、Bearer 令牌由服务端解析为 `device_id`、协议头先校验、配对交换限流、16 并发与请求体/响应页上限），实现 `/v1/host`、快照、事件（含长轮询）、新回合、审批详情与决定、中断、操作查询；新增 Windows 命名管道本地管理入口与 `host-status / pairing-info / register-workspace / create-session / start-thread` CLI，`revoke-device` 优先走运行中的 Host 并取消在途长轮询。`scripts/probe_https_host.py` 对真实 `HostRuntime` 子进程完成 15 步闭环（错误指纹不发送请求、配对与重放、限流、快照、回合、审批详情、决定、操作查询、断线补拉、insufficient 禁止允许、撤销 401），`scripts/accept_https_host_real.py` 用真实 Codex 显式运行 1 次通过。362 项测试运行（359 通过、3 项环境跳过），全量检查连续 3 次通过；16 份契约与离线 wheel 隔离安装通过。见 [合成证据](docs/evidence/DEV-006-https-host.md) 与 [真实验收](docs/evidence/DEV-006-https-host-real.md)。
+
+- DEV-005 / FR-02、FR-04、FR-05、FR-09、NFR-01 锁定版本真实 Codex 与五切点验收：Host 在取得锁、打开数据库和推进 epoch 前，用 `--codex`／`RUNVORI_CODEX` 指定的绝对路径探测 `codex-cli 0.164.0-alpha.11.1`；版本不符、不可执行、超时或输出异常均稳定拒绝且不产生状态。命令邮箱新增审批决定入口，只有持久化返回 `accepted` 才进入一次派发；新增审批操作查询与 session thread 读取。真实 `HostRuntime` 子进程在产品 `thread/start` 路径创建真实 thread，在 starting、running、等待审批、决定派发和中断五个切点终止 Host，验证旧回合 interrupted、审批 expired/unknown、操作 unknown/dispatch_unconfirmed、旧审批不可重用、不自动重跑，以及 launcher、测试 relay、真实 `codex.exe`、`codex-code-mode-host.exe`、`conhost.exe` 等观测后代的 PID＋创建时间隔离。首次真实运行发现新建 thread 首回合前无法 resume（`no rollout found`），修复为仅当前连接新建 thread 跳过首次 resume，重启后仍失败关闭，见 [ERR-028](docs/ERRORS.md)。共发起 6 次真实运行：1 次在首回合前暴露该缺口，未进入模型回合；修复后 5 个切点各 1 次真实模型回合通过，未自动重试。16 份契约通过，336 项测试运行（333 通过、3 项跳过：2 项环境限制、1 项真实测试未启用），全量检查连续 6 次通过，离线 wheel 隔离安装通过。AT-16 仍因首发 OS、relay 注入时序、审批详情读取和真实上游正常退出 EOF 未覆盖而不能整体通过；见 [真实 Codex 证据](docs/evidence/DEV-005-host-runtime-restart-real-codex.md)。
+
+- DEV-005 / FR-02、FR-04、FR-05、FR-09、NFR-01 产品 Host 启动与重启闭环：事件库 v13 新增 `upstream_epochs`，每个 epoch 显式记录 `unlaunched`／`recorded`／`legacy_unknown`；统一恢复门禁不再把缺少身份记录当作已隔离，旧库标为 `legacy_unknown`、失败关闭、不推进 epoch，只能归档重建。新增 `HostRuntime` 与 `python -m runvori.host`，固定组合单实例锁、状态对账、统一恢复、写门禁、命令邮箱、设备访问和唯一上游；正常停止以 `host_shutdown` 恢复，上游故障恢复后进程退出等待外部重启。真实 Host 子进程在 starting、running、等待审批和中断四个切点完成崩溃重启测试，验证 launcher、fake app-server 与后代的真实 PID 隔离、旧回合 interrupted、审批失效和不自动重跑；另有上游故障与连续重启用例。16 份契约通过，317 项测试运行（315 通过、2 项环境限制跳过），崩溃用例与全量检查重复通过，离线 wheel 隔离安装及新模块导入通过。该轮上游为合成 peer；真实 Codex 五切点与审批决定入口见上条。HTTP/TLS 与本地管理入口仍开放；见 [验证记录](docs/evidence/DEV-005-host-runtime-restart.md) 与 [ERR-027](docs/ERRORS.md)。
+
+- DEV-005 / FR-09、NFR-01 上游进程身份与启动隔离门：事件库 v12 在目标进程放行前持久记录启动器 PID＋创建时间（`process_epoch` 为主键）；`recover_host_after_isolation` 删除调用方声明的 `old_process_isolated`，改为按记录核实，`running`/`inaccessible` 拒绝且不进入事务、不推进 epoch、不打开写门禁；同 epoch 重试只有旧记录可放行才覆盖。跨进程崩溃用例覆盖 Job 内被杀后放行与 Job 外遗留进程拒绝。16 份契约通过，294 项测试运行（292 通过、2 项环境限制跳过），连续 4 次通过。同轮修复了 TLS 回环探针发送后立即关闭导致的间歇丢包，见 [ERR-026](docs/ERRORS.md)。产品 Host 启动编排、HTTP/TLS 与本地管理入口仍开放；见 [验证记录](docs/evidence/DEV-005-upstream-process-identity.md)。
 
 - DEV-005 / FR-01、FR-06 恢复后设备访问组合：持锁并完成统一恢复后，`HostDeviceAccess` 从权威库取得 `host_id`，初始化配对库并绑定秘密兑换、设备读取及本地撤销；恢复前不创建配对库，重建身份拒绝旧令牌，Host 关闭后旧组合对象拒绝访问。16 份契约通过，280 项测试运行（275 通过、5 项环境限制跳过），离线 wheel 隔离安装通过。产品 Host 启动、HTTPS 响应复核和备份回滚处置仍开放；见 [验证记录](docs/evidence/DEV-005-host-device-access.md)。
 
@@ -130,24 +140,26 @@
 
 命令、环境、结果与限制见 [DEV-001 验证记录](docs/evidence/DEV-001.md)。仅通过握手不能证明审批、执行恢复或进程树安全；合成测试消息不能冒充真实 Codex 审批夹具。
 
-DEV-001 的原始结果为 16 项自动测试、14 份 schema 校验、真实隔离握手、wheel 离线构建及隔离安装校验；19 份 Markdown 的 85 处内部链接检查无缺失。当前完整离线检查为 206 项测试运行（201 通过、5 项本环境限制跳过）、16 份 schema 校验；DEV-003 的真实命令/文件审批、受控执行与中断、Git 产物和 SQLite 派发边界证据保持有效。Windows 单实例锁、持锁打开 SQLite 的启动顺序、一次性回环 TLS 身份、配对记录及本地 HTTPS 联动路径已验证；当前源码 wheel 的隔离安装及仓库外 CLI 校验已通过。
+DEV-001 的原始结果为 16 项自动测试、14 份 schema 校验、真实隔离握手、wheel 离线构建及隔离安装校验；原始 19 份 Markdown 的 85 处内部链接检查无缺失，当前 87 份 Markdown 的相对链接检查无缺失。当前完整离线检查为 374 项测试运行（371 通过、3 项环境跳过：2 项宿主符号链接创建受限、1 项真实 Codex 测试未启用）、16 份 schema 校验；Android JVM 单元测试 19 项通过。DEV-003 的真实命令/文件审批、受控执行与中断、Git 产物和 SQLite 派发边界证据保持有效。Windows 单实例锁、持锁打开 SQLite 的启动顺序、一次性回环 TLS 身份、配对记录及本地 HTTPS 联动路径已验证；当前源码 wheel 的隔离安装及仓库外 CLI 校验已通过。真实 Codex 五切点证据见 [记录](docs/evidence/DEV-005-host-runtime-restart-real-codex.md)；DEV-006 的合成 HTTPS 闭环见 [证据](docs/evidence/DEV-006-https-host.md)，真实 Codex HTTPS 一次验收见 [记录](docs/evidence/DEV-006-https-host-real.md)；DEV-007 的合成设备验收见 [证据](docs/evidence/DEV-007-device-acceptance.md)，其上游为合成 app-server；真实 Codex 核心闭环见 [真实设备验收](docs/evidence/DEV-007-device-acceptance-real.md)。
 
 ## 下一步（按依赖排序）
 
 1. **DEV-002 已完成的边界：** Windows 合成进程树生命周期验证通过；真实工作区执行仍需 DEV-003 的审批、权限及中断验证，不直接开放远程操作。
-2. **DEV-003 / M0：完成上游证据映射。** 已观察 thread/start、turn/start、审批、受控执行、命令完成后不同延迟中断的两种终态、延迟请求结束、thread/resume、审批答复后的受控进程切断、脏工作区固定新增文件、固定文件移动审批拒绝与单次允许、固定二进制命令写入、两条固定必需验证命令的通过汇总，以及回合 `completed` 同时验证 `failed`。确认丢失有合成双切点测试，持久派发边界有独立 SQLite 测试；大文本仅有本地 Git 元信息，二进制已有固定命令写入与 Git 元信息但没有上游二进制 fileChange 证据，重命名有本地 Git 元信息和固定上游移动证据。下一步验证其余审批时序、真实通知丢失、上游大差异/二进制 fileChange 语义，并冻结 M0 兼容映射；Host 进程隔离与 SQLite 记录的集成留待 M1。
-3. **DEV-004 / M0：工具链与证据。** 本机已用固定 Gradle/AGP/Kotlin/Compose 组合构建 Android 占位 APK，并在 API 37 模拟器上安装启动，见 [记录](docs/evidence/DEV-004-toolchain.md)；仍须在干净环境和实机验证构建/安装、确定最低 API、冻结 TLS 配置及差异/验证命令采集策略。
-4. **Q-04 / M0：Host 启动约束。** 单实例锁、先锁后打开审批记录和当前包安装已验证；仍须验证产品 Host 全生命周期、旧 app-server 隔离后才推进 epoch、SQLite 活动槽及依赖/部署方式。
-5. **Q-05 / M0：配对和 TLS。** 回环信任链、主机名及 SPKI 拒绝路径，一次性 SQLite 配对记录和定向 HTTPS 联动已验证；仍须实现产品 Host、证书/本地指纹展示、Android 信任、限流及轮换流程。
-6. **DEV-005 / M1：Host 领域与 SQLite。** 事件/快照、活动槽、新回合幂等、单次派发、上游 turn 确认，以及单库审批生命周期、持锁原子恢复、恢复前写门控、上游审批请求/结束通知与回合终态身份映射、终态审批收尾、单消息持久交接、一次审批答复、一次新回合派发、session/thread 持久归属、一次创建、工作区登记、恢复身份核对、当前受管上游唯一归属与退出恢复及单步事件泵已有切片；M0 退出条件满足后仍须完成真实 Codex 长期事件循环、创建/恢复调度、本地管理入口、崩溃后旧进程隔离证明、并发服务门控和旧双库迁移策略，再开放认证 API。
+2. **DEV-003 / M0：完成上游证据映射。** 已观察 thread/start、turn/start、审批、受控执行、命令完成后不同延迟中断的两种终态、延迟请求结束、thread/resume、审批答复后的受控进程切断、脏工作区固定新增文件、固定文件移动审批拒绝与单次允许、固定二进制命令写入、两条固定必需验证命令的通过汇总，以及回合 `completed` 同时验证 `failed`。确认丢失有合成双切点测试，持久派发边界有独立 SQLite 测试；大文本仅有本地 Git 元信息，二进制已有固定命令写入与 Git 元信息但没有上游二进制 fileChange 证据，重命名有本地 Git 元信息和固定上游移动证据。下一步验证其余审批时序、真实通知丢失、上游大差异/二进制 fileChange 语义，并冻结 M0 兼容映射。
+3. **DEV-004 / M0：工具链与证据。** 本机已用固定 Gradle/AGP/Kotlin/Compose 组合构建 APK，在 API 37 模拟器上安装启动，并已完成九场景设备验收（见 DEV-007）；仍须在干净环境和实机验证构建/安装、在 API 26 设备确认 `minSdk 26`、冻结 TLS 配置及差异/验证命令采集策略。
+4. **Q-04 / M0：Host 启动约束。** 单实例锁、先锁后打开审批记录、产品启动顺序、锁定版本真实 Codex 启动和崩溃重启已验证；仍须确定首发 OS、冻结部署/依赖方式，并保留旧库归档重建流程的人工核对。
+5. **Q-05 / M0：配对和 TLS。** 回环信任链、主机名及 SPKI 拒绝路径、一次性配对记录、定向 HTTPS 联动、运行中配对/撤销与限流已验证；DEV-007 又验证了 Android 侧真实信任实现（链+主机名+SPKI，错误指纹在写请求前拒绝）与 Keystore 凭据、备份排除。仍须证书轮换与过期路径、本地配对信息的安全展示。
+6. **DEV-007 / M2：设备主流程。** 会话列表、按回合审批列表、时间线投影、Android 数据层与四屏主流程、九个合成设备验收场景已完成（三轮全绿）；同日已完成 1 次真实 Codex 核心闭环设备验收（`s/a/b/c/g/e`，1 次模型回合，`observed_runs=1`，未重试）。下一步按顺序：**经再次授权后跑一次真实中断/过期（`hd`）验收**（第二次付费模型回合，不自动重试）→ 补齐 `GET /v1/runs/{run_id}`、命令明细分页、产物清单与产物字节端点 → 真实文件审批的 `complete` 详情路径 → 旋转/杀进程/清除缓存/TalkBack/性能 → 首发 OS 决策后再做大范围工具执行验收。
 
 ## 已知限制与风险
 
 - 当前 stdio 客户端仅供顺序调用的短时探针，虽可显式回复已识别的审批请求，仍未实现生产级并发 RPC 路由、事件持久化、请求结束证据持久关联或审批状态机。真实命令消息出现导出 schema 未列出的 `availableDecisions` 字段；文件修改审批请求不直接包含路径或补丁内容，通用映射须关联 item。上游升级需复核。
-- 新增 SQLite 切片只验证本地持久事务边界；Windows 锁已与单库审批、回合活动槽及恢复事务组合，但尚无产品 Host 或进程所有权集成。调用方提供的“旧进程已隔离”条件尚不能由该模块验证，文件核对只记录当时快照，不能证明副作用归因。Windows junction 父目录实际拒绝已复验；符号链接创建测试和检查/读取间替换风险仍开放。
-- Windows 已使用不可继承句柄的 kill-on-close Job 和启动门控替代 taskkill。普通子进程继承场景通过本机测试；Job 不能约束经外部服务/WMI 发起的进程，也不是权限沙箱。其他平台和真实 Codex 工具执行链尚未验收，Q-01 仍未整体关闭。
+- 上游进程身份只记录启动器（`bootstrap.py`）的 PID＋创建时间，不证明后代进程树已停止；进程树仍由 kill-on-close Job 约束。真实 Codex 测试已观测 launcher、relay、`codex.exe`、`codex-code-mode-host.exe` 与 `conhost.exe` 并验证隔离，但这是杀前快照范围，不是完整 Job 成员枚举。恢复前的核实结果不持久化；v13 之前的 epoch 没有记录，统一按 `legacy_unknown` 失败关闭，不自动回填、不接受人工声明，只能归档旧数据目录重建。`EventJournal.recover_run_after_isolation` 与 `ApprovalJournal.start_epoch_after_isolation` 的布尔参数仍为独立探针专用，不是产品恢复路径。
+- `HostRuntime` 已组合单实例锁、恢复、写门禁、设备访问和唯一上游；真实 Codex 的版本门、首回合、审批决定入口和五切点崩溃重启已实测；DEV-006 又接上可选 HTTPS 与命名管道入口，并用真实 Codex 完成一次 HTTPS 审批闭环。DEV-007 让真实 APK 走同一条 HTTPS 路径跑通九个合成场景；另有一次真实 Codex 设备验收（1 次模型回合，`s/a/b/c/g/e`），但 `d/f/h` 仍只有合成证据，真实文件审批与真实中断/过期未覆盖。命令/产物明细端点、真实文件审批的 `complete` 详情、AT-16 剩余项（首发 OS、relay 注入时序、正常退出 EOF）仍未验证；Windows 上真实命令串可能带 shell 包装，详情展示不保证与探针字面量一致（`command_matches_probe=false`），界面按原样展示完整命令串而不简化。starting、决定派发和中断切点的杀点由测试 relay 注入；真实 Codex 若派生继承 stdio 的后代，正常退出检测仍可能被推迟（[ERR-027](docs/ERRORS.md)）。文件核对只记录当时快照，不能证明副作用归因；Windows junction 父目录实际拒绝已复验，符号链接创建测试和检查/读取间替换风险仍开放。
+- Windows 已使用不可继承句柄的 kill-on-close Job 和启动门控替代 taskkill。普通子进程继承场景通过本机测试；真实 Codex 观测后代也由 Job 收敛，但 Job 不能约束经外部服务/WMI 发起的进程，也不是权限沙箱。其他平台、真实工具执行效果与首发 OS 仍未验收，Q-01 仍未整体关闭。
 - CLI 为 alpha 版本；上游更新必须重新导出、评审 schema 并验证行为，禁止绕过版本检查。
-- Android 目前仅为静态占位工程；仅有 API 37 模拟器安装/启动，未做实机安装或性能基线，NFR 数字仍为目标。
+- Android 已能完成最小业务闭环，但只在 API 37 x86_64 模拟器上验证：没有实机安装或性能基线，`minSdk 26` 未在 API 26 设备确认；旋转、切后台、系统杀进程、清除缓存、200% 字体与 TalkBack 未测；设备验收的“进程丢失”是进程内重建 ViewModel，不等于系统杀进程。时间线的文件改动与验证汇总事件（`file_change.*` / `verification.*`）Host 侧尚未实现，手机因此无法显示差异来源与验证结论。NFR 数字仍为目标。
+- 设备验收编排器只支持模拟器：`host_alias()` 依赖模拟器 `10.0.2.2` NAT，非模拟器直接报 `emulator_required_for_alias`；真机验收需要另建可达性方案，且必须同样保持指纹与主机名校验。
 - 安装包仅为探针；需要 checkout 中的契约文件和 `--workspace`，不是独立可部署的 Host 包。
 
 ## 每次开发必须维护

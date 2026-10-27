@@ -8,8 +8,12 @@ import secrets
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
+from runvori.codex.owned_approval_queue import (
+    OwnedApprovalQueue, OwnedApprovalQueueError,
+)
 from runvori.codex.owned_interrupt_queue import (
     OwnedInterruptQueue, OwnedInterruptQueueError,
 )
@@ -19,6 +23,12 @@ from runvori.infrastructure.event_journal import EventJournalError
 
 class CommandMailboxError(ValueError):
     """Safe command refusal without input or database contents."""
+
+
+# A committed-then-lost result must be reported as unknown, never "not done".
+WRITE_COMMANDS = frozenset({
+    "start_run", "interrupt_run", "approval_decision",
+    "register_workspace", "create_session", "start_thread"})
 
 
 @dataclass
@@ -76,9 +86,18 @@ class HostCommandMailbox:
             "request_id": request_id, "expected_version": expected_version},
             timeout)
 
+    def decide_approval(self, *, approval_id: str, actor_id: str,
+                        request_id: str, expected_version: int,
+                        decision: str, timeout: float = 5) -> dict:
+        return self._submit("approval_decision", {
+            "approval_id": approval_id, "actor_id": actor_id,
+            "request_id": request_id,
+            "expected_version": expected_version,
+            "decision": decision}, timeout)
+
     def get_operation(self, *, kind: str, actor_id: str, request_id: str,
                       timeout: float = 5) -> dict:
-        if kind not in {"run", "interrupt"}:
+        if kind not in {"run", "interrupt", "approval"}:
             raise CommandMailboxError("invalid_operation_kind")
         return self._submit("get_operation", {
             "kind": kind, "actor_id": actor_id,
@@ -89,14 +108,65 @@ class HostCommandMailbox:
         return self._submit("get_session_snapshot", {
             "session_id": session_id}, timeout)
 
+    def get_session_thread(self, *, session_id: str,
+                           timeout: float = 5) -> dict:
+        return self._submit("get_session_thread", {
+            "session_id": session_id}, timeout)
+
     def get_host_identity(self, *, timeout: float = 5) -> dict:
         return self._submit("get_host_identity", {}, timeout)
+
+    def get_host_view(self, *, timeout: float = 5) -> dict:
+        """Identity plus the current active run for the authenticated /v1/host."""
+        return self._submit("get_host_view", {}, timeout)
+
+    def get_approval_view(self, *, approval_id: str, timeout: float = 5,
+                          cancelled: threading.Event | None = None) -> dict:
+        return self._submit("get_approval_view", {
+            "approval_id": approval_id}, timeout, cancelled=cancelled)
+
+    def list_run_approvals(self, *, run_id: str, status: str | None = None,
+                          timeout: float = 5,
+                          cancelled: threading.Event | None = None) -> dict:
+        return self._submit("list_run_approvals", {
+            "run_id": run_id, "status": status}, timeout, cancelled=cancelled)
+
+    def register_workspace(self, *, workspace_id: str, root: str,
+                           sandbox: str, timeout: float = 10) -> dict:
+        """Trusted local administration only; never exposed over HTTP."""
+        return self._submit("register_workspace", {
+            "workspace_id": workspace_id, "root": root,
+            "sandbox": sandbox}, timeout)
+
+    def create_session(self, *, session_id: str, workspace_id: str,
+                       title: str | None = None, create_thread: bool = False,
+                       request_id: str | None = None,
+                       timeout: float = 10) -> dict:
+        """Trusted local administration only; never exposed over HTTP."""
+        return self._submit("create_session", {
+            "session_id": session_id, "workspace_id": workspace_id,
+            "title": title, "create_thread": create_thread,
+            "request_id": request_id}, timeout)
+
+    def start_thread(self, *, session_id: str, actor_id: str,
+                     request_id: str, timeout: float = 10) -> dict:
+        """Queue one local thread/start for a trusted administration caller."""
+        return self._submit("start_thread", {
+            "session_id": session_id, "actor_id": actor_id,
+            "request_id": request_id}, timeout)
 
     def get_session_view(self, *, session_id: str, limit: int = 50,
                          timeout: float = 5,
                          cancelled: threading.Event | None = None) -> dict:
         return self._submit("get_session_view", {
             "session_id": session_id, "limit": limit}, timeout,
+            cancelled=cancelled)
+
+    def list_sessions(self, *, after_session_id: str | None = None,
+                      limit: int = 50, timeout: float = 5,
+                      cancelled: threading.Event | None = None) -> dict:
+        return self._submit("list_sessions", {
+            "after_session_id": after_session_id, "limit": limit}, timeout,
             cancelled=cancelled)
 
     def get_session_events(self, *, session_id: str,
@@ -171,7 +241,7 @@ class HostCommandMailbox:
         deadline = time.monotonic() + timeout
         while True:
             if self._closed.is_set():
-                if kind in {"start_run", "interrupt_run"}:
+                if kind in WRITE_COMMANDS:
                     raise CommandMailboxError("command_result_unknown")
                 raise CommandMailboxError("host_stopped")
             if cancelled is not None and cancelled.is_set():
@@ -183,7 +253,7 @@ class HostCommandMailbox:
             if command.done.wait(min(remaining, 0.05)):
                 break
         if self._closed.is_set():
-            if kind in {"start_run", "interrupt_run"}:
+            if kind in WRITE_COMMANDS:
                 raise CommandMailboxError("command_result_unknown")
             raise CommandMailboxError("host_stopped")
         if cancelled is not None and cancelled.is_set():
@@ -196,7 +266,9 @@ class HostCommandMailbox:
 
     def serve_once(self, journals, *, recorded_at: str,
                    run_starts: OwnedRunStartQueue | None,
-                   interrupts: OwnedInterruptQueue | None) -> bool:
+                   interrupts: OwnedInterruptQueue | None,
+                   approvals: OwnedApprovalQueue | None = None,
+                   thread_starts=None) -> bool:
         """Execute at most one request on the caller's journal-owner thread."""
         try:
             command = self._items.get_nowait()
@@ -209,7 +281,8 @@ class HostCommandMailbox:
                 raise CommandMailboxError("request_cancelled")
             command.result = self._execute(
                 command, journals, recorded_at=recorded_at,
-                run_starts=run_starts, interrupts=interrupts)
+                run_starts=run_starts, interrupts=interrupts,
+                approvals=approvals, thread_starts=thread_starts)
             if command.cancelled is not None and command.cancelled.is_set():
                 command.result = None
                 raise CommandMailboxError("request_cancelled")
@@ -223,19 +296,72 @@ class HostCommandMailbox:
 
     def _execute(self, command: _Command, journals, *, recorded_at: str,
                  run_starts: OwnedRunStartQueue | None,
-                 interrupts: OwnedInterruptQueue | None) -> dict:
+                 interrupts: OwnedInterruptQueue | None,
+                 approvals: OwnedApprovalQueue | None = None,
+                 thread_starts=None) -> dict:
         values = command.values
         if command.kind == "get_host_identity":
             return {"host_id": journals.events.get_host_id()}
+        if command.kind == "get_host_view":
+            active = journals.events.connection.execute(
+                "SELECT run_id FROM active_slot WHERE singleton=1").fetchone()
+            return {"host_id": journals.events.get_host_id(),
+                    "epoch": journals.approvals.current_epoch(),
+                    "active_run_id": None if active is None else active["run_id"]}
+        if command.kind == "get_approval_view":
+            return journals.get_approval_view(values["approval_id"])
+        if command.kind == "list_run_approvals":
+            return journals.list_run_approvals(
+                values["run_id"], status=values["status"])
+        if command.kind == "register_workspace":
+            return journals.register_workspace(
+                values["workspace_id"], Path(values["root"]),
+                sandbox=values["sandbox"],
+                epoch=journals.approvals.current_epoch())
+        if command.kind == "create_session":
+            snapshot = {} if not values.get("title") else {
+                "title": values["title"]}
+            journals.create_session_in_workspace(
+                values["session_id"], values["workspace_id"], snapshot,
+                epoch=journals.approvals.current_epoch())
+            result = {"session_id": values["session_id"],
+                      "workspace_id": values["workspace_id"]}
+            if values.get("create_thread"):
+                # Queue the create signal inline: a nested mailbox call from
+                # this owner thread would wait on itself.
+                if thread_starts is None:
+                    raise CommandMailboxError("execution_unavailable")
+                request_id = values.get("request_id")
+                if not isinstance(request_id, str) or not request_id:
+                    raise CommandMailboxError("invalid_thread_start_request")
+                thread_starts.submit(values["session_id"], "local", request_id)
+                result["thread_start"] = "queued"
+            return result
+        if command.kind == "start_thread":
+            if thread_starts is None:
+                raise CommandMailboxError("execution_unavailable")
+            thread_starts.submit(values["session_id"], values["actor_id"],
+                                 values["request_id"])
+            return {"status": "queued", "session_id": values["session_id"]}
         if command.kind == "get_operation":
-            getter = (journals.events.get_run_operation if values["kind"] == "run"
-                      else journals.events.get_interrupt_operation)
+            if values["kind"] == "run":
+                getter = journals.events.get_run_operation
+            elif values["kind"] == "interrupt":
+                getter = journals.events.get_interrupt_operation
+            else:
+                getter = journals.get_approval_operation
             return getter(values["actor_id"], values["request_id"])
         if command.kind == "get_session_snapshot":
             return journals.events.snapshot(values["session_id"])
+        if command.kind == "get_session_thread":
+            return journals.get_session_thread_view(values["session_id"])
         if command.kind == "get_session_view":
             return journals.events.snapshot_tail(
                 values["session_id"], limit=values["limit"])
+        if command.kind == "list_sessions":
+            return journals.events.list_sessions(
+                after_session_id=values["after_session_id"],
+                limit=values["limit"])
         if command.kind == "get_session_events":
             return journals.events.page(
                 values["session_id"], after_seq=values["after_seq"],
@@ -278,6 +404,22 @@ class HostCommandMailbox:
                 try:
                     interrupts.submit(values["actor_id"], values["request_id"])
                 except OwnedInterruptQueueError as error:
+                    raise CommandMailboxError(
+                        "dispatch_signal_unavailable") from error
+            return result
+        if command.kind == "approval_decision":
+            if approvals is None:
+                raise CommandMailboxError("execution_unavailable")
+            result = journals.record_approval_decision(
+                values["approval_id"], actor_id=values["actor_id"],
+                request_id=values["request_id"],
+                expected_version=values["expected_version"],
+                decision=values["decision"], recorded_at=recorded_at)
+            self.notify_events()
+            if result["status"] == "accepted":
+                try:
+                    approvals.submit(values["actor_id"], result["request_id"])
+                except OwnedApprovalQueueError as error:
                     raise CommandMailboxError(
                         "dispatch_signal_unavailable") from error
             return result

@@ -12,6 +12,7 @@ import threading
 import time
 from collections import deque
 from pathlib import Path
+from typing import Callable
 
 
 class TransportError(RuntimeError):
@@ -31,15 +32,21 @@ class StdioClient:
 
     def __init__(self, command: list[str], *, cwd: Path, env: dict[str, str],
                  timeout: float = 10, max_line: int = 1_048_576,
-                 max_messages: int = 256):
+                 max_messages: int = 256,
+                 before_start: "Callable[[subprocess.Popen], None] | None" = None):
         if timeout <= 0 or max_line < 1 or max_messages < 1:
             raise ValueError("invalid transport limits")
+        if before_start is not None and not callable(before_start):
+            raise ValueError("invalid before_start callback")
         self.timeout = timeout
         self.max_line = max_line
         self._incoming: queue.Queue = queue.Queue(maxsize=max_messages)
         self.notifications: deque[dict] = deque(maxlen=max_messages)
         self._events: deque[dict] = deque(maxlen=max_messages)
         self._pending_server_requests: dict[str | int, str] = {}
+        # A thread created by this connection can accept its first turn
+        # without a resume; Codex has no rollout to resume yet.
+        self._fresh_threads: set[str] = set()
         self._stop = threading.Event()
         self._fatal = threading.Event()
         self._broken = False
@@ -59,6 +66,10 @@ class StdioClient:
             )
             if self._job is not None:
                 self._job.assign(self.process)
+                # The target has not run yet; identity is persisted before it
+                # can produce any effect the caller might have to reconcile.
+                if before_start is not None:
+                    before_start(self.process)
                 self.process.stdin.write(b"\x00")
                 self.process.stdin.flush()
         except BaseException:
@@ -263,6 +274,15 @@ class StdioClient:
         if "id" not in event and self.notifications and self.notifications[0] is event:
             self.notifications.popleft()
         return event
+
+    def mark_fresh_thread(self, thread_id: str) -> None:
+        """Remember a thread created by this connection for its first turn."""
+        if not isinstance(thread_id, str) or not thread_id:
+            raise TransportError("invalid_thread_identity")
+        self._fresh_threads.add(thread_id)
+
+    def is_fresh_thread(self, thread_id: str) -> bool:
+        return isinstance(thread_id, str) and thread_id in self._fresh_threads
 
     def respond_approval(self, request_id: str | int, decision: str) -> None:
         """Flush one answer; return is not upstream confirmation, and failure is not retryable."""

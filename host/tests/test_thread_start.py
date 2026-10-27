@@ -21,7 +21,7 @@ class ThreadStartTests(unittest.TestCase):
     @staticmethod
     def _ready(startup):
         epoch = startup.recover_host_after_isolation(
-            old_process_isolated=True, old_process_epoch=0,
+            old_process_epoch=0,
             expected_run_id=None, expected_run_version=None,
             reason="host_restart", recorded_at="2026-10-25T00:00:00Z")["epoch"]
         startup.register_workspace("workspace", ROOT, sandbox="read-only",
@@ -63,7 +63,7 @@ class ThreadStartTests(unittest.TestCase):
                                  request_id="different-request")
             with LockedHostJournals(folder) as reopened:
                 next_epoch = reopened.recover_host_after_isolation(
-                    old_process_isolated=True, old_process_epoch=epoch,
+                    old_process_epoch=epoch,
                     expected_run_id=None, expected_run_version=None,
                     reason="host_restart",
                     recorded_at="2026-10-25T00:00:01Z")["epoch"]
@@ -105,7 +105,7 @@ class ThreadStartTests(unittest.TestCase):
                     RejectClient(), startup, epoch), unknown)
             with LockedHostJournals(folder) as reopened:
                 next_epoch = reopened.recover_host_after_isolation(
-                    old_process_isolated=True, old_process_epoch=epoch,
+                    old_process_epoch=epoch,
                     expected_run_id=None, expected_run_version=None,
                     reason="host_restart",
                     recorded_at="2026-10-25T00:00:01Z")["epoch"]
@@ -171,7 +171,7 @@ class ThreadStartTests(unittest.TestCase):
                     request_digest=digest, epoch=epoch)
             with LockedHostJournals(folder) as reopened:
                 next_epoch = reopened.recover_host_after_isolation(
-                    old_process_isolated=True, old_process_epoch=epoch,
+                    old_process_epoch=epoch,
                     expected_run_id=None, expected_run_version=None,
                     reason="host_restart",
                     recorded_at="2026-10-25T00:00:01Z")["epoch"]
@@ -269,10 +269,14 @@ class ThreadStartTests(unittest.TestCase):
                 class RecordingClient:
                     def __init__(self):
                         self.params = None
+                        self.fresh = []
 
                     def request(self, method, params):
                         self.params = (method, params)
                         return {"thread": {"id": "new-thread"}}
+
+                    def mark_fresh_thread(self, thread_id):
+                        self.fresh.append(thread_id)
 
                 client = RecordingClient()
                 result = create_session_thread_once(
@@ -280,6 +284,7 @@ class ThreadStartTests(unittest.TestCase):
                     request_id="new-create", epoch=epoch)
                 self.assertEqual(result["status"], "confirmed")
                 self.assertEqual(client.params[0], "thread/start")
+                self.assertEqual(client.fresh, ["new-thread"])
                 self.assertEqual(client.params[1]["cwd"], str(workspace))
                 self.assertEqual(client.params[1]["sandbox"], "workspace-write")
                 startup.create_session_in_workspace("later", "writable", {},
@@ -307,7 +312,7 @@ class ThreadStartTests(unittest.TestCase):
                 db = startup.events.connection
                 db.execute("""CREATE TRIGGER block_epoch BEFORE UPDATE ON journal_meta
                             BEGIN SELECT RAISE(ABORT, 'blocked'); END""")
-                args = dict(old_process_isolated=True, old_process_epoch=epoch,
+                args = dict(old_process_epoch=epoch,
                             expected_run_id=None, expected_run_version=None,
                             reason="host_restart",
                             recorded_at="2026-10-25T00:00:01Z")

@@ -24,7 +24,7 @@ class ThreadResumeTests(unittest.TestCase):
     def _create_bound_session(folder):
         with LockedHostJournals(folder) as startup:
             epoch = startup.recover_host_after_isolation(
-                old_process_isolated=True, old_process_epoch=0,
+                old_process_epoch=0,
                 expected_run_id=None, expected_run_version=None,
                 reason="host_restart", recorded_at="2026-10-25T00:00:00Z")["epoch"]
             startup.events.create_session("session", {})
@@ -47,7 +47,7 @@ class ThreadResumeTests(unittest.TestCase):
                         RejectClient(), startup, session_id="session",
                         epoch=old_epoch)
                 epoch = startup.recover_host_after_isolation(
-                    old_process_isolated=True, old_process_epoch=old_epoch,
+                    old_process_epoch=old_epoch,
                     expected_run_id=None, expected_run_version=None,
                     reason="host_restart",
                     recorded_at="2026-10-25T00:00:01Z")["epoch"]
@@ -79,7 +79,7 @@ class ThreadResumeTests(unittest.TestCase):
                     epoch = self._create_bound_session(folder)
                     with LockedHostJournals(folder) as startup:
                         next_epoch = startup.recover_host_after_isolation(
-                            old_process_isolated=True, old_process_epoch=epoch,
+                            old_process_epoch=epoch,
                             expected_run_id=None, expected_run_version=None,
                             reason="host_restart",
                             recorded_at="2026-10-25T00:00:01Z")["epoch"]
@@ -98,6 +98,30 @@ class ThreadResumeTests(unittest.TestCase):
                             "session"), "thread_demo")
 
     @unittest.skipUnless(os.name == "nt", "Windows locked Host integration")
+    def test_thread_created_in_this_connection_skips_resume(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / ".dev") as temp:
+            folder = Path(temp)
+            old_epoch = self._create_bound_session(folder)
+            with LockedHostJournals(folder) as startup:
+                epoch = startup.recover_host_after_isolation(
+                    old_process_epoch=old_epoch,
+                    expected_run_id=None, expected_run_version=None,
+                    reason="host_restart",
+                    recorded_at="2026-10-25T00:00:01Z")["epoch"]
+
+                class FreshClient:
+                    def is_fresh_thread(self, thread_id):
+                        return thread_id == "thread_demo"
+
+                    def request(self, *_args):
+                        raise AssertionError("fresh_thread_must_not_resume")
+
+                self.assertEqual(resume_session_thread(
+                    FreshClient(), startup, session_id="session", epoch=epoch),
+                    {"session_id": "session", "thread_id": "thread_demo",
+                     "epoch": epoch})
+
+    @unittest.skipUnless(os.name == "nt", "Windows locked Host integration")
     def test_unbound_session_never_calls_upstream(self):
         class RejectClient:
             def request(self, *_args):
@@ -106,7 +130,7 @@ class ThreadResumeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=ROOT / ".dev") as temp:
             with LockedHostJournals(Path(temp)) as startup:
                 epoch = startup.recover_host_after_isolation(
-                    old_process_isolated=True, old_process_epoch=0,
+                    old_process_epoch=0,
                     expected_run_id=None, expected_run_version=None,
                     reason="host_restart",
                     recorded_at="2026-10-25T00:00:00Z")["epoch"]

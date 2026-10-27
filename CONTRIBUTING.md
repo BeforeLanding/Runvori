@@ -57,6 +57,97 @@ python scripts/runvori.py doctor
 
 check 同时校验契约和运行 unittest，不访问模型/账号。doctor 需要该精确版本 Codex 在 PATH，先验证契约，再创建 `.dev` 临时 HOME 进行握手与 thread/list。只输出白名单诊断，退出码非零表示失败。它不会启动 turn 或更改用户 Codex 配置。非仓库目录调用时使用 `--workspace <仓库根目录>`。
 
+### DEV-005 Host 启动与重启（M1 切片）
+
+`HostRuntime` 已组合单实例锁、v13 epoch 状态、统一恢复、写门禁、设备访问与唯一上游，但尚无 HTTP/TLS，Android 不能连接。启动入口要求精确版本 `codex-cli 0.164.0-alpha.11.1`；`codex` 不在 PATH 时用 `--codex` 或 `RUNVORI_CODEX` 提供绝对路径。版本探测在取得锁、打开数据库和创建配对库之前执行，版本不符或不可执行直接以稳定 code 拒绝：
+
+```powershell
+New-Item -ItemType Directory -Force .dev/host-data | Out-Null
+$env:PYTHONPATH = "$PWD\host\src"
+$codex = "$env:LOCALAPPDATA\OpenAI\Codex\bin\2993767bd1dfb009\codex.exe"
+python -m runvori.host --data-dir (Resolve-Path .dev/host-data).Path --codex $codex
+```
+
+Ctrl+C 触发正常停止（`host_shutdown`）。上游连接故障时进程恢复后以退出码 3 结束，等待外部重启；启动被拒绝为退出码 2 并输出稳定 code。旧库无身份记录会返回 `legacy_upstream_unverified`，只能归档数据目录后重建，不能删改库内状态强行启动。
+
+### DEV-006 HTTPS 与本地管理入口（M1 切片）
+
+在上面命令基础上增加 `--listen`、`--tls-cert`、`--tls-key`、`--host-name`、`--admin-pipe`；也可用环境变量 `RUNVORI_LISTEN`、`RUNVORI_TLS_CERT`、`RUNVORI_TLS_KEY`、`RUNVORI_HOST_NAME`、`RUNVORI_ADMIN_PIPE=1`。不给 `--listen` 时 Host 仍不监听网络。证书必须是绝对路径的普通文件，启动时计算 SPKI 指纹；没有跳过校验的开关。
+
+```powershell
+$env:PYTHONPATH = "$PWD\host\src"
+$data = (Resolve-Path .dev/host-data).Path
+openssl req -x509 -newkey rsa:2048 -sha256 -nodes -days 2 `
+  -keyout .dev/host-data/tls.key -out .dev/host-data/tls.pem `
+  -subj "/CN=Runvori Host" -addext "subjectAltName=DNS:localhost"
+python -m runvori.host --data-dir $data --codex $codex `
+  --listen 127.0.0.1:8765 --tls-cert .dev/host-data/tls.pem `
+  --tls-key .dev/host-data/tls.key --admin-pipe
+```
+
+启动后用同一台电脑上的命名管道做本地管理（不经过 HTTP）：
+
+```powershell
+python scripts/runvori.py host-status --data-dir $data
+python scripts/runvori.py register-workspace --data-dir $data --workspace-id ws1 --root .dev/demo-repo --sandbox workspace-write
+python scripts/runvori.py create-session --data-dir $data --workspace-id ws1 --session-id sess1 --create-thread --request-id thread-1
+python scripts/runvori.py pairing-info --data-dir $data
+python scripts/runvori.py revoke-device --data-dir $data   # 运行中撤销；Host 未运行则 mode=offline
+```
+
+`pairing-info` 输出 `https_url / host_id / spki_sha256 / pairing_secret / expires_at`；客户端必须固定该指纹后 `POST /v1/pairings/exchange`，秘密只放 body 且只能兑换一次。
+
+合成上游闭环（不访问模型，退出码 0 表示全部步骤通过）：
+
+```powershell
+python scripts/probe_https_host.py
+```
+
+真实 Codex HTTPS 验收默认跳过，只有显式启用才发起 1 次真实模型回合，且不自动重试：
+
+```powershell
+$env:RUNVORI_REAL_HOST_TESTS = "1"
+$env:RUNVORI_REAL_CODEX = "$env:LOCALAPPDATA\OpenAI\Codex\bin\2993767bd1dfb009\codex.exe"
+$env:RUNVORI_REAL_CODEX_HOME = (Resolve-Path .dev/codex-home).Path
+python scripts/accept_https_host_real.py
+```
+
+结果与限制见 [合成证据](docs/evidence/DEV-006-https-host.md) 与 [真实验收](docs/evidence/DEV-006-https-host-real.md)。命令/产物明细仍未实现；会话列表与 Android 联调已由 DEV-007 补齐。
+
+真实设备验收需要已启动的模拟器，以及已安装的 Debug APK 与 test APK。真实模式有独立场景集 `s/a/b/c/g/e`，使用 `ACCEPT_PROMPT` 与 `allow_once:python --version`；`d/f/h` 会以 `synthetic_only_scenario` 拒绝。先 dry-run 校验，再经显式授权执行 1 次模型回合；失败不自动重试：
+
+```powershell
+$env:RUNVORI_REAL_HOST_TESTS = "1"
+$env:RUNVORI_REAL_CODEX = "$env:LOCALAPPDATA\OpenAI\Codex\bin\2993767bd1dfb009\codex.exe"
+$env:RUNVORI_REAL_CODEX_HOME = (Resolve-Path .dev/codex-home).Path
+python scripts/accept_device.py --serial emulator-5554 --real --dry-run
+python scripts/accept_device.py --serial emulator-5554 --real --report .dev/dev007-real-1call.json
+```
+
+`--dry-run` 只校验版本门、设备、场景集与回合预算，不启动 Host、不发起模型回合。`--report` 在成功或失败时都写脱敏 JSON；失败保留报告且不自动重跑。结果与限制见 [真实设备验收](docs/evidence/DEV-007-device-acceptance-real.md)。
+
+定向测试使用真实子进程与 fake app-server（不访问模型）：
+
+```powershell
+$env:PYTHONPATH = "$PWD\host\src"
+python -m unittest discover -s host/tests -p "test_host_*.py" -v
+```
+
+合成崩溃用例会启动并终止真实 Host 子进程，验证 launcher、fake app-server 与后代 PID 的 Job 隔离；它们不能替代真实 Codex 执行树的 AT-16 验收，限制见 [记录](docs/evidence/DEV-005-host-runtime-restart.md)。
+
+真实 Codex 五切点测试默认跳过，只有显式启用才会发起真实模型回合并产生账号/网络费用。每个切点默认只运行一次，不自动重试；失败先判断夹具还是产品，复跑前说明原因。需要绝对路径、专用已登录 `CODEX_HOME`，不要复制或提交认证文件：
+
+```powershell
+$env:PYTHONPATH = "$PWD\host\src;$PWD\host\tests"
+$env:RUNVORI_REAL_HOST_TESTS = "1"
+$env:RUNVORI_REAL_CODEX = "$env:LOCALAPPDATA\OpenAI\Codex\bin\2993767bd1dfb009\codex.exe"
+$env:RUNVORI_REAL_CODEX_HOME = (Resolve-Path .dev/codex-home).Path
+$env:RUNVORI_REAL_EVIDENCE_DIR = (Resolve-Path .dev).Path + "\real-evidence"
+python -m unittest discover -s host/tests -p "test_host_restart_real.py" -v
+```
+
+测试在 `.dev` 创建一次性 Git 夹具，通过产品 `thread/start` 创建真实 thread，并通过真实 Windows Job 运行 launcher、测试 relay 与 `codex.exe`。starting、决定派发和中断切点由 [relay](host/tests/codex_relay.py) 在消息写入 Codex 管道后冻结下游；它只证明写入，不证明解析或副作用。结果与限制见 [真实 Codex 五切点](docs/evidence/DEV-005-host-runtime-restart-real-codex.md)。
+
 ### DEV-003 真实执行探针（显式启用）
 
 `scripts/probe_execution.py` 与 doctor 分离。先在仓库内 `.dev/execution-fixture` 建立只含标记文件的可丢弃 Git 仓库：

@@ -10,6 +10,8 @@ import json
 import secrets
 from typing import Any
 
+from runvori.codex import approval_details
+
 
 MAX_REQUEST_ID_BYTES = 128
 
@@ -75,11 +77,13 @@ def record_approval_request_event(
     except (TypeError, ValueError, UnicodeError) as error:
         raise ApprovalEventError("invalid_approval_request_event") from error
     request_digest = hashlib.sha256(request_bytes).digest()
+    details = (approval_details.command_details(params) if kind == "command"
+               else approval_details.file_change_details(params))
     return journals.record_upstream_approval_request(
         thread_id=thread_id, turn_id=turn_id, epoch=epoch,
         upstream_request_id=request_key, kind=kind,
         approval_id="apr_" + secrets.token_urlsafe(18),
-        request_digest=request_digest,
+        request_digest=request_digest, details=details,
         recorded_at=recorded_at)
 
 

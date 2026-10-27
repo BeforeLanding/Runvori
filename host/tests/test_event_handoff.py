@@ -12,6 +12,7 @@ from runvori.codex.event_handoff import (
     EventHandoffError, process_next_event, route_observed_event,
 )
 from runvori.codex.stdio import StdioClient, TransportError
+from runvori.infrastructure.event_journal import EventJournalError
 from runvori.infrastructure.locked_journal import LockedHostJournals
 
 
@@ -20,11 +21,24 @@ PEER = Path(__file__).with_name("fake_app_server.py")
 
 class EventHandoffTests(unittest.TestCase):
     def test_unknown_notification_is_diagnostic_and_control_request_rejected(self):
+        class UnboundEvents:
+            @staticmethod
+            def append_timeline_bound(_session, **_values):
+                # The simulated binding has no such turn: nothing is stored.
+                raise EventJournalError("upstream_turn_not_found")
+
         class RejectStore:
-            pass
+            events = UnboundEvents()
 
         self.assertEqual(route_observed_event(
-            RejectStore(), {"method": "item/started", "params": {"text": "secret"}},
+            RejectStore(), {"method": "item/started", "params": {
+                "threadId": "thread", "turnId": "turn", "item": {
+                    "id": "item", "type": "agentMessage", "text": "secret"}}},
+            epoch=1, recorded_at="2026-10-25T00:00:00Z"),
+            {"kind": "timeline_ignored",
+             "reason": "unbound_or_inactive"})
+        self.assertEqual(route_observed_event(
+            RejectStore(), {"method": "synthetic/unknown", "params": {"text": "x"}},
             epoch=1, recorded_at="2026-10-25T00:00:00Z"),
             {"kind": "ignored_notification"})
         for message in ({"method": "unknown/request", "id": 1, "params": {}},
@@ -75,7 +89,7 @@ class EventHandoffTests(unittest.TestCase):
     @staticmethod
     def _running(startup):
         epoch = startup.recover_host_after_isolation(
-            old_process_isolated=True, old_process_epoch=0,
+            old_process_epoch=0,
             expected_run_id=None, expected_run_version=None,
             reason="host_restart", recorded_at="2026-10-25T00:00:00Z")["epoch"]
         startup.events.create_session("session", {})

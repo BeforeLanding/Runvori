@@ -1,6 +1,6 @@
 # Codex 实验兼容基线
 
-生成工具版本以 manifest.json 为准：`codex-cli 0.163.0-alpha.11.2`。
+生成工具版本以 manifest.json 为准：`codex-cli 0.164.0-alpha.11.1`。
 
 当前提交 14 份由该 CLI 生成的关键 JSON schema（含自身 definitions），覆盖初始化、thread/turn 请求与主要审批消息。它们是上游契约快照，不是 Runvori API，也不代表对应能力已执行验收。完整生成目录位于被忽略的 `.dev` 临时环境。
 

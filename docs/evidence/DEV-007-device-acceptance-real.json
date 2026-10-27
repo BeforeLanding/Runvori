@@ -1,0 +1,67 @@
+{
+  "approval_scope": "allow_once:python --version",
+  "codex_version": "codex-cli 0.164.0-alpha.11.1",
+  "command_match_asserted": false,
+  "device": {
+    "serial": "emulator-5554"
+  },
+  "expected_model_turns": 1,
+  "not_run": [
+    "d",
+    "f",
+    "h"
+  ],
+  "observed_runs": 1,
+  "real": true,
+  "scenarios": [
+    "s",
+    "a",
+    "b",
+    "c",
+    "g",
+    "e"
+  ],
+  "status": "passed",
+  "steps": [
+    {
+      "port": 59463,
+      "sessions": 2,
+      "step": "host_running"
+    },
+    {
+      "endpoint": "10.0.2.2",
+      "host_bind": "loopback",
+      "status": "ok",
+      "step": "transport"
+    },
+    {
+      "scenario": "s",
+      "status": "passed"
+    },
+    {
+      "scenario": "a",
+      "status": "passed"
+    },
+    {
+      "scenario": "b",
+      "status": "passed"
+    },
+    {
+      "scenario": "c",
+      "status": "passed"
+    },
+    {
+      "scenario": "g",
+      "status": "passed"
+    },
+    {
+      "status": "revoked",
+      "step": "revoke"
+    },
+    {
+      "scenario": "e",
+      "status": "passed"
+    }
+  ],
+  "upstream": "real_codex"
+}

@@ -25,7 +25,7 @@ class OwnedRunStartTests(unittest.TestCase):
     @staticmethod
     def _owner(startup, mode, *, bind_thread=True):
         epoch = startup.recover_host_after_isolation(
-            old_process_isolated=True, old_process_epoch=0,
+            old_process_epoch=0,
             expected_run_id=None, expected_run_version=None,
             reason="host_restart", recorded_at="2026-10-25T00:00:00Z")["epoch"]
         startup.events.create_session("session", {})

@@ -14,6 +14,8 @@ from runvori.codex.turn_events import (
 from runvori.infrastructure.event_journal import EventJournalError
 from runvori.infrastructure.locked_journal import LockedHostJournals
 
+from approval_fixtures import reviewable_command, seed_workspace_session
+
 
 PEER = Path(__file__).with_name("fake_app_server.py")
 
@@ -42,10 +44,10 @@ class TurnEventTests(unittest.TestCase):
     @staticmethod
     def _running(startup):
         epoch = startup.recover_host_after_isolation(
-            old_process_isolated=True, old_process_epoch=0,
+            old_process_epoch=0,
             expected_run_id=None, expected_run_version=None,
             reason="host_restart", recorded_at="2026-10-25T00:00:00Z")["epoch"]
-        startup.events.create_session("session", {})
+        seed_workspace_session(startup, epoch)
         startup.events.reserve_run_request(
             "session", "run", actor_id="device", request_id="request",
             expected_session_version=0, input_text="continue",
@@ -136,6 +138,8 @@ class TurnEventTests(unittest.TestCase):
                     startup.record_approval_request(
                         "session", "run", approval_id=name, epoch=epoch,
                         upstream_request_id=name, kind="command",
+                        details=reviewable_command(startup.data_dir),
+                        turn_id="turn_demo",
                         recorded_at="2026-10-25T00:00:04Z")
                 for name in ("recorded", "claimed", "unknown"):
                     startup.record_approval_decision(
