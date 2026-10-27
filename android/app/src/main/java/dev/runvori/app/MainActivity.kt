@@ -56,6 +56,10 @@ class MainActivity : ComponentActivity() {
                             interrupt = viewModel::interrupt,
                             confirmInterrupt = viewModel::confirmInterrupt,
                             cancelInterrupt = viewModel::cancelInterrupt,
+                            openResults = viewModel::openResults,
+                            closeResults = viewModel::closeResults,
+                            refreshResults = viewModel::refreshResults,
+                            loadMoreCommands = viewModel::loadMoreCommands,
                             dismissError = viewModel::dismissError,
                         )
                     })

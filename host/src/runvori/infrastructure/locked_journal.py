@@ -20,12 +20,46 @@ from runvori.codex import approval_details
 from runvori.infrastructure.approval_journal import ApprovalJournal
 from runvori.infrastructure.event_journal import (
     MAX_EVENT_BYTES, MAX_SEQ, MAX_THREAD_ID_BYTES,
-    EventJournal, EventJournalError, _json_bytes,
+    MAX_VERIFICATION_COMMANDS, MAX_VERIFICATION_COMMAND_BYTES,
+    MAX_VERIFICATION_KEY_BYTES, EventJournal, EventJournalError, _json_bytes,
 )
 from runvori.infrastructure.instance_lock import InstanceLockUnavailable, WindowsInstanceLock
 from runvori.infrastructure.process_identity import (
     ISOLATED_OUTCOMES, ProcessIdentityError, probe_process_identity,
 )
+
+
+def _normalize_verification_commands(value) -> list[dict[str, str]] | None:
+    """Validate trusted local required-command declarations.
+
+    ``None`` means "keep the existing configuration"; an empty list explicitly
+    clears it. Commands are matched literally against observed item text, so
+    this is an allowlist for evidence, not an execution policy.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, list) or len(value) > MAX_VERIFICATION_COMMANDS:
+        raise EventJournalError("invalid_verification_commands")
+    result: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for entry in value:
+        if not isinstance(entry, dict) or set(entry) - {"key", "command"}:
+            raise EventJournalError("invalid_verification_commands")
+        key = entry.get("key")
+        command = entry.get("command")
+        if (not isinstance(key, str) or not key or key in seen
+                or not isinstance(command, str) or not command):
+            raise EventJournalError("invalid_verification_commands")
+        try:
+            if (len(key.encode("utf-8")) > MAX_VERIFICATION_KEY_BYTES
+                    or len(command.encode("utf-8"))
+                    > MAX_VERIFICATION_COMMAND_BYTES):
+                raise EventJournalError("invalid_verification_commands")
+        except UnicodeError as error:
+            raise EventJournalError("invalid_verification_commands") from error
+        seen.add(key)
+        result.append({"key": key, "command": command})
+    return result
 
 
 def _now() -> str:
@@ -340,14 +374,21 @@ class LockedHostJournals:
         return {"thread_id": row["thread_id"], "turn_id": row["turn_id"]}
 
     def register_workspace(self, workspace_id: str, workspace: Path, *,
-                           sandbox: str, epoch: int) -> dict:
-        """Register an immutable local root and policy under Host ownership."""
+                           sandbox: str, epoch: int,
+                           verification_commands=None) -> dict:
+        """Register an immutable local root and policy under Host ownership.
+
+        ``verification_commands`` is a trusted local declaration of required
+        evidence. It is snapshotted onto each run at creation, so changing it
+        later does not rewrite earlier results.
+        """
         self._require_recovered()
         if (not isinstance(workspace_id, str) or not workspace_id
                 or not isinstance(sandbox, str)
                 or sandbox not in {"read-only", "workspace-write"}
                 or type(epoch) is not int or epoch < 1):
             raise EventJournalError("invalid_workspace_registration")
+        commands = _normalize_verification_commands(verification_commands)
         try:
             path = Path(workspace)
             if not path.is_absolute() or not path.is_dir():
@@ -359,6 +400,9 @@ class LockedHostJournals:
             root = str(path.resolve(strict=True))
         except (TypeError, ValueError, OSError, RuntimeError) as error:
             raise EventJournalError("invalid_local_workspace") from error
+        encoded = (None if commands is None else
+                   json.dumps(commands, ensure_ascii=False,
+                              separators=(",", ":"), sort_keys=True))
         db = self.events.connection
         db.execute("BEGIN IMMEDIATE")
         try:
@@ -370,12 +414,29 @@ class LockedHostJournals:
                 if db.execute("SELECT 1 FROM workspaces WHERE root=?",
                               (root,)).fetchone():
                     raise EventJournalError("workspace_conflict")
-                db.execute("INSERT INTO workspaces VALUES (?, ?, ?)",
-                           (workspace_id, root, sandbox))
+                db.execute(
+                    "INSERT INTO workspaces(workspace_id, root, sandbox, "
+                    "verification_json) VALUES (?, ?, ?, ?)",
+                    (workspace_id, root, sandbox,
+                     "[]" if commands is None else encoded))
             elif prior["root"] != root or prior["sandbox"] != sandbox:
                 raise EventJournalError("workspace_conflict")
+            elif commands is not None:
+                db.execute(
+                    "UPDATE workspaces SET verification_json=? WHERE workspace_id=?",
+                    (encoded, workspace_id))
+            current = db.execute(
+                "SELECT verification_json FROM workspaces WHERE workspace_id=?",
+                (workspace_id,)).fetchone()
+            try:
+                count = len(json.loads(current["verification_json"] or "[]")
+                            if current is not None else [])
+            except (TypeError, ValueError):
+                count = 0
             result = {"workspace_id": workspace_id, "root": root,
                       "sandbox": sandbox}
+            if verification_commands is not None:
+                result["verification_count"] = count
             db.execute("COMMIT")
             return result
         except BaseException:

@@ -52,9 +52,19 @@ def local_command(args: argparse.Namespace) -> dict:
     if args.command == "register-workspace":
         if args.root is None or not args.workspace_id:
             raise LocalAdminError("workspace_arguments_required")
+        verification_commands = None
+        if getattr(args, "verification_command", None) is not None:
+            verification_commands = []
+            for raw in args.verification_command:
+                key, separator, command = raw.partition("=")
+                if not separator or not key or not command:
+                    raise LocalAdminError("verification_command_invalid")
+                verification_commands.append(
+                    {"key": key, "command": command})
         return client.call("register-workspace", workspace_id=args.workspace_id,
                            root=str(args.root.resolve()),
-                           sandbox=args.sandbox)
+                           sandbox=args.sandbox,
+                           verification_commands=verification_commands)
     if args.command == "create-session":
         if not args.workspace_id or not args.session_id:
             raise LocalAdminError("session_arguments_required")
@@ -188,6 +198,9 @@ def main() -> int:
     parser.add_argument("--sandbox", default="read-only",
                         choices=["read-only", "workspace-write"])
     parser.add_argument("--workspace-id")
+    parser.add_argument(
+        "--verification-command", action="append",
+        help="required verification command as KEY=COMMAND (repeatable)")
     parser.add_argument("--session-id")
     parser.add_argument("--title")
     parser.add_argument("--request-id")

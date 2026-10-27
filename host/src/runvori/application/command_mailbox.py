@@ -18,6 +18,7 @@ from runvori.codex.owned_interrupt_queue import (
     OwnedInterruptQueue, OwnedInterruptQueueError,
 )
 from runvori.codex.owned_run_start import OwnedRunStartError, OwnedRunStartQueue
+from runvori.application import run_results
 from runvori.infrastructure.event_journal import EventJournalError
 
 
@@ -132,11 +133,13 @@ class HostCommandMailbox:
             "run_id": run_id, "status": status}, timeout, cancelled=cancelled)
 
     def register_workspace(self, *, workspace_id: str, root: str,
-                           sandbox: str, timeout: float = 10) -> dict:
+                           sandbox: str, verification_commands=None,
+                           timeout: float = 10) -> dict:
         """Trusted local administration only; never exposed over HTTP."""
         return self._submit("register_workspace", {
             "workspace_id": workspace_id, "root": root,
-            "sandbox": sandbox}, timeout)
+            "sandbox": sandbox,
+            "verification_commands": verification_commands}, timeout)
 
     def create_session(self, *, session_id: str, workspace_id: str,
                        title: str | None = None, create_thread: bool = False,
@@ -161,6 +164,24 @@ class HostCommandMailbox:
         return self._submit("get_session_view", {
             "session_id": session_id, "limit": limit}, timeout,
             cancelled=cancelled)
+
+    def get_run(self, *, run_id: str, timeout: float = 5,
+                cancelled: threading.Event | None = None) -> dict:
+        return self._submit("get_run", {"run_id": run_id}, timeout,
+                            cancelled=cancelled)
+
+    def get_run_results(self, *, run_id: str, timeout: float = 5,
+                        cancelled: threading.Event | None = None) -> dict:
+        return self._submit("get_run_results", {"run_id": run_id}, timeout,
+                            cancelled=cancelled)
+
+    def list_run_commands(self, *, run_id: str,
+                          after_item_id: str | None = None,
+                          limit: int = 50, timeout: float = 5,
+                          cancelled: threading.Event | None = None) -> dict:
+        return self._submit("list_run_commands", {
+            "run_id": run_id, "after_item_id": after_item_id,
+            "limit": limit}, timeout, cancelled=cancelled)
 
     def list_sessions(self, *, after_session_id: str | None = None,
                       limit: int = 50, timeout: float = 5,
@@ -317,7 +338,8 @@ class HostCommandMailbox:
             return journals.register_workspace(
                 values["workspace_id"], Path(values["root"]),
                 sandbox=values["sandbox"],
-                epoch=journals.approvals.current_epoch())
+                epoch=journals.approvals.current_epoch(),
+                verification_commands=values.get("verification_commands"))
         if command.kind == "create_session":
             snapshot = {} if not values.get("title") else {
                 "title": values["title"]}
@@ -358,6 +380,16 @@ class HostCommandMailbox:
         if command.kind == "get_session_view":
             return journals.events.snapshot_tail(
                 values["session_id"], limit=values["limit"])
+        if command.kind == "get_run":
+            return run_results.run_detail(
+                journals.events.connection, values["run_id"])
+        if command.kind == "get_run_results":
+            return run_results.run_results(
+                journals.events.connection, values["run_id"])
+        if command.kind == "list_run_commands":
+            return run_results.run_commands(
+                journals.events.connection, values["run_id"],
+                after_item_id=values["after_item_id"], limit=values["limit"])
         if command.kind == "list_sessions":
             return journals.events.list_sessions(
                 after_session_id=values["after_session_id"],

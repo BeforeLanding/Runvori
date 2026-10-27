@@ -240,7 +240,7 @@ class ApprovalDetailStorageTests(unittest.TestCase):
                 connection.close()
             with LockedHostJournals(data_dir) as reopened:
                 self.assertEqual(reopened.events.connection.execute(
-                    "PRAGMA user_version").fetchone()[0], 15)
+                    "PRAGMA user_version").fetchone()[0], 16)
                 migrated = reopened.events.connection.execute(
                     "SELECT details_status FROM approvals "
                     "WHERE approval_id='apr'").fetchone()[0]

@@ -65,9 +65,12 @@ class FakeDeviceAccess:
         self.token = token
         self.device_id = device_id
         self.revoked = False
+        self.read_calls = []
         self.reads = SimpleNamespace(
             snapshot=self._snapshot, events=self._events,
-            sessions=self._sessions, cancel_all=lambda: None)
+            sessions=self._sessions, run=self._run,
+            run_results=self._run_results, run_commands=self._run_commands,
+            cancel_all=lambda: None)
 
     def authenticate(self, token):
         if self.revoked or token != self.token:
@@ -88,6 +91,21 @@ class FakeDeviceAccess:
     @staticmethod
     def _sessions(**_kwargs):
         return {"items": [], "next_cursor": None}
+
+    def _run(self, **kwargs):
+        self.read_calls.append(("run", kwargs))
+        return {"run_id": kwargs["run_id"], "status": "completed",
+                "verification": {"configured": False, "summary": "not_run"}}
+
+    def _run_results(self, **kwargs):
+        self.read_calls.append(("results", kwargs))
+        return {"run_id": kwargs["run_id"], "status": "completed",
+                "verification": {"configured": False, "summary": "not_run",
+                                 "items": []}, "command_count": 0}
+
+    def _run_commands(self, **kwargs):
+        self.read_calls.append(("commands", kwargs))
+        return {"items": [], "next_cursor": None, "has_more": False}
 
 
 class FakeMailbox:
@@ -212,6 +230,33 @@ class HandlerTests(unittest.TestCase):
                         "dev1", token, "GET", "/v1/sessions", query, {})
         with self.assertRaisesRegex(ApiError, "invalid_request"):
             self.handlers.dispatch("dev1", token, "POST", "/v1/sessions", "", {})
+
+    def test_run_detail_results_and_commands_are_authenticated_reads(self):
+        _, token = self._auth()
+        status, body, _ = self.handlers.dispatch(
+            "dev1", token, "GET", "/v1/runs/run", "", {})
+        self.assertEqual(200, status)
+        self.assertEqual("run", body["run_id"])
+        status, body, _ = self.handlers.dispatch(
+            "dev1", token, "GET", "/v1/runs/run/results", "", {})
+        self.assertEqual(200, status)
+        self.assertEqual([], body["verification"]["items"])
+        status, _, _ = self.handlers.dispatch(
+            "dev1", token, "GET", "/v1/runs/run/commands",
+            "limit=2&cursor=cmd1", {})
+        self.assertEqual(200, status)
+        self.assertEqual(("commands", {
+            "token": self.device.token, "run_id": "run",
+            "after_item_id": "cmd1", "limit": 2}), self.device.read_calls[-1])
+        with self.assertRaisesRegex(ApiError, "invalid_cursor"):
+            self.handlers.dispatch(
+                "dev1", token, "GET", "/v1/runs/run/commands", "limit=0", {})
+        with self.assertRaisesRegex(ApiError, "invalid_cursor"):
+            self.handlers.dispatch(
+                "dev1", token, "GET", "/v1/runs/run/commands", "cursor=", {})
+        with self.assertRaisesRegex(ApiError, "invalid_request"):
+            self.handlers.dispatch(
+                "dev1", token, "POST", "/v1/runs/run/results", "", {})
 
     def test_run_approvals_filter_rejects_unknown_status(self):
         _, token = self._auth()

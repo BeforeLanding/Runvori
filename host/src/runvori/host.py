@@ -282,7 +282,8 @@ class HostRuntime:
             if not isinstance(workspace_id, str) or not workspace_id:
                 raise HostStartupError("invalid_workspace_id")
             return mailbox.register_workspace(
-                workspace_id=workspace_id, root=root, sandbox=sandbox)
+                workspace_id=workspace_id, root=root, sandbox=sandbox,
+                verification_commands=arguments.get("verification_commands"))
         if command == "create-session":
             session_id = arguments.get("session_id")
             workspace_id = arguments.get("workspace_id")

@@ -29,6 +29,10 @@ MAX_RUN_TIMELINE_BYTES = 2 * 1024 * 1024
 MAX_TIMELINE_CHUNK_BYTES = 8 * 1024
 MAX_COMMAND_TEXT_BYTES = 8 * 1024
 MAX_TIMELINE_ID_BYTES = 256
+MAX_VERIFICATION_COMMANDS = 32
+MAX_VERIFICATION_KEY_BYTES = 64
+MAX_VERIFICATION_COMMAND_BYTES = 8 * 1024
+OUTPUT_STATES = ("pending", "complete", "truncated", "empty", "unknown")
 TIMELINE_KINDS = (
     "message.user", "message.started", "message.delta", "message.completed",
     "command.started", "command.output", "command.completed",
@@ -75,7 +79,7 @@ class EventJournal:
             self.connection.execute("PRAGMA synchronous=FULL")
             version = self.connection.execute("PRAGMA user_version").fetchone()[0]
             if version not in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
-                               15):
+                               15, 16):
                 raise EventJournalError("unsupported_schema")
             self.connection.executescript("""
                 CREATE TABLE IF NOT EXISTS sessions (
@@ -180,7 +184,8 @@ class EventJournal:
                     workspace_id TEXT PRIMARY KEY,
                     root TEXT NOT NULL UNIQUE,
                     sandbox TEXT NOT NULL CHECK (sandbox IN
-                        ('read-only', 'workspace-write'))
+                        ('read-only', 'workspace-write')),
+                    verification_json TEXT NOT NULL DEFAULT '[]'
                 );
                 CREATE TABLE IF NOT EXISTS session_workspaces (
                     session_id TEXT PRIMARY KEY REFERENCES sessions(session_id)
@@ -216,6 +221,37 @@ class EventJournal:
                     used_bytes INTEGER NOT NULL DEFAULT 0 CHECK (used_bytes >= 0),
                     truncated INTEGER NOT NULL DEFAULT 0
                         CHECK (truncated IN (0, 1))
+                );
+                CREATE TABLE IF NOT EXISTS run_verifications (
+                    run_id TEXT NOT NULL REFERENCES runs(run_id),
+                    requirement_key TEXT NOT NULL,
+                    command TEXT NOT NULL,
+                    cwd TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (run_id, requirement_key)
+                );
+                CREATE TABLE IF NOT EXISTS run_commands (
+                    run_id TEXT NOT NULL REFERENCES runs(run_id),
+                    item_id TEXT NOT NULL,
+                    command TEXT,
+                    command_truncated INTEGER NOT NULL DEFAULT 0
+                        CHECK (command_truncated IN (0, 1)),
+                    cwd TEXT,
+                    status TEXT,
+                    exit_code INTEGER,
+                    started_at_ms INTEGER,
+                    completed_at_ms INTEGER,
+                    duration_ms INTEGER,
+                    output_bytes INTEGER NOT NULL DEFAULT 0
+                        CHECK (output_bytes >= 0),
+                    output_dropped_bytes INTEGER NOT NULL DEFAULT 0
+                        CHECK (output_dropped_bytes >= 0),
+                    output_state TEXT NOT NULL DEFAULT 'pending' CHECK (output_state IN
+                        ('pending', 'complete', 'truncated', 'empty', 'unknown')),
+                    started_event_seq INTEGER,
+                    completed_event_seq INTEGER,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (run_id, item_id)
                 );
             """)
             if version < 11:
@@ -280,6 +316,24 @@ class EventJournal:
                 self.connection.execute("BEGIN IMMEDIATE")
                 try:
                     self.connection.execute("PRAGMA user_version=15")
+                    self.connection.execute("COMMIT")
+                except BaseException:
+                    self.connection.execute("ROLLBACK")
+                    raise
+            if version < 16:
+                # v16 records product command evidence and snapshots the
+                # workspace verification requirements at run creation. Existing
+                # runs have no rows and therefore report "unconfigured" rather
+                # than being backfilled from the current workspace config.
+                self.connection.execute("BEGIN IMMEDIATE")
+                try:
+                    columns = {row["name"] for row in self.connection.execute(
+                        "PRAGMA table_info(workspaces)")}
+                    if "verification_json" not in columns:
+                        self.connection.execute(
+                            "ALTER TABLE workspaces ADD COLUMN "
+                            "verification_json TEXT NOT NULL DEFAULT '[]'")
+                    self.connection.execute("PRAGMA user_version=16")
                     self.connection.execute("COMMIT")
                 except BaseException:
                     self.connection.execute("ROLLBACK")
@@ -481,12 +535,56 @@ class EventJournal:
             (run_id, session_id))
         self.connection.execute(
             "INSERT INTO active_slot(singleton, run_id) VALUES (1, ?)", (run_id,))
+        self._snapshot_verification_requirements_in_tx(
+            session_id, run_id, recorded_at)
         event = self._append_in_tx(session_id, run_id, "run.created",
                                    {"run_id": run_id, "status": "starting"},
                                    recorded_at, snapshot_bytes)
         self.connection.execute(
             "UPDATE sessions SET session_version=? WHERE session_id=?", (version, session_id))
         return event
+
+    def _snapshot_verification_requirements_in_tx(
+            self, session_id: str, run_id: str, recorded_at: str) -> None:
+        """Freeze the workspace's required commands at run creation.
+
+        A later workspace edit must not change the meaning of an existing run's
+        result. Requirements with no workspace or no configuration stay empty;
+        results then report "unconfigured" instead of inventing a pass.
+        """
+        row = self.connection.execute(
+            "SELECT w.root, w.verification_json FROM session_workspaces AS sw "
+            "JOIN workspaces AS w ON w.workspace_id=sw.workspace_id "
+            "WHERE sw.session_id=?", (session_id,)).fetchone()
+        if row is None:
+            return
+        try:
+            entries = json.loads(row["verification_json"] or "[]")
+        except (TypeError, ValueError):
+            return
+        if not isinstance(entries, list):
+            return
+        seen: set[str] = set()
+        for entry in entries[:MAX_VERIFICATION_COMMANDS]:
+            if not isinstance(entry, dict):
+                continue
+            key = entry.get("key")
+            command = entry.get("command")
+            if (not isinstance(key, str) or not key or key in seen
+                    or not isinstance(command, str) or not command):
+                continue
+            try:
+                if (len(key.encode("utf-8")) > MAX_VERIFICATION_KEY_BYTES
+                        or len(command.encode("utf-8"))
+                        > MAX_VERIFICATION_COMMAND_BYTES):
+                    continue
+            except UnicodeError:
+                continue
+            seen.add(key)
+            self.connection.execute(
+                "INSERT INTO run_verifications(run_id, requirement_key, "
+                "command, cwd, created_at) VALUES (?, ?, ?, ?, ?)",
+                (run_id, key, command, row["root"], recorded_at))
 
     def reserve_run_request(self, session_id: str, run_id: str, *, actor_id: str,
                             request_id: str, expected_session_version: int,
@@ -1450,7 +1548,127 @@ class EventJournal:
             db.execute(
                 "UPDATE run_timeline_budget SET used_bytes=used_bytes+?, "
                 "truncated=? WHERE run_id=?", (text_bytes, truncated, run_id))
+        self._project_command_timeline_in_tx(
+            run_id, kind, payload, event["seq"], recorded_at)
         return event
+
+    def _project_command_timeline_in_tx(
+            self, run_id: str, kind: str, payload: dict, seq: int,
+            recorded_at: str) -> None:
+        """Keep the command evidence row in step with its timeline events.
+
+        The timeline remains the display log; this row is the bounded,
+        queryable evidence used by results and verification. Both are written
+        in the same SQLite transaction, so a restart cannot expose a completed
+        command without its metadata.
+        """
+        if (run_id is None or kind not in {"command.started", "command.output",
+                                           "command.completed"}):
+            return
+        item_id = payload.get("item_id")
+        if not isinstance(item_id, str) or not item_id:
+            return
+        db = self.connection
+        prior = db.execute(
+            "SELECT * FROM run_commands WHERE run_id=? AND item_id=?",
+            (run_id, item_id)).fetchone()
+        command = payload.get("command")
+        if not isinstance(command, str) or not command:
+            command = None
+        command_truncated = 1 if payload.get("command_truncated") else 0
+        cwd = payload.get("cwd")
+        if not isinstance(cwd, str) or not cwd:
+            cwd = None
+        if kind == "command.started":
+            started_at_ms = payload.get("started_at_ms")
+            if type(started_at_ms) is not int or started_at_ms < 0:
+                started_at_ms = None
+            status = payload.get("status")
+            if not isinstance(status, str) or not status:
+                status = None
+            if prior is None:
+                db.execute(
+                    "INSERT INTO run_commands(run_id, item_id, command, "
+                    "command_truncated, cwd, status, started_at_ms, "
+                    "output_state, started_event_seq, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
+                    (run_id, item_id, command, command_truncated, cwd, status,
+                     started_at_ms, seq, recorded_at))
+            else:
+                db.execute(
+                    "UPDATE run_commands SET command=COALESCE(?, command), "
+                    "command_truncated=?, cwd=COALESCE(?, cwd), "
+                    "status=COALESCE(?, status), "
+                    "started_at_ms=COALESCE(?, started_at_ms), "
+                    "started_event_seq=?, updated_at=? "
+                    "WHERE run_id=? AND item_id=?",
+                    (command, command_truncated, cwd, status, started_at_ms,
+                     seq, recorded_at, run_id, item_id))
+            return
+        if kind == "command.output":
+            text = payload.get("text")
+            added = len(text.encode("utf-8")) if isinstance(text, str) else 0
+            dropped = payload.get("dropped_bytes")
+            if type(dropped) is not int or dropped < 0:
+                dropped = 0
+            if prior is None:
+                db.execute(
+                    "INSERT INTO run_commands(run_id, item_id, "
+                    "output_bytes, output_dropped_bytes, output_state, "
+                    "updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (run_id, item_id, added, dropped,
+                     "truncated" if dropped else "pending", recorded_at))
+            else:
+                output_state = prior["output_state"]
+                if dropped or output_state == "truncated":
+                    output_state = "truncated"
+                db.execute(
+                    "UPDATE run_commands SET output_bytes=output_bytes+?, "
+                    "output_dropped_bytes=output_dropped_bytes+?, "
+                    "output_state=?, updated_at=? WHERE run_id=? AND item_id=?",
+                    (added, dropped, output_state, recorded_at, run_id, item_id))
+            return
+        # command.completed
+        status = payload.get("status")
+        if not isinstance(status, str) or not status:
+            status = None
+        exit_code = payload.get("exit_code")
+        if type(exit_code) is not int:
+            exit_code = None
+        duration_ms = payload.get("duration_ms")
+        if type(duration_ms) is not int or duration_ms < 0:
+            duration_ms = None
+        started_at_ms = payload.get("started_at_ms")
+        if type(started_at_ms) is not int or started_at_ms < 0:
+            started_at_ms = None
+        completed_at_ms = payload.get("completed_at_ms")
+        if type(completed_at_ms) is not int or completed_at_ms < 0:
+            completed_at_ms = None
+        prior_bytes = 0 if prior is None else prior["output_bytes"]
+        prior_dropped = 0 if prior is None else prior["output_dropped_bytes"]
+        output_state = ("truncated" if prior_dropped
+                        else "complete" if prior_bytes else "empty")
+        if prior is None:
+            db.execute(
+                "INSERT INTO run_commands(run_id, item_id, command, "
+                "command_truncated, cwd, status, exit_code, started_at_ms, "
+                "completed_at_ms, duration_ms, output_bytes, "
+                "output_dropped_bytes, output_state, completed_event_seq, "
+                "updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?)",
+                (run_id, item_id, command, command_truncated, cwd, status,
+                 exit_code, started_at_ms, completed_at_ms, duration_ms,
+                 output_state, seq, recorded_at))
+        else:
+            db.execute(
+                "UPDATE run_commands SET command=COALESCE(?, command), "
+                "command_truncated=?, cwd=COALESCE(?, cwd), status=?, "
+                "exit_code=?, started_at_ms=COALESCE(?, started_at_ms), "
+                "completed_at_ms=?, duration_ms=?, output_state=?, "
+                "completed_event_seq=?, updated_at=? "
+                "WHERE run_id=? AND item_id=?",
+                (command, command_truncated, cwd, status, exit_code,
+                 started_at_ms, completed_at_ms, duration_ms, output_state,
+                 seq, recorded_at, run_id, item_id))
 
     def list_sessions(self, *, after_session_id: str | None = None,
                       limit: int = 50) -> dict[str, Any]:

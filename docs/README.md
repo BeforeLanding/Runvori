@@ -1,10 +1,12 @@
 # 文档导航与维护约定
 
-更新日期：2026-10-27。基线：[定位与首版方案](定位与首版方案.md)，对应仓库提交 `9cf6495`。
+更新日期：2026-10-27。基线：[定位与首版方案](定位与首版方案.md)，对应仓库提交 `c00b67b`（DEV-007 交付基线）。
 
 ## 当前状态
 
-DEV-007 把 Android 从占位工程接成最小业务客户端：补齐会话列表与按回合的审批列表、把上游 item 生命周期投影成时间线（事件库 v15），Android 侧实现配对载荷解析、Keystore 凭据、固定指纹 HTTPS、SQLite 缓存与同步、四个屏幕与新回合/中断。设备验收用**真实 APK → 固定指纹 HTTPS → 真实 `HostRuntime` → 合成 app-server** 跑通九个场景，见 [DEV-007 设备验收](evidence/DEV-007-device-acceptance.md)。同日又用真实 Codex 执行 **1 次**核心闭环设备验收（`s/a/b/c/g/e`，1 次模型回合，`observed_runs=1`，未重试），见 [DEV-007 真实设备验收](evidence/DEV-007-device-acceptance-real.md)；真实中断/过期、真实文件审批、命令/产物明细端点、Android 生命周期与性能仍未覆盖。
+DEV-007 把 Android 从占位工程接成最小业务客户端：补齐会话列表与按回合的审批列表、把上游 item 生命周期投影成时间线（事件库 v15），Android 侧实现配对载荷解析、Keystore 凭据、固定指纹 HTTPS、SQLite 缓存与同步、四个屏幕与新回合/中断。设备验收用**真实 APK → 固定指纹 HTTPS → 真实 `HostRuntime` → 合成 app-server** 跑通九个场景，见 [DEV-007 设备验收](evidence/DEV-007-device-acceptance.md)。同日又用真实 Codex 执行 **1 次**核心闭环设备验收（`s/a/b/c/g/e`，1 次模型回合，`observed_runs=1`，未重试），见 [DEV-007 真实设备验收](evidence/DEV-007-device-acceptance-real.md)。
+
+DEV-008 把命令与验证结论接到产品端：事件库 v16 保存命令证据与回合级验证要求，新增 `/v1/runs/{run_id}`、`/results`、`/commands`，Android 增加第五屏“回合结果”。合成验收新增 `i` 场景，验证回合 `completed` 与验证 `failed` 同时显示；离线覆盖未配置、未运行、退出码缺失、输出截断与 Host 重开后的查询，见 [DEV-008 证据](evidence/DEV-008-results.md)。产物/差异、真实 Codex 验证匹配、真实中断/过期与 Android 生命周期/性能仍未覆盖。
 
 DEV-006 把真实 `HostRuntime` 接成可由独立 HTTPS 客户端操作的最小 Host：审批详情与禁止盲批闸门、Windows 命名管道本地管理入口、HTTPS 与设备认证/限流、最小业务端点。合成上游闭环见 [DEV-006 HTTPS Host](evidence/DEV-006-https-host.md)，真实 Codex 一次验收见 [DEV-006 真实验收](evidence/DEV-006-https-host-real.md)。
 
@@ -68,7 +70,7 @@ DEV-006 把真实 `HostRuntime` 接成可由独立 HTTPS 客户端操作的最�
 
 上游审批请求身份映射的本轮验证见 [DEV-005 上游请求映射](evidence/DEV-005-upstream-approval-request.md)。该切片仍未接入产品事件循环。
 
-本仓库已进入 M0 技术验证阶段。已建立 Python 探针、schema 基线、故障测试、事件/活动槽/请求幂等/派发/回合确认/恢复存储切片、单库审批生命周期、持锁启动原子恢复、恢复前写门控与上游结束通知身份映射切片，以及可构建的 Android 占位工程；Host 产品服务与 Android 业务功能尚未实现。以下 PRD/架构文档仍主要描述待实现目标，实际完成项以 [progress.md](../progress.md) 和 [DEV-001](evidence/DEV-001.md)、[DEV-002](evidence/DEV-002.md)、[DEV-003](evidence/DEV-003.md)、[DEV-004](evidence/DEV-004-toolchain.md)、[DEV-005 事件](evidence/DEV-005-event-journal.md)、[DEV-005 活动槽](evidence/DEV-005-active-slot.md)、[DEV-005 幂等](evidence/DEV-005-run-idempotency.md)、[DEV-005 派发](evidence/DEV-005-run-dispatch.md)、[DEV-005 确认](evidence/DEV-005-turn-confirmation.md)、[DEV-005 恢复](evidence/DEV-005-run-recovery.md)、[DEV-005 启动](evidence/DEV-005-locked-startup.md)、[DEV-005 单库](evidence/DEV-005-unified-store.md)、[DEV-005 审批决定](evidence/DEV-005-approval-decision.md)、[DEV-005 审批领取](evidence/DEV-005-approval-dispatch.md)、[DEV-005 审批恢复](evidence/DEV-005-approval-epoch-recovery.md)、[DEV-005 请求结束](evidence/DEV-005-approval-request-closed.md)、[DEV-005 原子恢复](evidence/DEV-005-host-atomic-recovery.md)、[DEV-005 写门控](evidence/DEV-005-startup-write-gate.md)、[DEV-005 上游结束映射](evidence/DEV-005-upstream-approval-resolved.md) 验证证据为准。
+本仓库已进入 M0 技术验证阶段。已建立 Python 探针、schema 基线、故障测试、事件/活动槽/请求幂等/派发/回合确认/恢复存储切片、单库审批生命周期、持锁启动原子恢复、恢复前写门控、上游结束通知身份映射、可构建的 Android 业务客户端、可选 HTTPS Host 与命令/验证结果读出。真实 Codex 已完成一次设备核心闭环；产物/差异、真实文件审批、真实中断/过期和真机生命周期仍未完成。以下 PRD/架构文档描述目标与已落地边界，实际完成项以 [progress.md](../progress.md)、[DEV-007 设备验收](evidence/DEV-007-device-acceptance.md)、[DEV-007 真实设备验收](evidence/DEV-007-device-acceptance-real.md)、[DEV-008 结果页](evidence/DEV-008-results.md) 以及 [DEV-001](evidence/DEV-001.md)、[DEV-002](evidence/DEV-002.md)、[DEV-003](evidence/DEV-003.md)、[DEV-004](evidence/DEV-004-toolchain.md)、[DEV-005 事件](evidence/DEV-005-event-journal.md)、[DEV-005 活动槽](evidence/DEV-005-active-slot.md)、[DEV-005 幂等](evidence/DEV-005-run-idempotency.md)、[DEV-005 派发](evidence/DEV-005-run-dispatch.md)、[DEV-005 确认](evidence/DEV-005-turn-confirmation.md)、[DEV-005 恢复](evidence/DEV-005-run-recovery.md)、[DEV-005 启动](evidence/DEV-005-locked-startup.md)、[DEV-005 单库](evidence/DEV-005-unified-store.md)、[DEV-005 审批决定](evidence/DEV-005-approval-decision.md)、[DEV-005 审批领取](evidence/DEV-005-approval-dispatch.md)、[DEV-005 审批恢复](evidence/DEV-005-approval-epoch-recovery.md)、[DEV-005 请求结束](evidence/DEV-005-approval-request-closed.md)、[DEV-005 原子恢复](evidence/DEV-005-host-atomic-recovery.md)、[DEV-005 写门控](evidence/DEV-005-startup-write-gate.md)、[DEV-005 上游结束映射](evidence/DEV-005-upstream-approval-resolved.md) 验证证据为准。
 
 ## 阅读顺序
 

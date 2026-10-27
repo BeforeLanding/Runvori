@@ -50,14 +50,16 @@ Android 负责视图、缓存、同步、阅读位置和受限操作。Host 负�
 
 事件库 v13 现已把 epoch 身份状态显式化：`unlaunched` 表示已恢复但尚未启动上游，`recorded` 表示有 PID＋创建时间可核实，`legacy_unknown` 表示 v13 之前的 epoch 无法核实。恢复门禁不再接受“缺少记录”，任一不一致都失败关闭；旧库只能归档重建。`HostRuntime`（`python -m runvori.host`）把单实例锁、状态对账、统一恢复、写门禁、命令邮箱、`HostDeviceAccess` 与唯一上游启动按固定顺序组合，并运行单所有者事件循环；锁定版本探测先于任何持久状态。正常停止以 `host_shutdown` 恢复；上游故障完成 `upstream_exit` 恢复后 Host 进程退出，等待外部监督重启，不在进程内重拉上游或重跑旧回合。真实 Codex 已用于五切点崩溃证据。
 
-DEV-006 把两个入口接到该组合上，均为可选：`--listen host:port` 加证书/私钥启动标准库 HTTPS 服务（`api/`），`--admin-pipe` 启动 Windows 命名管道管理入口。两者都不持有 SQLite 连接，只经命令邮箱读写；`HostRuntime` 在上游启动后按“管道 → HTTPS”顺序启动，任一失败整体回滚，并在事件循环结束或停止时先关入口再关邮箱。事件库 v14 为审批保存有界详情（`approval_details.py` + `approval_items` 表），详情不足时禁止允许。真实 Codex HTTPS 一次闭环与合成闭环见 [证据](evidence/DEV-006-https-host.md) 与 [真实验收](evidence/DEV-006-https-host-real.md)；当时尚未接入的会话列表与 Android 联调已由 DEV-007 补齐（见下），命令/产物明细仍未实现。
+DEV-006 把两个入口接到该组合上，均为可选：`--listen host:port` 加证书/私钥启动标准库 HTTPS 服务（`api/`），`--admin-pipe` 启动 Windows 命名管道管理入口。两者都不持有 SQLite 连接，只经命令邮箱读写；`HostRuntime` 在上游启动后按“管道 → HTTPS”顺序启动，任一失败整体回滚，并在事件循环结束或停止时先关入口再关邮箱。事件库 v14 为审批保存有界详情（`approval_details.py` + `approval_items` 表），详情不足时禁止允许。真实 Codex HTTPS 一次闭环与合成闭环见 [证据](evidence/DEV-006-https-host.md) 与 [真实验收](evidence/DEV-006-https-host-real.md)；当时尚未接入的会话列表与 Android 联调已由 DEV-007 补齐（见下），命令明细节点由 DEV-008 补齐，产物明细仍未实现。
 
-DEV-007 补齐了手机侧需要但 Host 还缺的三块：`GET /v1/sessions` 会话列表、`GET /v1/runs/{run_id}/approvals` 按回合列审批、以及把上游 item 生命周期投影成可读时间线（事件库 v15）。投影层（`codex/item_events.py`）不信任调用方给的标识：每条时间线写入都用持久化的 `(thread_id, turn_id)` 绑定定位活动回合，找不到就返回 `upstream_turn_not_found` 而不写。时间线事件只推进 `seq`，不改 `session_version`，否则持续输出会让每个待审批的期望版本立刻过期。单回合文本有 2 MiB 预算（`run_timeline_budget` 表），超出后写入不带正文的元数据与一次 `timeline.truncated`，把缺口变成可见事实而不是空输出。TLS 握手改在 accept 线程完成（`_ThreadedHttps.get_request`），此前在工作线程 wrap 会让并发握手在同一对 socket 上交错。Android 联调见 [合成设备验收](evidence/DEV-007-device-acceptance.md) 与 [真实设备验收](evidence/DEV-007-device-acceptance-real.md)（真实 Codex 核心闭环 1 次模型回合）；命令/产物明细端点仍未实现。
+DEV-007 补齐了手机侧需要但 Host 还缺的三块：`GET /v1/sessions` 会话列表、`GET /v1/runs/{run_id}/approvals` 按回合列审批、以及把上游 item 生命周期投影成可读时间线（事件库 v15）。投影层（`codex/item_events.py`）不信任调用方给的标识：每条时间线写入都用持久化的 `(thread_id, turn_id)` 绑定定位活动回合，找不到就返回 `upstream_turn_not_found` 而不写。时间线事件只推进 `seq`，不改 `session_version`，否则持续输出会让每个待审批的期望版本立刻过期。单回合文本有 2 MiB 预算（`run_timeline_budget` 表），超出后写入不带正文的元数据与一次 `timeline.truncated`，把缺口变成可见事实而不是空输出。TLS 握手改在 accept 线程完成（`_ThreadedHttps.get_request`），此前在工作线程 wrap 会让并发握手在同一对 socket 上交错。Android 联调见 [合成设备验收](evidence/DEV-007-device-acceptance.md) 与 [真实设备验收](evidence/DEV-007-device-acceptance-real.md)（真实 Codex 核心闭环 1 次模型回合）。
+
+DEV-008 把命令从“时间线里的一行”提升为可查询证据：事件库 v16 新增 `run_commands`（命令、cwd、上游起止时间、退出码、输出完整度、事件 seq）与 `run_verifications`（回合创建时快照的必需命令），工作区配置从受信本地入口写入 `verification_json`。`application/run_results.py` 在读取时把持久证据重放给 `codex/verification.py`，复用其保守优先级，不把空配置当通过，也不把 null 退出码当 0。`GET /v1/runs/{run_id}`、`/results` 与 `/commands` 已接入；Android 新增第五个屏幕“回合结果”，把回合状态和验证结论分开显示。产物/差异与 `verification.updated` 事件仍未实现，见 [DEV-008 证据](evidence/DEV-008-results.md)。
 
 - `host/src/runvori/api/`：HTTPS API、认证、请求校验、错误映射。DEV-006 已用标准库实现最小服务；只有 `/v1` 子集的处理器，业务逻辑仍全部经命令邮箱。
-- `host/src/runvori/application/`：启动/中断/审批/同步用例与操作幂等；含命令邮箱、设备读取网关与本地命名管道管理入口。
+- `host/src/runvori/application/`：启动/中断/审批/同步用例、操作幂等与结果读出；含命令邮箱、设备读取网关、本地命名管道管理入口与 `run_results.py`。
 - `host/src/runvori/domain/`：状态机、活动槽、审批和验证规则，不依赖 FastAPI。
-- `host/src/runvori/infrastructure/`：SQLite、文件、TLS/凭据存储和进程管理。当前有审批派发、一次性配对、事件/回合/操作的独立 SQLite 切片，Windows 单实例锁、共享连接的审批生命周期、持锁原子恢复与 v13 epoch 身份状态；`HostRuntime` 已组合启动、恢复和设备访问，业务 API、完整审批状态与 HTTP 仍未接入。
+- `host/src/runvori/infrastructure/`：SQLite、文件、TLS/凭据存储和进程管理。当前有审批派发、一次性配对、事件/回合/操作、命令证据与验证快照的 SQLite 切片，Windows 单实例锁、共享连接的审批生命周期、持锁原子恢复与 v13 epoch 身份状态；`HostRuntime` 已组合启动、恢复、设备访问、可选 HTTPS 与本地入口，业务 API 与审批/结果读出已接入（DEV-006～DEV-008）。
 - `host/src/runvori/codex/`：初始化、RPC 路由、schema 校验及上游事件映射。
 - `host/tests/`：领域、数据库事务、API、故障注入和适配器夹具测试。
 
@@ -67,10 +69,10 @@ API 层不得自己改表或直接写 app-server stdin。每个外部副作用�
 
 `android/` 是单应用 Compose 工程。DEV-004 建立了可构建的占位版本，DEV-007 把它接成最小业务客户端；下面列的包划分现在都已存在，但每个包只覆盖最小闭环所需的部分。
 
-- Compose 订阅不可变 UI 状态；ViewModel 组合状态并响应动作。`ui/RunvoriApp.kt` 只有四个屏幕（配对、会话列表、时间线、审批），`ui/RunvoriViewModel.kt` 持有 `AppState` 并所有网络副作用。
+- Compose 订阅不可变 UI 状态；ViewModel 组合状态并响应动作。`ui/RunvoriApp.kt` 有五个屏幕（配对、会话列表、时间线、审批、回合结果），`ui/RunvoriViewModel.kt` 持有 `AppState` 并所有网络副作用。
 - 领域逻辑负责游标、事件归并、审批显示与阅读模式，不依赖 UI 框架。`domain/TimelineProjector.kt` 把 `SessionEvent` 折成 `TimelineItem`（消息按 `item_id` 合并、命令累积输出、审批按 `approval_id` 更新），`domain/Pairing.kt` 解析并校验配对载荷，`domain/HostnameMatch.kt` 做 SAN/CN 匹配，`domain/JsonValue.kt` 是最小严格 JSON 读写。
 - 数据层提供 Host API、SQLite 缓存和凭据存储适配；网络细节不进入 Composable。`data/HostEndpoint.kt` 是手工 HTTP/1.1 over `SSLSocket`（无第三方 HTTP 客户端，无内部重试），`data/PinnedTrust.kt` 实现链/主机名之外的 SPKI 核对，`data/HostSession.kt` 固定重连顺序（认证 → 身份 → 快照 → 补事件 → 刷新审批与未确认操作），`data/RunvoriCache.kt` 是 `SQLiteOpenHelper`，`data/CredentialStore.kt` 是 Keystore 信封。
-- 屏幕状态保存会话 ID、回合 ID 和“跟随最新”标志，完整历史放数据库。当前 `AppState` 保存 `selectedSessionId`、`continuousSeq`、`latestSeq`、`syncGap`；阅读锚点与 SavedStateHandle 恢复仍未实现。
+- 屏幕状态保存会话 ID、回合 ID 和“跟随最新”标志，完整历史放数据库。当前 `AppState` 保存 `selectedSessionId`、`continuousSeq`、`latestSeq`、`syncGap`，结果页另存 `resultsRunId/results/commands/commandsCursor`；阅读锚点与 SavedStateHandle 恢复仍未实现。
 
 两条不变式决定缓存表结构：事件按 `(host_id, session_id, seq)` 唯一，重复页或第二个 Host 身份都无法并入前一个身份的历史；连续游标只在写入事件的同一事务里推进，崩溃不能让客户端声称它没落盘的进度，遇到缺口时游标停住不跳过。
 
@@ -80,14 +82,16 @@ API 层不得自己改表或直接写 app-server stdin。每个外部副作用�
 
 以下为逻辑模型，不是已生成的数据库 schema：
 
-- `workspaces`：本地 ID、规范化根目录、别名、执行/审批策略及验证命令清单。
+- `workspaces`：本地 ID、规范化根目录、别名、执行/审批策略、验证命令清单（`verification_json`）。
 - `sessions`：ID、workspace_id、codex_thread_id、标题、last_seq、创建/更新时间。
-- `runs`：ID、session_id、codex_turn_id、状态、时间、原因、verification_status、基线引用。
+- `runs`：ID、session_id、codex_turn_id、状态、时间、原因、基线引用；验证结果按证据读取，不再需要单独的回填状态列。
 - `active_slot`：固定一行，指向一个非终态 run；事务内预留、终态后释放。
 - `events`：唯一 `(session_id, seq)`、run_id、事件种类、payload、记录时间、来源标识。
+- `run_commands`：命令 item 的结构化证据（命令原文与截断标记、cwd、上游起止毫秒、状态、退出码、输出字节/丢弃字节、输出状态、开始/完成事件 seq）。
+- `run_verifications`：回合创建时快照的必需命令与 cwd；工作区之后的修改不改写旧回合。
 - `approvals`：请求 ID、run_id、process_epoch、上游 request_id、摘要、请求版本、决定及处理状态。
 - `operations`：唯一 `(device_or_local_actor, request_id)`、规范化请求摘要、状态、结果、关联资源、派发阶段。
-- `artifacts`：ID、run_id、类型、内容哈希、大小、受控相对路径、来源、是否截断及可用性。
+- `artifacts`：ID、run_id、类型、内容哈希、大小、受控相对路径、来源、是否截断及可用性（未实现）。
 - `devices`：唯一有效设备、令牌摘要、授权代次、创建/撤销时间。
 
 外键有效，时间统一 UTC，序号是 64 位整数。上游 request_id 可能在新进程重复，必须加 `process_epoch` 隔离。客户端主键包含 `host_id`，避免换 Host 后错误拼接缓存。

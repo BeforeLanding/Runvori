@@ -6,6 +6,8 @@ import dev.runvori.app.data.CachedSession
 import dev.runvori.app.data.ConnectionState
 import dev.runvori.app.data.HostSession
 import dev.runvori.app.data.OperationReceipt
+import dev.runvori.app.data.RunCommand
+import dev.runvori.app.data.RunResults
 import dev.runvori.app.data.SessionSync
 import dev.runvori.app.domain.PairingError
 import dev.runvori.app.domain.PairingEndpoint
@@ -267,6 +269,92 @@ class RunvoriViewModel(private val session: HostSession) {
                 _state.value = _state.value.copy(error = "历史加载失败")
             }
         }
+    }
+
+    // -- results ---------------------------------------------------------
+    /**
+     * Open the result of the latest run, not the earliest one still in the
+     * timeline. `activeRun` wins while a run is live; otherwise the newest
+     * timeline row carrying a run id identifies the completed result.
+     */
+    fun openResults() {
+        val runId = _state.value.activeRun?.runId
+            ?: _state.value.timeline.lastOrNull { it.runId != null }?.runId
+        if (runId == null) {
+            _state.value = _state.value.copy(notice = "还没有可查看的回合结果")
+            return
+        }
+        _state.value = _state.value.copy(
+            screen = Screen.Results, resultsRunId = runId, results = null,
+            resultsLoading = true, commands = emptyList(), commandsCursor = null,
+            commandsHasMore = false, commandsLoading = false,
+            error = null, notice = null)
+        loadResults(runId)
+    }
+
+    fun refreshResults() {
+        val runId = _state.value.resultsRunId ?: return
+        if (_state.value.resultsLoading || _state.value.commandsLoading) return
+        _state.value = _state.value.copy(resultsLoading = true, error = null)
+        loadResults(runId)
+    }
+
+    private fun loadResults(runId: String) {
+        scope.launch {
+            try {
+                val result = session.api().runResults(runId)
+                val page = session.api().runCommands(runId)
+                _state.value = _state.value.copy(
+                    results = result, resultsLoading = false,
+                    commands = page.items, commandsCursor = page.nextCursor,
+                    commandsHasMore = page.hasMore)
+            } catch (error: ProtocolError) {
+                _state.value = _state.value.copy(
+                    resultsLoading = false, error = resultMessage(error.code))
+            } catch (error: IOException) {
+                _state.value = _state.value.copy(
+                    resultsLoading = false, results = null,
+                    error = "结果读取失败，请检查连接")
+            }
+        }
+    }
+
+    fun loadMoreCommands() {
+        val runId = _state.value.resultsRunId ?: return
+        val cursor = _state.value.commandsCursor ?: return
+        if (_state.value.commandsLoading || !_state.value.commandsHasMore) return
+        _state.value = _state.value.copy(commandsLoading = true, error = null)
+        scope.launch {
+            try {
+                val page = session.api().runCommands(runId, cursor)
+                _state.value = _state.value.copy(
+                    commands = _state.value.commands + page.items,
+                    commandsCursor = page.nextCursor,
+                    commandsHasMore = page.hasMore,
+                    commandsLoading = false)
+            } catch (error: ProtocolError) {
+                _state.value = _state.value.copy(
+                    commandsLoading = false, error = resultMessage(error.code))
+            } catch (error: IOException) {
+                _state.value = _state.value.copy(
+                    commandsLoading = false, error = "命令读取失败，请检查连接")
+            }
+        }
+    }
+
+    fun closeResults() {
+        _state.value = _state.value.copy(
+            screen = Screen.Timeline, results = null, resultsLoading = false,
+            commands = emptyList(), commandsCursor = null,
+            commandsHasMore = false, commandsLoading = false)
+        syncSelectedSession()
+    }
+
+    private fun resultMessage(code: String): String = when (code) {
+        "run_not_found" -> "回合不存在或已被清理"
+        "invalid_cursor" -> "命令游标已失效，请刷新"
+        "session_not_found" -> "会话不存在"
+        else -> "结果读取失败：" + code
     }
 
     // -- approvals -------------------------------------------------------
@@ -652,7 +740,7 @@ class RunvoriViewModel(private val session: HostSession) {
     }
 }
 
-enum class Screen { Pairing, Sessions, Timeline, Approval }
+enum class Screen { Pairing, Sessions, Timeline, Approval, Results }
 
 data class ActiveRunView(val runId: String, val status: String, val version: Long)
 
@@ -685,6 +773,13 @@ data class AppState(
     val selectedSessionId: String? = null,
     val workspaceName: String? = null,
     val timeline: List<TimelineItem> = emptyList(),
+    val results: RunResults? = null,
+    val resultsRunId: String? = null,
+    val resultsLoading: Boolean = false,
+    val commands: List<RunCommand> = emptyList(),
+    val commandsCursor: String? = null,
+    val commandsHasMore: Boolean = false,
+    val commandsLoading: Boolean = false,
     val continuousSeq: Long = 0,
     val latestSeq: Long = 0,
     val syncGap: Boolean = false,

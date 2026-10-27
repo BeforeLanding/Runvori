@@ -158,6 +158,37 @@ class RunvoriApi(
         )
     }
 
+    fun runResults(runId: String): RunResults {
+        val body = get("/v1/runs/${encode(runId)}/results")
+        return RunResults(
+            runId = body.text("run_id") ?: runId,
+            sessionId = body.text("session_id"),
+            status = body.text("status") ?: "unknown",
+            terminal = body.body["terminal"] == true,
+            createdAt = body.text("created_at"),
+            terminalAt = body.text("terminal_at"),
+            commandCount = body.int("command_count") ?: 0,
+            verification = verification(body.map("verification")),
+        )
+    }
+
+    fun runCommands(
+        runId: String,
+        cursor: String? = null,
+        limit: Int = 50,
+    ): CommandPage {
+        val query = buildString {
+            append("?limit=").append(limit)
+            if (cursor != null) append("&cursor=").append(encode(cursor))
+        }
+        val body = get("/v1/runs/${encode(runId)}/commands$query")
+        return CommandPage(
+            items = body.list("items").mapNotNull(::runCommand),
+            nextCursor = body.text("next_cursor"),
+            hasMore = body.body["has_more"] == true,
+        )
+    }
+
     fun decide(
         approvalId: String,
         requestId: String,
@@ -225,6 +256,59 @@ class RunvoriApi(
             runId = runId,
             status = value["status"] as? String ?: "unknown",
             version = (value["version"] as? Number)?.toLong() ?: 0,
+        )
+    }
+
+    private fun verification(value: Map<String, Any?>?): VerificationView {
+        if (value == null) return VerificationView()
+        val items = (value["items"] as? List<*>).orEmpty()
+            .mapNotNull(::verificationItem)
+        return VerificationView(
+            configured = value["configured"] == true,
+            summary = value["summary"] as? String ?: "unknown",
+            items = items,
+        )
+    }
+
+    private fun verificationItem(value: Any?): VerificationItem? {
+        val map = value as? Map<*, *> ?: return null
+        return VerificationItem(
+            key = map["key"] as? String ?: return null,
+            command = map["command"] as? String,
+            cwd = map["cwd"] as? String,
+            status = map["status"] as? String ?: "unknown",
+            reason = map["reason"] as? String,
+            exitCode = (map["exit_code"] as? Number)?.toInt(),
+            exitCodePresent = map["exit_code_present"] == true,
+            evidenceItemId = map["evidence_item_id"] as? String,
+            startedAt = map["started_at"] as? String,
+            completedAt = map["completed_at"] as? String,
+            durationMs = (map["duration_ms"] as? Number)?.toInt(),
+            commandTruncated = map["command_truncated"] == true,
+            outputState = map["output_state"] as? String ?: "unknown",
+            outputBytes = (map["output_bytes"] as? Number)?.toLong() ?: 0,
+            outputDroppedBytes =
+                (map["output_dropped_bytes"] as? Number)?.toLong() ?: 0,
+        )
+    }
+
+    private fun runCommand(value: Any?): RunCommand? {
+        val map = value as? Map<*, *> ?: return null
+        return RunCommand(
+            itemId = map["item_id"] as? String ?: return null,
+            command = map["command"] as? String,
+            commandTruncated = map["command_truncated"] == true,
+            cwd = map["cwd"] as? String,
+            status = map["status"] as? String,
+            exitCode = (map["exit_code"] as? Number)?.toInt(),
+            exitCodePresent = map["exit_code_present"] == true,
+            startedAt = map["started_at"] as? String,
+            completedAt = map["completed_at"] as? String,
+            durationMs = (map["duration_ms"] as? Number)?.toInt(),
+            outputState = map["output_state"] as? String ?: "unknown",
+            outputBytes = (map["output_bytes"] as? Number)?.toLong() ?: 0,
+            outputDroppedBytes =
+                (map["output_dropped_bytes"] as? Number)?.toLong() ?: 0,
         )
     }
 
@@ -296,6 +380,63 @@ data class FileChangeView(
     val movePath: String?,
     val diff: String?,
     val diffTruncated: Boolean,
+)
+
+data class RunResults(
+    val runId: String,
+    val sessionId: String?,
+    val status: String,
+    val terminal: Boolean,
+    val createdAt: String?,
+    val terminalAt: String?,
+    val commandCount: Int,
+    val verification: VerificationView,
+)
+
+data class VerificationView(
+    val configured: Boolean = false,
+    val summary: String = "not_run",
+    val items: List<VerificationItem> = emptyList(),
+)
+
+data class VerificationItem(
+    val key: String,
+    val command: String?,
+    val cwd: String?,
+    val status: String,
+    val reason: String?,
+    val exitCode: Int?,
+    val exitCodePresent: Boolean,
+    val evidenceItemId: String?,
+    val startedAt: String?,
+    val completedAt: String?,
+    val durationMs: Int?,
+    val commandTruncated: Boolean,
+    val outputState: String,
+    val outputBytes: Long,
+    val outputDroppedBytes: Long,
+)
+
+data class CommandPage(
+    val items: List<RunCommand>,
+    val nextCursor: String?,
+    val hasMore: Boolean,
+)
+
+data class RunCommand(
+    val itemId: String,
+    val command: String?,
+    val commandTruncated: Boolean,
+    val cwd: String?,
+    val status: String?,
+    val exitCode: Int?,
+    val exitCodePresent: Boolean,
+    val startedAt: String?,
+    val completedAt: String?,
+    val durationMs: Int?,
+    val outputState: String,
+    val outputBytes: Long,
+    val outputDroppedBytes: Long,
 )
 
 data class ApprovalView(

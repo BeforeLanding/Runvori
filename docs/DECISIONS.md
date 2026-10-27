@@ -112,6 +112,16 @@ DEV-002 实现补充：Windows 通过不可继承的 kill-on-close Job 持有进
 
 后果：验收路径就是产品路径，没有任何测试专用的中转；客户端“证书必须命名我所连的地址”这条校验照常生效，SAN 是把真实地址写进证书，不是放宽检查。代价是该编排器只适用于模拟器；真机验收需要另建可达性方案，且必须同样保持指纹与主机名校验。
 
+## ADR-014：验证要求按回合快照，结果从持久命令证据计算（事件库 v16）
+
+状态：DEV-008 第一切片实现并验证（合成设备验收与离线状态矩阵通过，真实 Codex 验证匹配未跑）。
+
+选择：工作区通过受信本地 `register-workspace` 声明 `verification_commands`，每个 run 创建时把命令与 cwd 快照到 `run_verifications`；命令 item 在同一事务投影到 `run_commands`。`/v1/runs/{run_id}/results` 读取时把持久证据重放给现有 `codex/verification.py`，不新增 `verification.updated` 事件，也不在内存里保存验证器。`configured=false` 明确表示未配置，空集不报通过；退出码 null 保持 null；命令文本截断不能匹配要求。
+
+原因：如果结果依赖当前工作区配置，用户修改验证命令会追溯改写旧回合的成败，历史证据失去意义；如果只保存在内存，Host 重启后结果就不可查询。验证器本身已有保守的“同一 item 不能充当两项、完成状态与退出码必须自洽、时间顺序必须成立”规则，产品侧复用它可以避免出现第二套更宽松的判定。
+
+后果：修改工作区只影响之后创建的回合。产品匹配是精确命令文本加解析后的 cwd；Windows 命令包装目前没有规范化，真实 Codex 可能落到 `unknown`/`not_run`，必须保留这个保守结果而不是猜测通过。结果页和命令列表是读侧资源，产物/差异仍需后续切片。见 [DEV-008 证据](evidence/DEV-008-results.md)。
+
 ## 待决策清单
 
 DEV-001 更新：实验环境已确认 Windows、Python 3.12.10、Codex CLI 0.164.0-alpha.11.1 和 SQLite 3.49.1；0.163 历史证据保留原版本标注。初始化与 schema 导出已验证。上述仅为探针基线，Q-01～Q-08 仍开放，尤其未证明首发 OS、真实审批详情与 Android 组合。证据见 [DEV-001](evidence/DEV-001.md)。
@@ -131,6 +141,8 @@ DEV-001 更新：实验环境已确认 Windows、Python 3.12.10、Codex CLI 0.16
 2026-10-24 单命令阶段补充：Q-02 新锁定 `v2/ItemStartedNotification` 与 `v2/ItemCompletedNotification`，当前共 16 份契约。Q-07 先验证单条固定命令的结构化关联与退出码；该阶段仅这一种真实命令获 `passed`，多项登记/汇总尚未实现，Host 集成仍开放，见 [观察](evidence/DEV-003-required-verification.json)。
 
 2026-10-24 双命令补充：Q-07 两条固定命令的真实逐项与汇总结果为 `passed`，汇总器按协议优先级处理缺失、失败和执行中状态，并防止同一上游 item 重复计入。此结论不关闭任意命令登记、Host 持久化或产品验收，见 [观察](evidence/DEV-003-two-required-verifications.json)。
+
+2026-10-27 DEV-008 补充：Q-07 的必需命令已进入产品 Host：工作区本地声明、回合级快照、命令证据持久化与 `/results` 汇总已接通。匹配规则冻结为精确命令文本 + 解析后的 cwd；Windows Codex 的 PowerShell 包装尚未规范化，真实运行若出现包装只会得到 `unknown`/`not_run`，不会被误判通过。见 [DEV-008 证据](evidence/DEV-008-results.md)。Q-07 仍开放。
 
 2026-10-24 失败路径补充：Q-07 的固定 `exit 7` 真实退出码为 7，回合 `completed` 与验证 `failed` 同时成立；该单一固定命令只证明非零路径，见 [观察](evidence/DEV-003-nonzero-verification.json)。
 

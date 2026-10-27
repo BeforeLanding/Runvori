@@ -2,9 +2,10 @@
 
 The orchestrator starts the Host (synthetic upstream by default; the pinned
 real Codex only when explicitly enabled), provisions a workspace and sessions
-through the local named pipe, reverses the Host port onto the device, and then
-runs the instrumented Android suite scenario by scenario. Between scenarios it
-performs Host-side actions the phone cannot do itself (revoking the device).
+through the local named pipe, points the emulator at the host through its
+`10.0.2.2` NAT alias, and then runs the instrumented Android suite scenario by
+scenario. Between scenarios it performs Host-side actions the phone cannot do
+itself (revoking the device; changing the required verification commands).
 
 Each scenario is a separate instrumentation invocation because Android's test
 runner cannot be driven step by step from outside. Everything printed in the
@@ -41,7 +42,7 @@ FAKE = ROOT / "host/tests/fake_app_server.py"
 RUNNER = "dev.runvori.app.test/androidx.test.runner.AndroidJUnitRunner"
 EXPECTED_REAL_VERSION = "codex-cli 0.164.0-alpha.11.1"
 REAL_SCENARIOS = ("s", "a", "b", "c", "g", "e")
-SYNTHETIC_ONLY = frozenset({"d", "f", "h"})
+SYNTHETIC_ONLY = frozenset({"d", "f", "h", "i"})
 
 
 class OrchestrationFailure(RuntimeError):
@@ -233,10 +234,13 @@ def stop_host(process: subprocess.Popen) -> None:
             pass
 
 
-def provision(data_dir: Path, workspace: Path, sessions: int) -> None:
+def provision(data_dir: Path, workspace: Path, sessions: int,
+              verification_commands=None) -> None:
     admin = LocalAdminClient(data_dir)
-    created = admin.call("register-workspace", workspace_id="ws-device",
-                         root=str(workspace), sandbox="workspace-write")
+    created = admin.call(
+        "register-workspace", workspace_id="ws-device",
+        root=str(workspace), sandbox="workspace-write",
+        verification_commands=verification_commands)
     if created.get("status") == "failed":
         raise OrchestrationFailure("register_workspace_failed")
     for index in range(sessions):
@@ -320,7 +324,7 @@ def main() -> int:
     if os.name != "nt":
         print(json.dumps({"status": "skipped", "code": "windows_required"}))
         return 0
-    all_letters = ("s", "a", "b", "c", "d", "f", "h", "g", "e")
+    all_letters = ("s", "a", "b", "c", "d", "f", "h", "g", "i", "e")
     wanted = {item.strip() for item in args.only.split(",") if item.strip()}
     if args.real:
         forbidden = wanted & SYNTHETIC_ONLY
@@ -425,7 +429,10 @@ def main() -> int:
             raise OrchestrationFailure("host_api_not_listening")
         if api.get("spki_sha256") != pin:
             raise OrchestrationFailure("advertised_pin_mismatch")
-        provision(data_dir, workspace, args.sessions)
+        provision(
+            data_dir, workspace, args.sessions,
+            verification_commands=(None if args.real else [
+                {"key": "python", "command": "python --version"}]))
         if args.real:
             wait_for_thread_bindings(
                 data_dir, [f"devsess{index}"
@@ -485,6 +492,21 @@ def main() -> int:
                 continue
             report["steps"].append(run_scenario(serial, letter, method,
                                                 stored_arguments, port))
+        if "i" in wanted:
+            configured = admin.call(
+                "register-workspace", workspace_id="ws-device",
+                root=str(workspace), sandbox="workspace-write",
+                verification_commands=[{"key": "failure", "command": "exit 7"}])
+            count = configured.get("verification_count")
+            report["steps"].append({
+                "step": "verification_config",
+                "status": ("ok" if type(count) is int and count > 0
+                           else "failed"),
+                "count": count})
+            report["steps"].append(run_scenario(
+                serial, "i",
+                "i_results_show_completed_run_with_failed_verification",
+                stored_arguments, port))
         # Revoke on the Host, then the revoked device must be refused.
         if "e" in wanted:
             revoked = admin.call("revoke-device")

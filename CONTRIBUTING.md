@@ -89,7 +89,7 @@ python -m runvori.host --data-dir $data --codex $codex `
 
 ```powershell
 python scripts/runvori.py host-status --data-dir $data
-python scripts/runvori.py register-workspace --data-dir $data --workspace-id ws1 --root .dev/demo-repo --sandbox workspace-write
+python scripts/runvori.py register-workspace --data-dir $data --workspace-id ws1 --root .dev/demo-repo --sandbox workspace-write --verification-command "python=python --version"
 python scripts/runvori.py create-session --data-dir $data --workspace-id ws1 --session-id sess1 --create-thread --request-id thread-1
 python scripts/runvori.py pairing-info --data-dir $data
 python scripts/runvori.py revoke-device --data-dir $data   # 运行中撤销；Host 未运行则 mode=offline
@@ -112,9 +112,9 @@ $env:RUNVORI_REAL_CODEX_HOME = (Resolve-Path .dev/codex-home).Path
 python scripts/accept_https_host_real.py
 ```
 
-结果与限制见 [合成证据](docs/evidence/DEV-006-https-host.md) 与 [真实验收](docs/evidence/DEV-006-https-host-real.md)。命令/产物明细仍未实现；会话列表与 Android 联调已由 DEV-007 补齐。
+结果与限制见 [合成证据](docs/evidence/DEV-006-https-host.md) 与 [真实验收](docs/evidence/DEV-006-https-host-real.md)。命令明细与验证结果已由 DEV-008 接通，见 [DEV-008 证据](docs/evidence/DEV-008-results.md)；产物/差异仍未实现。必需验证命令由本地 `register-workspace --verification-command KEY=COMMAND` 声明，手机端不能修改；命令按精确文本与 cwd 匹配，Windows 包装目前保守判为 `unknown/not_run`。
 
-真实设备验收需要已启动的模拟器，以及已安装的 Debug APK 与 test APK。真实模式有独立场景集 `s/a/b/c/g/e`，使用 `ACCEPT_PROMPT` 与 `allow_once:python --version`；`d/f/h` 会以 `synthetic_only_scenario` 拒绝。先 dry-run 校验，再经显式授权执行 1 次模型回合；失败不自动重试：
+真实设备验收需要已启动的模拟器，以及已安装的 Debug APK 与 test APK。真实模式有独立场景集 `s/a/b/c/g/e`，使用 `ACCEPT_PROMPT` 与 `allow_once:python --version`；`d/f/h/i` 会以 `synthetic_only_scenario` 拒绝。先 dry-run 校验，再经显式授权执行 1 次模型回合；失败不自动重试：
 
 ```powershell
 $env:RUNVORI_REAL_HOST_TESTS = "1"

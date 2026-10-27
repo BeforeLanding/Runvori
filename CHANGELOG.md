@@ -2,6 +2,15 @@
 
 采用开发批次记录；正式发布前不把开发批次称为已发布版本。
 
+## Unreleased · DEV-008 命令详情与验证结果 · 2026-10-27
+
+- 事件库 v16：新增 `run_commands`、`run_verifications`，`workspaces` 增加 `verification_json`。命令完成事件在聚合输出写入后落库；命令证据保存 cwd、上游起止时间、退出码、输出字节/丢弃字节与 `pending/complete/truncated/empty` 状态。必需验证命令在回合创建时快照，之后修改工作区不改写旧回合。
+- 新增 `GET /v1/runs/{run_id}`、`/results` 与 `/commands`（命令 `item_id` 游标分页）。验证结果在读取时复用 `codex/verification.py` 的保守判定；`configured=false` 明确表示“未配置”，空配置不报通过，null 退出码不转 0，截断命令不匹配要求。
+- Android 新增“回合结果”页：回合状态与验证结论分卡显示，验证项显示退出码是否存在、输出完整度和证据时间，命令列表支持分页。结果页从产品自己的 HTTPS API 取数，没有测试专用捷径。
+- 合成设备验收新增 `i` 场景：`exit 7` 命令使回合 `completed`、验证 `failed`，结果页与命令列表同时显示退出码 7；`b` 同时断言验证 `passed`。完整十场景通过，`expected_model_turns=0`。
+- 离线覆盖未配置、`not_run`、退出码缺失、输出截断、命令分页，以及同一数据目录启动真实 `HostRuntime` 后结果仍可查询。381 项测试（378 通过、3 跳过）、Android JVM 19 项、16 份契约通过。见 [DEV-008 证据](docs/evidence/DEV-008-results.md)。
+- 未覆盖：产物/差异端点、`verification.updated` 事件、真实 Codex 命令包装的验证匹配、真机结果页与生命周期。合成编排的验证配置步骤曾把成功误标为 failed（[ERR-032](docs/ERRORS.md)，已修复）。
+
 ## Unreleased · DEV-007 Android 最小业务闭环 · 2026-10-27
 
 - Host 新增 `GET /v1/sessions`（`session_id` 不透明游标、稳定分页，含标题、工作区别名、会话版本、快照序号、活动/最近回合与待审批计数）与 `GET /v1/runs/{run_id}/approvals`（按状态过滤，最新请求在前，空回合返回空列表）。
@@ -11,7 +20,7 @@
 - 真实 Codex 设备验收（同日，1 次模型回合）：真实 APK → 固定指纹 HTTPS → 真实 `HostRuntime` → 真实 app-server，跑通 `s/a/b/c/g/e`。真实模式使用独立场景集与 `ACCEPT_PROMPT`，不依赖合成标记或合成文本；`expected_model_turns=1`、`observed_runs=1`，未重试。`d/f/h`、真实文件审批与真实中断/过期仍未覆盖。见 [真实设备验收](docs/evidence/DEV-007-device-acceptance-real.md)。
 - 删除 `DeviceRelay.kt`、`scripts/device_bridge.py`、`scripts/check_device_bridge.py` 及相关诊断脚本：实验证明模拟器 `10.0.2.2` 经自身 NAT 到达宿主机回环，**不需要** `adb reverse` 或防火墙放行。上一轮“需人工放行防火墙”的判断是错的，README/证据已更正。
 - 修复四个产品缺陷：审批页期间存活轮询停摆；决定提交后从不回查操作状态（缓存永远停在 `accepted`）；TLS 握手在 worker 线程交错导致客户端 EOF（[ERR-029](docs/ERRORS.md)）；拒绝原因被随后的同步逻辑抹掉、横幅关闭只清一半（[ERR-030](docs/ERRORS.md)）。
-- **DEV-007 状态：核心真实链路通过，剩余专项待验收。** 真实 Codex 设备验收仅覆盖 1 次核心闭环（见上条）；真实文件审批、真实中断/过期、命令/产物明细、旋转/杀进程/TalkBack/性能未覆盖。
+- **DEV-007 状态：核心真实链路通过，剩余专项待验收。** 真实 Codex 设备验收仅覆盖 1 次核心闭环（见上条）；真实文件审批、真实中断/过期、产物明细、旋转/杀进程/TalkBack/性能未覆盖（命令明细与结果页已由后续 DEV-008 补齐）。
 - 374 项测试运行（371 通过、3 项跳过）、Android JVM 单测 19 项通过、16 份契约通过。合成九场景见 [设备验收](docs/evidence/DEV-007-device-acceptance.md)，真实核心闭环见 [真实设备验收](docs/evidence/DEV-007-device-acceptance-real.md)。
 
 ## Unreleased · DEV-006 可通过 HTTPS 操作的最小 Host · 2026-10-27

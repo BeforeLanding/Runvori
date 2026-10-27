@@ -141,7 +141,8 @@ def record_item_event(journals: Any, message: dict, *,
         raise ItemEventError("invalid_item_notification")
     if item["type"] == "commandExecution":
         return _command_item(journals, thread_id, turn_id, item_id, item,
-                             started=started, recorded_at=recorded_at)
+                             started=started, params=params,
+                             recorded_at=recorded_at)
     return _message_item(journals, thread_id, turn_id, item_id, item,
                          started=started, recorded_at=recorded_at)
 
@@ -161,38 +162,59 @@ def _append(journals: Any, thread_id: str, turn_id: str, *, kind: str,
 
 
 def _command_item(journals: Any, thread_id: str, turn_id: str, item_id: str,
-                  item: dict, *, started: bool, recorded_at: str) -> dict:
+                  item: dict, *, started: bool, params: dict,
+                  recorded_at: str) -> dict:
+    started_at_ms = params.get("startedAtMs")
+    if type(started_at_ms) is not int or started_at_ms < 0:
+        started_at_ms = None
     if started:
         command, truncated = _bounded_text(item.get("command"),
                                            MAX_COMMAND_TEXT_BYTES)
         cwd = item.get("cwd") if isinstance(item.get("cwd"), str) else None
+        status = item.get("status")
         event = _append(journals, thread_id, turn_id, kind="command.started",
                         payload={"item_id": item_id, "command": command,
-                                 "command_truncated": truncated, "cwd": cwd},
+                                 "command_truncated": truncated, "cwd": cwd,
+                                 "status": status if isinstance(status, str)
+                                 else None,
+                                 "started_at_ms": started_at_ms},
                         text=None, recorded_at=recorded_at)
         return _recorded(event)
     exit_code = item.get("exitCode")
     duration = item.get("durationMs")
     status = item.get("status")
+    completed_at_ms = params.get("completedAtMs")
+    if type(completed_at_ms) is not int or completed_at_ms < 0:
+        completed_at_ms = None
+    command, truncated = _bounded_text(item.get("command"),
+                                       MAX_COMMAND_TEXT_BYTES)
+    cwd = item.get("cwd") if isinstance(item.get("cwd"), str) else None
     streamed = journals.events.item_has_text(
         thread_id=thread_id, turn_id=turn_id, item_id=item_id)
-    payload = {
-        "item_id": item_id,
-        "status": status if isinstance(status, str) else None,
-        "exit_code": exit_code if type(exit_code) is int else None,
-        "duration_ms": duration if type(duration) is int else None,
-        "output_omitted": not streamed,
-    }
-    event = _append(journals, thread_id, turn_id, kind="command.completed",
-                    payload=payload, text=None, recorded_at=recorded_at)
     output = item.get("aggregatedOutput")
     written = 0
+    # Write aggregated output before the completion event so the command
+    # evidence row can decide "complete/truncated/empty" in one transaction.
     if not streamed and isinstance(output, str) and output:
         for chunk in chunk_text(output):
             if _append(journals, thread_id, turn_id, kind="command.output",
                        payload={"item_id": item_id}, text=chunk,
                        recorded_at=recorded_at) is not None:
                 written += len(chunk.encode("utf-8"))
+    payload = {
+        "item_id": item_id,
+        "command": command,
+        "command_truncated": truncated,
+        "cwd": cwd,
+        "status": status if isinstance(status, str) else None,
+        "exit_code": exit_code if type(exit_code) is int else None,
+        "duration_ms": duration if type(duration) is int else None,
+        "started_at_ms": started_at_ms,
+        "completed_at_ms": completed_at_ms,
+        "output_omitted": not streamed and not isinstance(output, str),
+    }
+    event = _append(journals, thread_id, turn_id, kind="command.completed",
+                    payload=payload, text=None, recorded_at=recorded_at)
     return {**_recorded(event), "output_bytes": written}
 
 

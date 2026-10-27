@@ -44,6 +44,10 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import dev.runvori.app.data.ApprovalView
+import dev.runvori.app.data.RunCommand
+import dev.runvori.app.data.RunResults
+import dev.runvori.app.data.VerificationItem
+import dev.runvori.app.data.VerificationView
 import dev.runvori.app.domain.TimelineItem
 
 /**
@@ -81,6 +85,7 @@ fun RunvoriApp(state: AppState, actions: Actions) {
                 Screen.Sessions -> SessionsScreen(state, actions)
                 Screen.Timeline -> TimelineScreen(state, actions)
                 Screen.Approval -> ApprovalScreen(state, actions)
+                Screen.Results -> ResultsScreen(state, actions)
             }
         }
     }
@@ -267,6 +272,12 @@ private fun TimelineScreen(state: AppState, actions: Actions) {
             OutlinedButton(onClick = actions.loadEarlier,
                 modifier = Modifier.testTag(Tag.LOAD_EARLIER)) {
                 Text("加载更早")
+            }
+            if (state.activeRun != null || state.timeline.any { it.runId != null }) {
+                OutlinedButton(onClick = actions.openResults,
+                    modifier = Modifier.testTag(Tag.OPEN_RESULTS)) {
+                    Text("结果")
+                }
             }
             if (state.activeRun != null) {
                 Button(
@@ -540,6 +551,224 @@ private fun ApprovalBody(approval: ApprovalView) {
     }
 }
 
+@Composable
+private fun ResultsScreen(state: AppState, actions: Actions) {
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedButton(onClick = actions.closeResults,
+                modifier = Modifier.testTag(Tag.RESULTS_BACK)) { Text("返回") }
+            Spacer(Modifier.width(8.dp))
+            Text("回合结果", style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.weight(1f))
+            OutlinedButton(onClick = actions.refreshResults,
+                modifier = Modifier.testTag(Tag.REFRESH_RESULTS)) { Text("刷新") }
+        }
+        if (state.resultsLoading && state.results == null) {
+            Text("正在读取结果…", modifier = Modifier.testTag(Tag.LOADING))
+            return@Column
+        }
+        val results = state.results
+        if (results == null) {
+            Text("结果不可用，请刷新后重试。",
+                modifier = Modifier.testTag(Tag.RESULT_UNAVAILABLE),
+                color = MaterialTheme.colorScheme.error)
+            return@Column
+        }
+        RunStatusCard(results)
+        VerificationCard(results.verification)
+        Text("命令（${results.commandCount}）",
+            style = MaterialTheme.typography.titleSmall)
+        if (state.commands.isEmpty()) {
+            Text("没有命令记录。", style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.testTag(Tag.RESULT_COMMANDS_EMPTY))
+        } else {
+            state.commands.forEach { command ->
+                CommandResultCard(command)
+            }
+        }
+        if (state.commandsHasMore) {
+            OutlinedButton(
+                onClick = actions.loadMoreCommands,
+                enabled = !state.commandsLoading,
+                modifier = Modifier.fillMaxWidth()
+                    .testTag(Tag.LOAD_MORE_COMMANDS),
+            ) {
+                Text(if (state.commandsLoading) "正在加载…" else "加载更多命令")
+            }
+        }
+    }
+}
+
+@Composable
+private fun RunStatusCard(results: RunResults) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("回合状态", style = MaterialTheme.typography.labelMedium)
+            Text(runStatusText(results.status),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.testTag(Tag.RESULT_RUN_STATUS))
+            Text(if (results.terminal) "已结束" else "尚未结束",
+                style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier.testTag(Tag.RESULT_RUN_TERMINAL))
+            results.createdAt?.let {
+                Text("受理于 " + it, style = MaterialTheme.typography.labelSmall)
+            }
+            results.terminalAt?.let {
+                Text("结束于 " + it, style = MaterialTheme.typography.labelSmall)
+            }
+        }
+    }
+}
+
+@Composable
+private fun VerificationCard(verification: VerificationView) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("验证结论", style = MaterialTheme.typography.labelMedium)
+            Text(
+                if (!verification.configured) "未配置必需验证项"
+                else verificationSummaryText(verification.summary),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.testTag(Tag.RESULT_VERIFICATION_SUMMARY))
+            if (!verification.configured) {
+                Text("工作区没有声明必需验证项，这不是“全部通过”。",
+                    style = MaterialTheme.typography.bodySmall)
+            } else if (verification.items.isEmpty()) {
+                Text("已配置验证项，但结果中没有证据记录。",
+                    style = MaterialTheme.typography.bodySmall)
+            }
+            verification.items.forEach { item ->
+                VerificationItemRow(item)
+            }
+        }
+    }
+}
+
+@Composable
+private fun VerificationItemRow(item: VerificationItem) {
+    Column(
+        Modifier.fillMaxWidth().testTag(Tag.verificationItem(item.key)),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        HorizontalDivider()
+        Text(
+            item.key + " · " + verificationItemStatusText(item.status),
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.testTag(Tag.verificationStatus(item.key)),
+        )
+        item.command?.let {
+            SelectionContainer {
+                Text(it, fontFamily = FontFamily.Monospace,
+                    style = MaterialTheme.typography.bodySmall)
+            }
+        }
+        if (item.commandTruncated) {
+            Text("命令文本被截断，不能作为完整证据。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error)
+        }
+        Text(
+            exitCodeText(item.exitCode, item.exitCodePresent),
+            style = MaterialTheme.typography.labelSmall,
+            modifier = Modifier.testTag(Tag.verificationExit(item.key)),
+        )
+        Text(
+            outputStateText(item.outputState, item.outputDroppedBytes),
+            style = MaterialTheme.typography.labelSmall,
+            modifier = Modifier.testTag(Tag.verificationOutput(item.key)),
+        )
+        item.startedAt?.let {
+            Text("开始 " + it, style = MaterialTheme.typography.labelSmall)
+        }
+        item.completedAt?.let {
+            Text("结束 " + it, style = MaterialTheme.typography.labelSmall)
+        }
+        item.reason?.let {
+            Text("判定：" + verificationReasonText(it),
+                style = MaterialTheme.typography.labelSmall)
+        }
+    }
+}
+
+@Composable
+private fun CommandResultCard(command: RunCommand) {
+    Card(Modifier.fillMaxWidth().testTag(Tag.runCommand(command.itemId))) {
+        Column(Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            SelectionContainer {
+                Text(command.command ?: "（命令内容不可用）",
+                    fontFamily = FontFamily.Monospace,
+                    style = MaterialTheme.typography.bodySmall)
+            }
+            if (command.commandTruncated) {
+                Text("命令文本被截断。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error)
+            }
+            command.cwd?.let {
+                Text("cwd: " + it, fontFamily = FontFamily.Monospace,
+                    style = MaterialTheme.typography.labelSmall)
+            }
+            Text("状态：" + (command.status ?: "未知") +
+                " · " + exitCodeText(command.exitCode, command.exitCodePresent),
+                style = MaterialTheme.typography.labelSmall)
+            Text(outputStateText(command.outputState,
+                command.outputDroppedBytes),
+                style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier.testTag(Tag.commandOutput(command.itemId)))
+            command.startedAt?.let {
+                Text("开始 " + it, style = MaterialTheme.typography.labelSmall)
+            }
+            command.completedAt?.let {
+                Text("结束 " + it, style = MaterialTheme.typography.labelSmall)
+            }
+        }
+    }
+}
+
+private fun verificationSummaryText(status: String): String = when (status) {
+    "passed" -> "通过"
+    "failed" -> "失败"
+    "unknown" -> "证据不足，无法判定"
+    "not_run" -> "未运行"
+    "pending" -> "等待执行"
+    "running" -> "执行中"
+    else -> "未知状态：" + status
+}
+
+private fun verificationItemStatusText(status: String): String =
+    verificationSummaryText(status)
+
+private fun exitCodeText(exitCode: Int?, present: Boolean): String =
+    if (!present || exitCode == null) "退出码缺失"
+    else "退出码 " + exitCode
+
+private fun outputStateText(state: String, dropped: Long): String = when (state) {
+    "complete" -> "输出完整"
+    "truncated" -> "输出被截断（丢弃 " + dropped + " 字节）"
+    "empty" -> "无输出"
+    "pending" -> "等待输出"
+    else -> "输出状态未知"
+}
+
+private fun verificationReasonText(reason: String): String = when (reason) {
+    "exit_zero" -> "退出码为 0"
+    "nonzero_exit" -> "退出码非 0"
+    "command_failed" -> "命令项失败"
+    "missing_or_ambiguous_evidence" -> "缺少或无法唯一匹配证据"
+    "no_execution_evidence" -> "没有执行证据"
+    "executing" -> "正在执行"
+    "awaiting_execution" -> "等待执行"
+    else -> reason
+}
+
 private fun missingText(approval: ApprovalView): String =
     when {
         approval.detailsStatus != "complete" -> "详情不完整"
@@ -612,12 +841,33 @@ object Tag {
     const val INSUFFICIENT = "insufficient"
     const val ALLOW = "allow"
     const val DENY = "deny"
+    const val OPEN_RESULTS = "open_results"
+    const val RESULTS_BACK = "results_back"
+    const val REFRESH_RESULTS = "refresh_results"
+    const val RESULT_UNAVAILABLE = "result_unavailable"
+    const val RESULT_RUN_STATUS = "result_run_status"
+    const val RESULT_RUN_TERMINAL = "result_run_terminal"
+    const val RESULT_VERIFICATION_SUMMARY = "result_verification_summary"
+    const val RESULT_COMMANDS_EMPTY = "result_commands_empty"
+    const val LOAD_MORE_COMMANDS = "load_more_commands"
 
     fun sessionRow(sessionId: String) = "session_row_$sessionId"
 
     fun sessionStatus(sessionId: String) = "session_status_$sessionId"
 
     fun commandStatus(key: String) = "command_status_$key"
+
+    fun verificationItem(key: String) = "verification_item_$key"
+
+    fun verificationStatus(key: String) = "verification_status_$key"
+
+    fun verificationExit(key: String) = "verification_exit_$key"
+
+    fun verificationOutput(key: String) = "verification_output_$key"
+
+    fun runCommand(itemId: String) = "run_command_$itemId"
+
+    fun commandOutput(itemId: String) = "command_output_$itemId"
 }
 
 /** Actions the screens invoke; wired to the view model by the activity. */
@@ -637,5 +887,9 @@ class Actions(
     val interrupt: () -> Unit,
     val confirmInterrupt: () -> Unit,
     val cancelInterrupt: () -> Unit,
+    val openResults: () -> Unit,
+    val closeResults: () -> Unit,
+    val refreshResults: () -> Unit,
+    val loadMoreCommands: () -> Unit,
     val dismissError: () -> Unit,
 )

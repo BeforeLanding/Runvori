@@ -29,7 +29,9 @@
 - `GET /v1/sessions?cursor=...&limit=...`：会话摘要分页。（已实现，DEV-007）
 - `GET /v1/sessions/{session_id}/snapshot`：一致性快照。（已实现）
 - `GET /v1/sessions/{session_id}/runs?cursor=...&limit=...`：历史回合分页，最近优先。（未实现）
-- `GET /v1/runs/{run_id}`：单回合状态和验证摘要。（未实现）
+- `GET /v1/runs/{run_id}`：单回合状态和验证摘要。（已实现，DEV-008）
+- `GET /v1/runs/{run_id}/results`：完整验证项与证据引用。（已实现，DEV-008）
+- `GET /v1/runs/{run_id}/commands?cursor=...&limit=...`：命令明细分页。（已实现，DEV-008）
 
 手机无远端创建工作区/首会话接口；首会话由本地入口调用同一应用服务创建。以下为实际部署的最小接口；标注“未实现”的端点仍属计划。
 
@@ -110,6 +112,8 @@ Host 内部命令邮箱已实现决定入口和同一幂等键：返回 `accepte
 
 2026-10-27 DEV-007：`GET /v1/runs/{run_id}/approvals` 已实现，可按 `status` 过滤（取值限六种审批状态），**最新请求在前**，`next_cursor` 恒为 null（单回合审批数量有界，暂不分页，`cursor`/`limit` 参数被忽略）。不存在的 run 返回 404，没有审批的 run 返回空列表而不是伪造条目。Android 审批页依赖 `GET /v1/approvals/{approval_id}` 的 `command / cwd / changes[] / details_status / allowed_decisions / can_allow / can_deny`：`allow_once` 只在详情完整且未被截断时提供，`insufficient` 的审批 `allowed_decisions` 只含 `deny`。合成设备验收见 [DEV-007 证据](evidence/DEV-007-device-acceptance.md)，真实核心闭环见 [真实设备验收](evidence/DEV-007-device-acceptance-real.md)。
 
+2026-10-27 DEV-008：事件库 v16 新增 `run_commands`、`run_verifications`，工作区增加 `verification_json`。必需验证命令由受信本地 `register-workspace` 声明，并在回合创建时快照；之后修改工作区不会改写旧回合。结果在读取时用持久命令证据和审批决定重放现有验证器，不新增 `verification.updated` 事件。命令明细分页使用命令 `item_id` 作为不透明游标，按该命令的开始事件 seq 升序；不存在的游标返回 `400 invalid_cursor`。合成设备验收见 [DEV-008 证据](evidence/DEV-008-results.md)。
+
 ### 中断与后续输入
 
 - `POST /v1/runs/{run_id}/interrupt`：`request_id`、`expected_version`。
@@ -137,10 +141,52 @@ Host 内部命令邮箱已实现决定入口和同一幂等键：返回 `accepte
 
 ### 结果和产物
 
-- `GET /v1/runs/{run_id}/results`：回合状态、验证汇总、必需验证项和证据引用；命令明细分页读取。
-- `GET /v1/runs/{run_id}/commands?cursor=...&limit=...`：命令、cwd、状态、退出码、时间和输出产物。
-- `GET /v1/runs/{run_id}/artifacts?cursor=...&limit=...`：差异/输出清单，包含来源、大小、哈希、截断和可用性。
-- `GET /v1/artifacts/{artifact_id}/content?offset=0&limit=262144`：受控内容的字节块，返回 `application/octet-stream`，元数据响应头含总大小、当前偏移、下一偏移和内容哈希。禁止在 API 中传本地文件路径。
+- `GET /v1/runs/{run_id}/results`：回合状态、验证汇总、必需验证项和证据引用；命令明细分页读取。（已实现，DEV-008）
+- `GET /v1/runs/{run_id}/commands?cursor=...&limit=...`：命令、cwd、状态、退出码、时间和输出完整性。（已实现，DEV-008）
+- `GET /v1/runs/{run_id}/artifacts?cursor=...&limit=...`：差异/输出清单，包含来源、大小、哈希、截断和可用性。（未实现）
+- `GET /v1/artifacts/{artifact_id}/content?offset=0&limit=262144`：受控内容的字节块，返回 `application/octet-stream`，元数据响应头含总大小、当前偏移、下一偏移和内容哈希。禁止在 API 中传本地文件路径。（未实现）
+
+`/results` 返回：
+
+```json
+{
+  "run_id": "run_demo",
+  "session_id": "sess_demo",
+  "status": "completed",
+  "version": 12,
+  "terminal": true,
+  "created_at": "2026-10-27T04:00:01Z",
+  "terminal_at": "2026-10-27T04:00:30Z",
+  "command_count": 2,
+  "verification": {
+    "configured": true,
+    "summary": "failed",
+    "items": [{
+      "key": "tests",
+      "command": "pytest -q",
+      "cwd": "D:\\work\\demo",
+      "status": "failed",
+      "reason": "nonzero_exit",
+      "exit_code": 7,
+      "exit_code_present": true,
+      "evidence_item_id": "item_demo",
+      "started_at": "2026-10-27T04:00:10Z",
+      "completed_at": "2026-10-27T04:00:20Z",
+      "duration_ms": 10000,
+      "command_truncated": false,
+      "output_state": "complete",
+      "output_bytes": 128,
+      "output_dropped_bytes": 0,
+      "started_event_seq": 12,
+      "completed_event_seq": 14
+    }]
+  }
+}
+```
+
+`GET /v1/runs/{run_id}` 返回同一回合状态和验证汇总，但不返回完整 `items`；`/results` 才返回逐项证据。`verification.configured=false` 表示工作区没有声明必需项，此时 `summary=not_run`、`items=[]`，客户端不得渲染为通过。回合 `completed` 与验证 `failed` 可以同时成立，客户端必须分开显示。
+
+`/commands` 每项含 `item_id / command / command_truncated / cwd / status / exit_code / exit_code_present / started_at / completed_at / duration_ms / output_state / output_bytes / output_dropped_bytes / started_event_seq / completed_event_seq`。`output_state` 为 `pending / complete / truncated / empty / unknown`；`exit_code_present=false` 时 `exit_code` 必须为 null，不能当 0。游标是上一页最后一项的 `item_id`，按开始事件 seq 升序；`next_cursor=null` 表示结束。
 
 文本分块由客户端增量 UTF-8 解码，不能逐块破坏多字节字符；二进制仅显示元信息。偏移非法返回 `416 invalid_range`；被删除/丢失产物返回 `410 artifact_unavailable`，列表仍保留不可用记录，不伪装成空内容。
 
@@ -257,7 +303,7 @@ Host 恢复入口在持有单实例锁后，先按权威库中该 epoch 记录�
 
 运行中的 Host 可选启用命名管道 `\\.\pipe\runvori-host-<sha256(数据目录)[:16]>`，使用 `multiprocessing.connection` 的 `authkey` 校验，密钥保存在数据目录 `admin.key`（首次启动生成，32 字节）。请求为单条有界 JSON（≤4 KiB）：`{"command": ..., "arguments": {...}}`，命令在固定白名单内，全部经命令邮箱在 SQLite 所有者线程执行，管理线程不直接改库。响应 ≤32 KiB；失败只返回稳定 `code`。
 
-该通道不监听网络、不经过 TLS、无法从手机访问；它依赖当前 Windows 用户会话作为信任边界。`pairing-info` 返回 `https_url / host_id / host_name / spki_sha256 / pairing_secret / expires_at`，不返回已有令牌。`create-session` 可同时排队首个 `thread/start`（信号在同一次邮箱命令中入队，避免所有者线程自我等待）。
+该通道不监听网络、不经过 TLS、无法从手机访问；它依赖当前 Windows 用户会话作为信任边界。`pairing-info` 返回 `https_url / host_id / host_name / spki_sha256 / pairing_secret / expires_at`，不返回已有令牌。`create-session` 可同时排队首个 `thread/start`（信号在同一次邮箱命令中入队，避免所有者线程自我等待）。`register-workspace` 可带可选 `verification_commands`（`[{key, command}]`，最多 32 项）；它声明的是必需证据，不改变执行策略，且在回合创建时快照。
 
 受信任本地 `thread/start` 信号也使用有界队列，队列项仅含已登记会话 ID、本地操作者 ID 和请求 ID；入队不是持久受理。当前连接所有者消费时先从本地工作区登记读取并核对参数，再由原有一次创建适配器记录意图、领取发送权和核对绑定。重复已确认信号只返回绑定，未知创建不重发；响应丢失则隔离连接、恢复 epoch 并结束旧循环。队列满或进程退出前未消费的信号没有持久操作记录，调用方必须查询状态，不能宣称已开始创建。
 
@@ -275,13 +321,13 @@ Host 恢复入口在持有单实例锁后，先按权威库中该 epoch 记录�
 - `timeline.truncated`：单回合文本预算耗尽后的缺口标记。（已实现，DEV-007，见 5.1）
 - `approval.requested / approval.updated / operation.updated`。（已实现）
 - `file_change.updated / artifact.created / artifact.unavailable`。（未实现）
-- `verification.updated / diagnostic.recorded`。（未实现）
+- `verification.updated / diagnostic.recorded`。（未实现；DEV-008 的验证结果在读取时从 `run_commands` 与 `run_verifications` 计算，不追加该事件）
 
 所有增量事件均按 `(session_id, seq)` 去重。item 更新按同一事件流归并；客户端在应用事件并提交缓存事务后才推进连续游标。未知事件也记录已收到的 seq，并显示“此内容需升级客户端”，不能悄悄省略审批/终态后继续开放操作。发现未知控制语义时进入 incompatible 只读态。
 
 连接状态由客户端推导，不伪装成服务端执行事实。快照重新加载不能丢失阅读锚点；锚点引用的 item/seq 尚未加载时，先定位对应历史页，再恢复偏移。
 
-### 5.1 时间线投影与文本预算（事件库 v15）
+### 5.1 时间线投影、文本预算与命令证据（事件库 v15 / v16）
 
 时间线事件由上游 item 生命周期通知投影而来，**只从持久绑定定位回合**：投影层用 `(thread_id, turn_id)` 找到已绑定且活动的 run，调用方给出的标识不能把内容挂到别的回合。当前投影的消息与命令两类：
 
@@ -293,13 +339,15 @@ Host 恢复入口在持有单实例锁后，先按权威库中该 epoch 记录�
 
 单回合文本预算为 2 MiB（`MAX_RUN_TIMELINE_BYTES`），由 `run_timeline_budget` 表逐回合记录。预算耗尽后仍会写入后续事件的元数据，但不带正文：`payload.text_omitted=true` 与 `payload.dropped_bytes=<本次丢掉的字节数>`，并追加一条 `timeline.truncated`。缺口是一次性记录的，不会每条再写一个标记事件；客户端必须把“没有正文”显示为明确缺口，不能渲染成空输出。命令文本（`command.started`）另有 8 KiB 上限并置 `command_truncated`。
 
+事件库 v16 在同一事务里把命令 item 投影到 `run_commands`：命令原文、cwd、上游开始/完成毫秒时间、状态、退出码、持续时间、输出字节数、被丢弃字节数、输出状态和开始/完成事件 seq。命令完成事件在聚合输出写入之后落库，因此 `output_state` 在完成时即可确定。`run_verifications` 保存回合创建时快照的必需命令与 cwd；`workspaces.verification_json` 是受信本地入口的配置来源。旧回合不会按当前工作区配置回填，结果报“未配置”或缺失证据，而不是重算成通过。
+
 以下情况丢弃该条时间线事件并返回稳定原因，不关闭上游连接（回合终态仍是权威）：`upstream_turn_not_found`、`run_not_active`、`session_mismatch`、`timeline_chunk_too_large`、`invalid_timeline_event`。存储故障仍然向上抛出。
 
 ## 6. 验证汇总
 
 验证项状态：`pending / running / passed / failed / unknown / not_run`；汇总使用同一枚举。
 
-- 必需验证项为空时为 `not_run`，不使用空集“全部通过”。
+- 必需验证项为空时为 `not_run`，不使用空集“全部通过”。DEV-008 用 `verification.configured=false` 明确区分“未配置”和“已配置但未运行”。
 - 任一必需项有已确认非零退出码则汇总 failed。
 - 有必需项仍执行则 running；有待执行且回合未结束则 pending。
 - 回合结束后缺失证据/中断执行项为 unknown，明确未运行项为 not_run。
@@ -307,6 +355,8 @@ Host 恢复入口在持有单实例锁后，先按权威库中该 epoch 记录�
 - 多项混合时优先级 `failed > running > unknown > not_run > pending > passed`；上面的“回合结束”规则先归一化单项，再计算汇总。
 
 回合 completed 与验证 failed 可以同时成立，UI 必须显示两者。退出码 null 不能转为 0。命令列表包括非验证命令，不要求所有命令零退出才算必需验证通过。
+
+DEV-008 复用 `verification.py` 的保守判定，但产品匹配范围是**精确命令文本 + 解析后的 cwd**。命令文本被截断、缺失、同一 item 充当多个要求、重复开始/完成或时间倒置都不会算通过。Windows Codex 可能把命令包在 PowerShell 启动器里；本轮没有把包装规范化为等价命令，因此这类证据会保守地落到 `unknown`/`not_run`，而不是猜测通过。必需命令由受信本地 `register-workspace` 声明，手机端不能修改。结果读取时重放持久证据，不依赖内存中的验证器，因此 Host 重启后仍可查询。
 
 ## 7. 错误模型与重连
 

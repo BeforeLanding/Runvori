@@ -30,7 +30,7 @@ MAX_INPUT_BYTES = 16 * 1024
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 100
 MAX_WAIT_MS = 25000
-HOST_VERSION = "0.0.1"
+HOST_VERSION = "0.0.2"
 
 STATUS_BY_CODE = {
     "unauthorized": 401,
@@ -192,6 +192,14 @@ class ApiHandlers:
                 return self._events(method, token, session_id, query)
             if action == "runs":
                 return self._start_run(method, device_id, session_id, body)
+        if len(parts) == 3 and parts[0] == "v1" and parts[1] == "runs":
+            return self._run_detail(method, token, parts[2])
+        if len(parts) == 4 and parts[0] == "v1" and parts[1] == "runs" \
+                and parts[3] == "results":
+            return self._run_results(method, token, parts[2])
+        if len(parts) == 4 and parts[0] == "v1" and parts[1] == "runs" \
+                and parts[3] == "commands":
+            return self._run_commands(method, token, parts[2], query)
         if len(parts) == 4 and parts[0] == "v1" and parts[1] == "runs" \
                 and parts[3] == "interrupt":
             return self._interrupt(method, device_id, parts[2], body)
@@ -208,6 +216,42 @@ class ApiHandlers:
         raise ApiError("invalid_request", status=404)
 
     # -- endpoints -------------------------------------------------------
+    def _run_detail(self, method: str, token: bytes,
+                    run_id: str) -> tuple[int, dict, dict]:
+        if method != "GET":
+            raise ApiError("invalid_request", status=405)
+        view = _call(lambda: self.reads.run(
+            token=token, run_id=run_id))
+        view["server_time"] = self.now()
+        return 200, view, {}
+
+    def _run_results(self, method: str, token: bytes,
+                     run_id: str) -> tuple[int, dict, dict]:
+        if method != "GET":
+            raise ApiError("invalid_request", status=405)
+        view = _call(lambda: self.reads.run_results(
+            token=token, run_id=run_id))
+        view["server_time"] = self.now()
+        return 200, view, {}
+
+    def _run_commands(self, method: str, token: bytes, run_id: str,
+                      query: dict) -> tuple[int, dict, dict]:
+        if method != "GET":
+            raise ApiError("invalid_request", status=405)
+        limit = _query_int(query, "limit", DEFAULT_LIMIT)
+        if limit is None or not 1 <= limit <= MAX_LIMIT:
+            raise ApiError("invalid_cursor")
+        cursor_values = query.get("cursor")
+        cursor = None
+        if cursor_values is not None:
+            if len(cursor_values) != 1 or not cursor_values[0]:
+                raise ApiError("invalid_cursor")
+            cursor = cursor_values[0]
+        page = _call(lambda: self.reads.run_commands(
+            token=token, run_id=run_id, after_item_id=cursor, limit=limit))
+        page["server_time"] = self.now()
+        return 200, page, {}
+
     def _host(self, method: str) -> tuple[int, dict, dict]:
         if method != "GET":
             raise ApiError("invalid_request", status=405)

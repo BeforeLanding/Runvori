@@ -123,6 +123,44 @@ class DeviceReadGateway:
                 self._require_authorized(journal, token, signal)
             return result
 
+    def run(self, *, token: bytes, run_id: str,
+            cancelled: threading.Event | None = None) -> dict:
+        with self._tracked(cancelled) as signal, PairingJournal(
+                self._pairing_db) as journal:
+            self._require_authorized(journal, token, signal)
+            try:
+                result = self._mailbox.get_run(
+                    run_id=run_id, cancelled=signal)
+            finally:
+                self._require_authorized(journal, token, signal)
+            return result
+
+    def run_results(self, *, token: bytes, run_id: str,
+                    cancelled: threading.Event | None = None) -> dict:
+        with self._tracked(cancelled) as signal, PairingJournal(
+                self._pairing_db) as journal:
+            self._require_authorized(journal, token, signal)
+            try:
+                result = self._mailbox.get_run_results(
+                    run_id=run_id, cancelled=signal)
+            finally:
+                self._require_authorized(journal, token, signal)
+            return result
+
+    def run_commands(self, *, token: bytes, run_id: str,
+                     after_item_id: str | None = None, limit: int = 50,
+                     cancelled: threading.Event | None = None) -> dict:
+        with self._tracked(cancelled) as signal, PairingJournal(
+                self._pairing_db) as journal:
+            self._require_authorized(journal, token, signal)
+            try:
+                result = self._mailbox.list_run_commands(
+                    run_id=run_id, after_item_id=after_item_id, limit=limit,
+                    cancelled=signal)
+            finally:
+                self._require_authorized(journal, token, signal)
+            return result
+
     def events(self, *, token: bytes, session_id: str,
                after_seq: int | None = None,
                before_seq: int | None = None, limit: int = 50,

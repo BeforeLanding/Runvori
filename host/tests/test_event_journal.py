@@ -39,7 +39,7 @@ class EventJournalTests(unittest.TestCase):
         with EventJournal(self.path) as upgraded:
             identity = upgraded.get_host_id()
             self.assertEqual(upgraded.connection.execute(
-                "PRAGMA user_version").fetchone()[0], 15)
+                "PRAGMA user_version").fetchone()[0], 16)
             self.assertEqual(upgraded.snapshot("session")["status"], "starting")
             upgraded.connection.execute("DELETE FROM host_identity")
         with self.assertRaisesRegex(EventJournalError, "host_identity_invalid"):
@@ -67,7 +67,7 @@ class EventJournalTests(unittest.TestCase):
             db.commit()
         with EventJournal(self.path) as journal:
             self.assertEqual(journal.connection.execute(
-                "PRAGMA user_version").fetchone()[0], 15)
+                "PRAGMA user_version").fetchone()[0], 16)
 
     def test_v11_migration_adds_process_identity_without_backfill(self):
         with EventJournal(self.path) as journal:
@@ -76,7 +76,7 @@ class EventJournalTests(unittest.TestCase):
             journal.connection.execute("PRAGMA user_version=11")
         with EventJournal(self.path) as upgraded:
             self.assertEqual(upgraded.connection.execute(
-                "PRAGMA user_version").fetchone()[0], 15)
+                "PRAGMA user_version").fetchone()[0], 16)
             # Legacy epochs stay unrecorded instead of being marked isolated.
             self.assertEqual(upgraded.connection.execute(
                 "SELECT COUNT(*) FROM upstream_processes").fetchone()[0], 0)
@@ -101,7 +101,7 @@ class EventJournalTests(unittest.TestCase):
             journal.connection.execute("PRAGMA user_version=12")
         with EventJournal(self.path) as upgraded:
             self.assertEqual(upgraded.connection.execute(
-                "PRAGMA user_version").fetchone()[0], 15)
+                "PRAGMA user_version").fetchone()[0], 16)
             # EventJournal cannot see journal_meta; reconciliation is the
             # locked Host's job, so no state is guessed here.
             self.assertEqual(upgraded.connection.execute(
@@ -154,7 +154,7 @@ class EventJournalTests(unittest.TestCase):
             journal.connection.execute("PRAGMA user_version=6")
         with EventJournal(self.path) as reopened:
             self.assertEqual(reopened.connection.execute(
-                "PRAGMA user_version").fetchone()[0], 15)
+                "PRAGMA user_version").fetchone()[0], 16)
             with self.assertRaisesRegex(EventJournalError,
                                         "session_thread_not_bound"):
                 reopened.get_session_thread("session")
@@ -171,7 +171,7 @@ class EventJournalTests(unittest.TestCase):
             journal.connection.execute("PRAGMA user_version=7")
         with EventJournal(self.path) as reopened:
             self.assertEqual(reopened.connection.execute(
-                "PRAGMA user_version").fetchone()[0], 15)
+                "PRAGMA user_version").fetchone()[0], 16)
             self.assertEqual(reopened.get_session_thread("session"), "thread1")
             self.assertEqual(reopened.connection.execute(
                 "SELECT COUNT(*) FROM thread_starts").fetchone()[0], 0)
@@ -183,7 +183,7 @@ class EventJournalTests(unittest.TestCase):
             journal.connection.execute("PRAGMA user_version=8")
         with EventJournal(self.path) as reopened:
             self.assertEqual(reopened.connection.execute(
-                "PRAGMA user_version").fetchone()[0], 15)
+                "PRAGMA user_version").fetchone()[0], 16)
             self.assertEqual(reopened.connection.execute(
                 "SELECT COUNT(*) FROM session_workspaces").fetchone()[0], 0)
 
@@ -467,7 +467,7 @@ class EventJournalTests(unittest.TestCase):
         with EventJournal(legacy) as journal:
             self.assertEqual(journal.snapshot("old")["snapshot_seq"], 1)
             self.assertEqual(journal.page("old")["events"][0]["seq"], 1)
-            self.assertEqual(journal.connection.execute("PRAGMA user_version").fetchone()[0], 15)
+            self.assertEqual(journal.connection.execute("PRAGMA user_version").fetchone()[0], 16)
             journal.reserve_run("old", "run", expected_session_version=0,
                                 recorded_at="2026-10-25T00:00:00Z")
             self.assertEqual(journal.snapshot("old")["snapshot_seq"], 2)
@@ -555,7 +555,7 @@ class EventJournalTests(unittest.TestCase):
             journal.connection.execute("PRAGMA user_version=2")
         with EventJournal(legacy) as reopened:
             self.assertEqual(reopened.connection.execute(
-                "PRAGMA user_version").fetchone()[0], 15)
+                "PRAGMA user_version").fetchone()[0], 16)
             self.assertEqual(reopened.connection.execute(
                 "SELECT run_id FROM active_slot").fetchone()[0], "active")
             with self.assertRaisesRegex(EventJournalError, "active_run_exists"):
@@ -798,7 +798,7 @@ class EventJournalTests(unittest.TestCase):
             journal.connection.execute("PRAGMA user_version=3")
         with EventJournal(legacy) as reopened:
             self.assertEqual(reopened.connection.execute(
-                "PRAGMA user_version").fetchone()[0], 15)
+                "PRAGMA user_version").fetchone()[0], 16)
             self.assertEqual(reopened.get_run_operation("device1", "request1")["status"],
                              "accepted")
             self.assertIsNone(reopened.connection.execute(

@@ -28,6 +28,8 @@ item_ids: dict = {}
 turn_threads: dict = {}
 # What each pending approval should do when answered (acceptance scenarios).
 pending_scenarios: dict = {}
+# The command result each synthetic item should emit after approval.
+pending_command_results: dict = {}
 # A synthetic command approval names the workspace only when the launcher set
 # RUNVORI_FAKE_WORKSPACE. Without it the review is (correctly) unusable for
 # allow, so tests that approve must opt in explicitly.
@@ -123,23 +125,28 @@ for raw in sys.stdin:
                 "threadId": thread_id, "requestId": request["id"]}})
             # The approved command "ran": emit its output and result, then a
             # final agent message that streams as deltas before completing.
-            output = "python 3.12.10\n"
             answer_item = pending_items.pop(turn_id, "item_demo")
-            send({"method": "item/commandExecution/outputDelta", "params": {
-                "threadId": thread_id, "turnId": turn_id,
-                "itemId": answer_item, "delta": output[:5]}})
-            send({"method": "item/commandExecution/outputDelta", "params": {
-                "threadId": thread_id, "turnId": turn_id,
-                "itemId": answer_item, "delta": output[5:]}})
+            result = pending_command_results.pop(answer_item, {
+                "command": "python --version", "output": "python 3.12.10\n",
+                "exit_code": 0, "status": "completed"})
+            output = result["output"]
+            if output:
+                send({"method": "item/commandExecution/outputDelta", "params": {
+                    "threadId": thread_id, "turnId": turn_id,
+                    "itemId": answer_item, "delta": output[:5]}})
+                send({"method": "item/commandExecution/outputDelta", "params": {
+                    "threadId": thread_id, "turnId": turn_id,
+                    "itemId": answer_item, "delta": output[5:]}})
             send({"method": "item/completed", "params": {
                 "threadId": thread_id, "turnId": turn_id,
+                "completedAtMs": 1700000000120,
                 "item": {"type": "commandExecution",
                          "id": answer_item,
-                         "command": "python --version",
+                         "command": result["command"],
                          "cwd": workspace or "",
                          "commandActions": [],
-                         "status": "completed",
-                         "exitCode": 0, "durationMs": 12}}})
+                         "status": result["status"],
+                         "exitCode": result["exit_code"], "durationMs": 12}}})
             send({"method": "item/started", "params": {
                 "threadId": thread_id, "turnId": turn_id,
                 "item": {"type": "agentMessage", "id": "msg_demo",
@@ -320,12 +327,24 @@ for raw in sys.stdin:
         turn_id = f"turn_device_{index}"
         approval_id = f"approval_device_{index}"
         item_id = f"item_device_{index}"
+        failed = "[verify-fail]" in prompt
+        command = "exit 7" if failed else "python --version"
+        command_result = {
+            "command": command,
+            "output": "exit 7\n" if failed else "python 3.12.10\n",
+            "exit_code": 7 if failed else 0,
+            "status": "failed" if failed else "completed",
+        }
+        started_ms = 1700000000000 + index
+        command_review = {"command": command, "startedAtMs": started_ms}
+        pending_command_results[item_id] = command_result
         turn_threads[turn_id] = thread_id
         send({"id": request_id, "result": {"turn": {"id": turn_id}}})
         send({"method": "item/started", "params": {
             "threadId": thread_id, "turnId": turn_id,
+            "startedAtMs": started_ms,
             "item": {"type": "commandExecution", "id": item_id,
-                     "command": "python --version",
+                     "command": command,
                      "cwd": workspace or "",
                      "commandActions": [],
                      "status": "inProgress"}}})
@@ -336,7 +355,7 @@ for raw in sys.stdin:
                   "method": "item/commandExecution/requestApproval",
                   "params": approval_params(
                       turn_id=turn_id, item_id=item_id,
-                      thread_id=thread_id)})
+                      thread_id=thread_id, extra=command_review)})
             send({"method": "serverRequest/resolved", "params": {
                 "threadId": thread_id, "requestId": approval_id}})
             send({"method": "turn/completed", "params": {
@@ -352,7 +371,7 @@ for raw in sys.stdin:
                   "method": "item/commandExecution/requestApproval",
                   "params": approval_params(
                       turn_id=turn_id, item_id=item_id,
-                      thread_id=thread_id)})
+                      thread_id=thread_id, extra=command_review)})
             pending_approvals[approval_id] = turn_id
             pending_items[turn_id] = item_id
             send({"method": "serverRequest/resolved", "params": {
@@ -379,7 +398,7 @@ for raw in sys.stdin:
                   "method": "item/commandExecution/requestApproval",
                   "params": approval_params(
                       turn_id=turn_id, item_id=item_id,
-                      thread_id=thread_id)})
+                      thread_id=thread_id, extra=command_review)})
             pending_approvals[approval_id] = turn_id
             pending_items[turn_id] = item_id
             pending_scenarios[approval_id] = ("interrupt", "")
@@ -387,7 +406,8 @@ for raw in sys.stdin:
         send({"id": approval_id,
               "method": "item/commandExecution/requestApproval",
               "params": approval_params(
-                  turn_id=turn_id, item_id=item_id, thread_id=thread_id)})
+                  turn_id=turn_id, item_id=item_id, thread_id=thread_id,
+                  extra=command_review)})
         pending_approvals[approval_id] = turn_id
         pending_items[turn_id] = item_id
     elif mode == "host_api_device" and request["method"] == "turn/interrupt":

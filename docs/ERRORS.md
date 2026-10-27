@@ -2,6 +2,13 @@
 
 此处保存已发生的错误。规则唯一来源为 [AGENTS.md](../AGENTS.md)，进度见 [progress.md](../progress.md)。禁止粘贴未脱敏栈、个人目录、令牌或真实会话。
 
+## ERR-032：合成验收把成功的验证配置步骤误标为失败
+
+- 日期/阶段：2026-10-27，DEV-008 结果页合成验收。
+- 触发：`scripts/accept_device.py` 在运行 `i` 场景前更新工作区验证配置，管理入口实际返回 `verification_count=1`，但报告步骤写 `status: failed`，因为代码读取了响应中不存在的 `status` 字段。
+- 根因：把“管理命令成功”错误地绑定到响应形状；`register_workspace` 成功时返回的是工作区字段，不是统一的 `status: ok`。
+- 修复与回归：步骤状态改为按 `verification_count` 是否为正判断；重新运行合成十场景，`verification_config` 显示 `ok`、`i` 场景通过，整体 `status: passed`。见 [DEV-008 证据](evidence/DEV-008-results.md)。
+
 ## ERR-DEV-006：审批详情闸门导致既有测试夹具被拒
 
 - 日期/阶段：2026-10-27，DEV-006 审批详情与禁止盲批。

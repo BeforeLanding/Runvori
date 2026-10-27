@@ -165,6 +165,10 @@ class DeviceAcceptanceTest {
         interrupt = vm::interrupt,
         confirmInterrupt = vm::confirmInterrupt,
         cancelInterrupt = vm::cancelInterrupt,
+        openResults = vm::openResults,
+        closeResults = vm::closeResults,
+        refreshResults = vm::refreshResults,
+        loadMoreCommands = vm::loadMoreCommands,
         dismissError = vm::dismissError,
     )
 
@@ -231,6 +235,17 @@ class DeviceAcceptanceTest {
         }
         val failure = viewModel.state.value.error
         assertNull("the run was refused: " + failure, failure)
+    }
+
+    private fun openResults() {
+        viewModel.openResults()
+        waitFor("results", timeoutMs = 30_000) {
+            viewModel.state.value.screen.name == "Results" &&
+                !viewModel.state.value.resultsLoading &&
+                viewModel.state.value.results != null
+        }
+        compose.onNodeWithTag(Tag.RESULT_RUN_STATUS).assertIsDisplayed()
+        compose.onNodeWithTag(Tag.RESULT_VERIFICATION_SUMMARY).assertIsDisplayed()
     }
 
     private fun openFirstApproval(): TimelineItem.Approval {
@@ -423,6 +438,19 @@ class DeviceAcceptanceTest {
             viewModel.state.value.activeRun == null && viewModel.state.value.writable
         }
         compose.onNodeWithTag(Tag.SEND_RUN).assertIsDisplayed()
+        if (!realMode) {
+            openResults()
+            val results = viewModel.state.value.results!!
+            assertEquals("completed", results.status)
+            assertTrue(results.terminal)
+            assertTrue("the workspace verification is configured",
+                results.verification.configured)
+            assertEquals("passed", results.verification.summary)
+            viewModel.closeResults()
+            waitFor("timeline after results") {
+                viewModel.state.value.screen.name == "Timeline"
+            }
+        }
         viewModel.backToSessions()
         waitFor("sessions screen") {
             viewModel.state.value.screen.name == "Sessions" &&
@@ -518,6 +546,49 @@ class DeviceAcceptanceTest {
         }
         assertTrue("the Host must refuse a decision on an expired approval",
             refused.isFailure)
+    }
+
+    @Test
+    fun i_results_show_completed_run_with_failed_verification() {
+        startViewModel(resetCredential = false)
+        waitFor("connected") {
+            viewModel.state.value.screen.name == "Sessions" &&
+                viewModel.state.value.connection == "已连接"
+        }
+        openSession("devsess0")
+        startRun("please run the probe command [verify-fail]")
+        val approval = openFirstApproval()
+        assertTrue("the failing command must be the configured one",
+            approval.approvalId.isNotEmpty())
+        assertTrue("the review must name the failing command",
+            viewModel.state.value.approval!!.command!!.contains("exit 7"))
+        viewModel.decide("allow_once")
+        waitFor("run terminal", timeoutMs = terminalTimeoutMs) {
+            viewModel.state.value.activeRun == null
+        }
+        openResults()
+        val results = viewModel.state.value.results!!
+        assertEquals("the turn itself completed", "completed", results.status)
+        assertTrue(results.terminal)
+        assertTrue(results.verification.configured)
+        assertEquals("the required command failed", "failed",
+            results.verification.summary)
+        val item = results.verification.items.first { it.key == "failure" }
+        assertEquals("failed", item.status)
+        assertTrue(item.exitCodePresent)
+        assertEquals(7, item.exitCode)
+        assertEquals("complete", item.outputState)
+        assertTrue("the failing command must be listed",
+            viewModel.state.value.commands.any {
+                it.command?.contains("exit 7") == true &&
+                    it.exitCodePresent && it.exitCode == 7
+            })
+        compose.onNodeWithTag(Tag.RESULT_RUN_STATUS).assertIsDisplayed()
+        compose.onNodeWithTag(Tag.RESULT_VERIFICATION_SUMMARY).assertIsDisplayed()
+        compose.onNodeWithTag(Tag.verificationItem("failure")).assertIsDisplayed()
+        compose.onNodeWithTag(Tag.verificationExit("failure")).assertIsDisplayed()
+        compose.onNodeWithTag(Tag.verificationOutput("failure"))
+            .assertIsDisplayed()
     }
 
     @Test
