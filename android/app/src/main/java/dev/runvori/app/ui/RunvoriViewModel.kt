@@ -6,6 +6,7 @@ import dev.runvori.app.data.CachedSession
 import dev.runvori.app.data.ConnectionState
 import dev.runvori.app.data.HostSession
 import dev.runvori.app.data.OperationReceipt
+import dev.runvori.app.data.RunArtifact
 import dev.runvori.app.data.RunCommand
 import dev.runvori.app.data.RunResults
 import dev.runvori.app.data.SessionSync
@@ -39,6 +40,10 @@ class RunvoriViewModel(private val session: HostSession) {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var pollJob: Job? = null
+    private val artifactBuffer = java.io.ByteArrayOutputStream()
+    // Bumped whenever the artifact screen changes; a chunk that returns after
+    // the user moved on must not append itself to the next artifact.
+    private var artifactGeneration = 0
 
     private val _state = MutableStateFlow(AppState())
     val state: StateFlow<AppState> = _state.asStateFlow()
@@ -284,11 +289,16 @@ class RunvoriViewModel(private val session: HostSession) {
             _state.value = _state.value.copy(notice = "还没有可查看的回合结果")
             return
         }
+        artifactGeneration++
         _state.value = _state.value.copy(
             screen = Screen.Results, resultsRunId = runId, results = null,
             resultsLoading = true, commands = emptyList(), commandsCursor = null,
             commandsHasMore = false, commandsLoading = false,
-            error = null, notice = null)
+            artifacts = emptyList(), artifactsCursor = null,
+            artifactsHasMore = false, artifactsLoading = false,
+            artifact = null, artifactText = "", artifactNextOffset = null,
+            artifactError = null, error = null, notice = null)
+        artifactBuffer.reset()
         loadResults(runId)
     }
 
@@ -304,10 +314,14 @@ class RunvoriViewModel(private val session: HostSession) {
             try {
                 val result = session.api().runResults(runId)
                 val page = session.api().runCommands(runId)
+                val artifacts = session.api().runArtifacts(runId)
                 _state.value = _state.value.copy(
                     results = result, resultsLoading = false,
                     commands = page.items, commandsCursor = page.nextCursor,
-                    commandsHasMore = page.hasMore)
+                    commandsHasMore = page.hasMore,
+                    artifacts = artifacts.items,
+                    artifactsCursor = artifacts.nextCursor,
+                    artifactsHasMore = artifacts.hasMore)
             } catch (error: ProtocolError) {
                 _state.value = _state.value.copy(
                     resultsLoading = false, error = resultMessage(error.code))
@@ -342,25 +356,157 @@ class RunvoriViewModel(private val session: HostSession) {
         }
     }
 
+    fun loadMoreArtifacts() {
+        val runId = _state.value.resultsRunId ?: return
+        val cursor = _state.value.artifactsCursor ?: return
+        if (_state.value.artifactsLoading || !_state.value.artifactsHasMore) return
+        _state.value = _state.value.copy(artifactsLoading = true, error = null)
+        scope.launch {
+            try {
+                val page = session.api().runArtifacts(runId, cursor)
+                _state.value = _state.value.copy(
+                    artifacts = _state.value.artifacts + page.items,
+                    artifactsCursor = page.nextCursor,
+                    artifactsHasMore = page.hasMore,
+                    artifactsLoading = false)
+            } catch (error: ProtocolError) {
+                _state.value = _state.value.copy(
+                    artifactsLoading = false, error = resultMessage(error.code))
+            } catch (error: IOException) {
+                _state.value = _state.value.copy(
+                    artifactsLoading = false, error = "产物读取失败，请检查连接")
+            }
+        }
+    }
+
+    fun openArtifact(artifact: RunArtifact) {
+        val generation = ++artifactGeneration
+        artifactBuffer.reset()
+        val available = artifact.contentAvailable
+        val binary = artifact.representation == "binary"
+        _state.value = _state.value.copy(
+            screen = Screen.Artifact, artifact = artifact, artifactText = "",
+            artifactLoadedBytes = 0, artifactNextOffset = 0,
+            artifactLoading = false, artifactRepresentation = artifact.representation,
+            artifactTruncated = artifact.truncated,
+            artifactDroppedBytes = artifact.droppedBytes,
+            artifactError = when {
+                !available -> artifactUnavailableText(artifact)
+                binary -> "二进制内容仅显示元信息。"
+                else -> null
+            })
+        if (available && !binary && artifact.sizeBytes > 0) {
+            loadArtifactChunk(artifact.artifactId, 0, generation)
+        }
+    }
+
+    fun loadMoreArtifact() {
+        val artifact = _state.value.artifact ?: return
+        val next = _state.value.artifactNextOffset ?: return
+        if (_state.value.artifactLoading || next >= artifact.sizeBytes) return
+        if (!artifact.contentAvailable || artifact.representation == "binary") return
+        loadArtifactChunk(artifact.artifactId, next, artifactGeneration)
+    }
+
+    private fun loadArtifactChunk(artifactId: String, offset: Long,
+                                  generation: Int) {
+        _state.value = _state.value.copy(artifactLoading = true, artifactError = null)
+        scope.launch {
+            try {
+                val chunk = session.api().artifactContent(artifactId, offset)
+                if (!artifactRequestIsCurrent(generation)) return@launch
+                if (chunk.offset != offset || chunk.nextOffset <= offset) {
+                    throw ProtocolError("invalid_artifact_content", 200)
+                }
+                artifactBuffer.write(chunk.data)
+                val text = artifactBuffer.toByteArray().toString(Charsets.UTF_8)
+                _state.value = _state.value.copy(
+                    artifactText = text,
+                    artifactLoadedBytes = chunk.nextOffset,
+                    artifactNextOffset = chunk.nextOffset,
+                    artifactRepresentation = chunk.representation,
+                    artifactTruncated = chunk.truncated,
+                    artifactDroppedBytes = chunk.droppedBytes,
+                    artifactLoading = false)
+            } catch (error: ProtocolError) {
+                if (!artifactRequestIsCurrent(generation)) return@launch
+                _state.value = _state.value.copy(
+                    artifactLoading = false, artifactError = artifactMessage(error.code))
+            } catch (error: IOException) {
+                if (!artifactRequestIsCurrent(generation)) return@launch
+                _state.value = _state.value.copy(
+                    artifactLoading = false, artifactError = "产物内容读取失败，请检查连接")
+            }
+        }
+    }
+
+    private fun artifactRequestIsCurrent(generation: Int): Boolean =
+        generation == artifactGeneration && _state.value.screen == Screen.Artifact
+
+    fun closeArtifact() {
+        artifactGeneration++
+        _state.value = _state.value.copy(
+            screen = Screen.Results, artifact = null, artifactText = "",
+            artifactNextOffset = null, artifactError = null,
+            artifactLoading = false)
+        artifactBuffer.reset()
+    }
+
     fun closeResults() {
+        artifactGeneration++
         _state.value = _state.value.copy(
             screen = Screen.Timeline, results = null, resultsLoading = false,
             commands = emptyList(), commandsCursor = null,
-            commandsHasMore = false, commandsLoading = false)
+            commandsHasMore = false, commandsLoading = false,
+            artifacts = emptyList(), artifactsCursor = null,
+            artifactsHasMore = false, artifactsLoading = false,
+            artifact = null, artifactText = "", artifactNextOffset = null,
+            artifactError = null, artifactLoading = false)
+        artifactBuffer.reset()
         syncSelectedSession()
     }
 
     private fun resultMessage(code: String): String = when (code) {
         "run_not_found" -> "回合不存在或已被清理"
-        "invalid_cursor" -> "命令游标已失效，请刷新"
+        "invalid_cursor" -> "游标已失效，请刷新"
         "session_not_found" -> "会话不存在"
+        "artifact_not_found" -> "产物不存在或已被清理"
+        "artifact_unavailable" -> "产物内容不可用"
+        "invalid_artifact_id" -> "产物标识无效"
+        "invalid_range" -> "读取范围无效，请刷新"
         else -> "结果读取失败：" + code
     }
+
+    private fun artifactMessage(code: String): String = when (code) {
+        "artifact_not_found" -> "产物不存在或已被清理"
+        "artifact_unavailable" -> "产物内容不可用"
+        "invalid_artifact_id" -> "产物标识无效"
+        "invalid_range" -> "分块范围无效，请重新打开产物"
+        "request_cancelled" -> "读取已取消"
+        else -> "产物读取失败：" + code
+    }
+
+    private fun artifactUnavailableText(artifact: RunArtifact): String =
+        when (artifact.reason) {
+            "command_pending" -> "命令尚未结束，输出还不可用。"
+            "command_incomplete" -> "命令没有完成，输出不完整。"
+            "diff_unavailable" -> "差异内容不可用。"
+            "unsafe_path" -> "路径不安全或缺失，不能查看内容。"
+            "binary_metadata_only" -> "二进制内容仅显示元信息。"
+            "untracked_content_not_captured" -> "未跟踪文件只记录路径，未捕获内容。"
+            "not_a_git_worktree" -> "工作区不是 Git 仓库。"
+            "no_changes" -> "Git 工作区没有检测到改动。"
+            "entry_limit" -> "改动文件过多，只记录了部分条目。"
+            "artifact_size_limit" -> "内容超过产物上限。"
+            else -> "产物内容不可用。"
+        }
 
     // -- approvals -------------------------------------------------------
     fun openApproval(approvalId: String) {
         _state.value = _state.value.copy(
-            screen = Screen.Approval, approval = null, busy = true, error = null)
+            screen = Screen.Approval, approval = null, busy = true, error = null,
+            decisionInFlight = null, pendingDecision = null,
+            decisionNotice = null, decisionUnresolved = false)
         scope.launch {
             try {
                 val view = session.api().approval(approvalId)
@@ -408,7 +554,6 @@ class RunvoriViewModel(private val session: HostSession) {
                     approval.approvalId, requestId, approval.version, decision)
                 _state.value = _state.value.copy(
                     decisionNotice = decisionNotice(receipt),
-                    decisionInFlight = null,
                     lastDecision = LastDecision(
                         requestId = requestId, decision = decision,
                         recordedAt = System.currentTimeMillis()))
@@ -484,7 +629,12 @@ class RunvoriViewModel(private val session: HostSession) {
                 "resolved", "expired", "unknown")
             _state.value = _state.value.copy(
                 approval = refreshed,
-                decisionInFlight = null,
+                // A receipt is not an outcome. Keep the buttons disabled until
+                // the approval leaves pending or the operation is terminal;
+                // otherwise a fast receipt re-enables them before the next
+                // sync shows the recorded decision.
+                decisionInFlight = if (refreshed.status != "pending")
+                    null else _state.value.decisionInFlight,
                 decisionNotice = when {
                     receipt?.status == "unknown" || refreshed.status == "unknown" ->
                         "结果待确认：可稍后查询此操作"
@@ -740,7 +890,7 @@ class RunvoriViewModel(private val session: HostSession) {
     }
 }
 
-enum class Screen { Pairing, Sessions, Timeline, Approval, Results }
+enum class Screen { Pairing, Sessions, Timeline, Approval, Results, Artifact }
 
 data class ActiveRunView(val runId: String, val status: String, val version: Long)
 
@@ -780,6 +930,19 @@ data class AppState(
     val commandsCursor: String? = null,
     val commandsHasMore: Boolean = false,
     val commandsLoading: Boolean = false,
+    val artifacts: List<RunArtifact> = emptyList(),
+    val artifactsCursor: String? = null,
+    val artifactsHasMore: Boolean = false,
+    val artifactsLoading: Boolean = false,
+    val artifact: RunArtifact? = null,
+    val artifactText: String = "",
+    val artifactLoadedBytes: Long = 0,
+    val artifactNextOffset: Long? = null,
+    val artifactLoading: Boolean = false,
+    val artifactRepresentation: String = "unknown",
+    val artifactTruncated: Boolean = false,
+    val artifactDroppedBytes: Long = 0,
+    val artifactError: String? = null,
     val continuousSeq: Long = 0,
     val latestSeq: Long = 0,
     val syncGap: Boolean = false,

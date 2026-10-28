@@ -44,6 +44,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import dev.runvori.app.data.ApprovalView
+import dev.runvori.app.data.RunArtifact
 import dev.runvori.app.data.RunCommand
 import dev.runvori.app.data.RunResults
 import dev.runvori.app.data.VerificationItem
@@ -86,6 +87,7 @@ fun RunvoriApp(state: AppState, actions: Actions) {
                 Screen.Timeline -> TimelineScreen(state, actions)
                 Screen.Approval -> ApprovalScreen(state, actions)
                 Screen.Results -> ResultsScreen(state, actions)
+                Screen.Artifact -> ArtifactScreen(state, actions)
             }
         }
     }
@@ -599,6 +601,175 @@ private fun ResultsScreen(state: AppState, actions: Actions) {
                 Text(if (state.commandsLoading) "正在加载…" else "加载更多命令")
             }
         }
+        Text("产物（${results.artifactCount}）",
+            style = MaterialTheme.typography.titleSmall)
+        if (state.artifacts.isEmpty()) {
+            Text("没有产物记录。", style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.testTag(Tag.RESULT_ARTIFACTS_EMPTY))
+        } else {
+            state.artifacts.forEach { artifact ->
+                ArtifactCard(artifact, actions)
+            }
+        }
+        if (state.artifactsHasMore) {
+            OutlinedButton(
+                onClick = actions.loadMoreArtifacts,
+                enabled = !state.artifactsLoading,
+                modifier = Modifier.fillMaxWidth()
+                    .testTag(Tag.LOAD_MORE_ARTIFACTS),
+            ) {
+                Text(if (state.artifactsLoading) "正在加载…" else "加载更多产物")
+            }
+        }
+    }
+}
+
+@Composable
+private fun ArtifactCard(artifact: RunArtifact, actions: Actions) {
+    Card(Modifier.fillMaxWidth().testTag(Tag.artifactItem(artifact.artifactId))) {
+        Column(Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(artifactKindText(artifact.kind) + " · " +
+                artifactSourceText(artifact.source),
+                fontWeight = FontWeight.SemiBold)
+            artifact.path?.let {
+                SelectionContainer {
+                    Text(it, fontFamily = FontFamily.Monospace,
+                        style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            artifact.movePath?.let {
+                Text("移动到 " + it, fontFamily = FontFamily.Monospace,
+                    style = MaterialTheme.typography.labelSmall)
+            }
+            artifact.operation?.let {
+                Text("操作：" + artifactOperationText(it),
+                    style = MaterialTheme.typography.labelSmall)
+            }
+            Text(artifactMetaText(artifact),
+                style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier.testTag(Tag.artifactMetadata(artifact.artifactId)))
+            if (artifact.source == "git_worktree_snapshot") {
+                Text("来源为当前 Git 工作区快照，可能包含回合前已有改动；归因未知。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error)
+            }
+            artifact.reason?.let {
+                Text("状态：" + artifactReasonText(it),
+                    style = MaterialTheme.typography.labelSmall)
+            }
+            if (artifact.contentAvailable) {
+                OutlinedButton(
+                    onClick = { actions.openArtifact(artifact) },
+                    modifier = Modifier.testTag(Tag.artifactOpen(artifact.artifactId)),
+                ) {
+                    Text(if (artifact.kind == "command_output") "查看输出"
+                    else "查看差异")
+                }
+            } else {
+                Text("内容不可用" +
+                    (artifact.reason?.let { "：" + artifactReasonText(it) } ?: "。"),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.testTag(Tag.artifactUnavailable(
+                        artifact.artifactId)))
+            }
+        }
+    }
+}
+
+@Composable
+private fun ArtifactScreen(state: AppState, actions: Actions) {
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedButton(onClick = actions.closeArtifact,
+                modifier = Modifier.testTag(Tag.ARTIFACT_BACK)) { Text("返回结果") }
+            Spacer(Modifier.width(8.dp))
+            Text("产物详情", style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.weight(1f))
+        }
+        val artifact = state.artifact
+        if (artifact == null) {
+            Text("产物不可用。", modifier = Modifier.testTag(Tag.ARTIFACT_UNAVAILABLE),
+                color = MaterialTheme.colorScheme.error)
+            return@Column
+        }
+        Card(Modifier.fillMaxWidth().testTag(Tag.ARTIFACT_METADATA)) {
+            Column(Modifier.padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(artifactKindText(artifact.kind) + " · " +
+                    artifactSourceText(artifact.source),
+                    fontWeight = FontWeight.SemiBold)
+                artifact.path?.let {
+                    SelectionContainer {
+                        Text(it, fontFamily = FontFamily.Monospace,
+                            style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+                artifact.operation?.let {
+                    Text("操作：" + artifactOperationText(it),
+                        style = MaterialTheme.typography.labelSmall)
+                }
+                Text("归因：" + artifactAttributionText(artifact.attribution),
+                    style = MaterialTheme.typography.labelSmall)
+                Text("大小：" + artifact.sizeBytes + " 字节" +
+                    " · 哈希：" + (artifact.sha256 ?: "不可用"),
+                    style = MaterialTheme.typography.labelSmall)
+                if (artifact.truncated) {
+                    Text("内容被截断" +
+                        (if (artifact.droppedBytes > 0)
+                            "（丢弃 ${artifact.droppedBytes} 字节）" else ""),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.testTag(Tag.ARTIFACT_TRUNCATED))
+                }
+            }
+        }
+        val error = state.artifactError
+        if (error != null) {
+            Text(error, color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.testTag(Tag.ARTIFACT_UNAVAILABLE))
+        }
+        if (!artifact.contentAvailable) {
+            if (error == null) {
+                Text("内容不可用。", color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.testTag(Tag.ARTIFACT_UNAVAILABLE))
+            }
+            return@Column
+        }
+        if (artifact.representation == "binary") {
+            Text("二进制内容仅显示元信息。",
+                modifier = Modifier.testTag(Tag.ARTIFACT_BINARY))
+            return@Column
+        }
+        Text("内容（${state.artifactLoadedBytes} / ${artifact.sizeBytes} 字节）",
+            style = MaterialTheme.typography.titleSmall)
+        if (artifact.sizeBytes == 0L) {
+            Text("无内容。", modifier = Modifier.testTag(Tag.ARTIFACT_EMPTY))
+        } else {
+            SelectionContainer {
+                Text(state.artifactText, fontFamily = FontFamily.Monospace,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.testTag(Tag.ARTIFACT_CONTENT))
+            }
+        }
+        if (state.artifactLoading) {
+            Text("正在读取…", modifier = Modifier.testTag(Tag.LOADING))
+        }
+        val next = state.artifactNextOffset
+        if (next != null && next < artifact.sizeBytes) {
+            OutlinedButton(
+                onClick = actions.loadMoreArtifact,
+                enabled = !state.artifactLoading,
+                modifier = Modifier.fillMaxWidth()
+                    .testTag(Tag.LOAD_MORE_ARTIFACT_CONTENT),
+            ) {
+                Text(if (state.artifactLoading) "正在加载…" else "加载更多内容")
+            }
+        }
     }
 }
 
@@ -758,6 +929,65 @@ private fun outputStateText(state: String, dropped: Long): String = when (state)
     else -> "输出状态未知"
 }
 
+private fun artifactKindText(kind: String): String = when (kind) {
+    "command_output" -> "命令输出"
+    "file_diff" -> "文件差异"
+    else -> "产物：" + kind
+}
+
+private fun artifactSourceText(source: String): String = when (source) {
+    "command_execution" -> "命令执行"
+    "approval_proposal" -> "审批提案"
+    "upstream_report" -> "上游报告"
+    "git_worktree_snapshot" -> "Git 工作区快照"
+    else -> "来源：" + source
+}
+
+private fun artifactOperationText(operation: String): String = when (operation) {
+    "add" -> "新增"
+    "delete" -> "删除"
+    "update" -> "修改"
+    "move" -> "移动"
+    "copy" -> "复制"
+    "type_change" -> "类型变化"
+    else -> operation
+}
+
+private fun artifactAttributionText(attribution: String): String = when (attribution) {
+    "proposed" -> "审批提案，尚未归因于执行结果"
+    "reported" -> "上游执行项报告"
+    "unknown" -> "未知，可能包含回合前已有改动"
+    "not_applicable" -> "不适用"
+    else -> attribution
+}
+
+private fun artifactReasonText(reason: String): String = when (reason) {
+    "command_pending" -> "命令尚未结束"
+    "command_incomplete" -> "命令没有完成"
+    "output_complete" -> "输出完整"
+    "output_truncated" -> "输出被预算截断"
+    "output_empty" -> "命令没有输出"
+    "diff_unavailable" -> "差异内容不可用"
+    "diff_truncated" -> "差异被截断"
+    "unsafe_path" -> "路径不安全或缺失"
+    "binary_metadata_only" -> "二进制仅保留元信息"
+    "untracked_content_not_captured" -> "未跟踪文件未捕获内容"
+    "not_a_git_worktree" -> "不是 Git 工作区"
+    "no_changes" -> "没有检测到改动"
+    "entry_limit" -> "改动条目超过上限"
+    "artifact_size_limit" -> "内容超过产物上限"
+    else -> reason
+}
+
+private fun artifactMetaText(artifact: RunArtifact): String =
+    buildString {
+        append(artifact.sizeBytes).append(" 字节")
+        if (artifact.truncated) append(" · 已截断")
+        if (artifact.droppedBytes > 0) append(" · 丢弃 ").append(artifact.droppedBytes)
+        if (artifact.representation == "binary") append(" · 二进制")
+        if (!artifact.contentAvailable) append(" · 内容不可用")
+    }
+
 private fun verificationReasonText(reason: String): String = when (reason) {
     "exit_zero" -> "退出码为 0"
     "nonzero_exit" -> "退出码非 0"
@@ -850,6 +1080,16 @@ object Tag {
     const val RESULT_VERIFICATION_SUMMARY = "result_verification_summary"
     const val RESULT_COMMANDS_EMPTY = "result_commands_empty"
     const val LOAD_MORE_COMMANDS = "load_more_commands"
+    const val RESULT_ARTIFACTS_EMPTY = "result_artifacts_empty"
+    const val LOAD_MORE_ARTIFACTS = "load_more_artifacts"
+    const val ARTIFACT_BACK = "artifact_back"
+    const val ARTIFACT_METADATA = "artifact_metadata"
+    const val ARTIFACT_CONTENT = "artifact_content"
+    const val ARTIFACT_EMPTY = "artifact_empty"
+    const val ARTIFACT_BINARY = "artifact_binary"
+    const val ARTIFACT_UNAVAILABLE = "artifact_unavailable"
+    const val ARTIFACT_TRUNCATED = "artifact_truncated"
+    const val LOAD_MORE_ARTIFACT_CONTENT = "load_more_artifact_content"
 
     fun sessionRow(sessionId: String) = "session_row_$sessionId"
 
@@ -868,6 +1108,14 @@ object Tag {
     fun runCommand(itemId: String) = "run_command_$itemId"
 
     fun commandOutput(itemId: String) = "command_output_$itemId"
+
+    fun artifactItem(artifactId: String) = "artifact_item_$artifactId"
+
+    fun artifactMetadata(artifactId: String) = "artifact_metadata_$artifactId"
+
+    fun artifactOpen(artifactId: String) = "artifact_open_$artifactId"
+
+    fun artifactUnavailable(artifactId: String) = "artifact_unavailable_$artifactId"
 }
 
 /** Actions the screens invoke; wired to the view model by the activity. */
@@ -891,5 +1139,9 @@ class Actions(
     val closeResults: () -> Unit,
     val refreshResults: () -> Unit,
     val loadMoreCommands: () -> Unit,
+    val loadMoreArtifacts: () -> Unit,
+    val openArtifact: (RunArtifact) -> Unit,
+    val closeArtifact: () -> Unit,
+    val loadMoreArtifact: () -> Unit,
     val dismissError: () -> Unit,
 )

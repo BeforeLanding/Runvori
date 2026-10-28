@@ -42,7 +42,7 @@ FAKE = ROOT / "host/tests/fake_app_server.py"
 RUNNER = "dev.runvori.app.test/androidx.test.runner.AndroidJUnitRunner"
 EXPECTED_REAL_VERSION = "codex-cli 0.164.0-alpha.11.1"
 REAL_SCENARIOS = ("s", "a", "b", "c", "g", "e")
-SYNTHETIC_ONLY = frozenset({"d", "f", "h", "i"})
+SYNTHETIC_ONLY = frozenset({"d", "f", "h", "i", "j", "k"})
 
 
 class OrchestrationFailure(RuntimeError):
@@ -324,7 +324,7 @@ def main() -> int:
     if os.name != "nt":
         print(json.dumps({"status": "skipped", "code": "windows_required"}))
         return 0
-    all_letters = ("s", "a", "b", "c", "d", "f", "h", "g", "i", "e")
+    all_letters = ("s", "a", "b", "c", "d", "f", "h", "g", "i", "j", "k", "e")
     wanted = {item.strip() for item in args.only.split(",") if item.strip()}
     if args.real:
         forbidden = wanted & SYNTHETIC_ONLY
@@ -487,6 +487,8 @@ def main() -> int:
                 ("d", "d_expired_approval_cannot_be_allowed"),
                 ("f", "f_insufficient_review_offers_only_deny"),
                 ("h", "h_interrupt_ends_the_active_run"),
+                ("j", "j_file_approval_complete_allows_and_shows_artifacts"),
+                ("k", "k_file_approval_denied_keeps_proposal_visible"),
                 ("g", "g_duplicate_operation_query_is_stable")):
             if letter not in wanted:
                 continue

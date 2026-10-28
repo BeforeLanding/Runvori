@@ -71,7 +71,7 @@ ANDROID_HOME=<Android SDK> python scripts/accept_device.py \
 
 ## 未完成与限制
 
-- **产物/差异仍未实现**：`/artifacts`、产物字节端点、文件改动时间线不在本切片。
+- **第一切片时产物/差异未实现**：`/artifacts` 与产物字节端点已由 [第二切片](DEV-008-artifacts.md) 补齐；文件改动时间线事件仍未实现。
 - **验证配置只有本地入口**：没有手机端或远端修改必需命令的接口；这是有意的信任边界。
 - **未发 `verification.updated` 事件**：结果在读取时按持久命令证据计算；时间线仍只显示命令与回合事件。
 - **未跑真实 Codex**：本轮只验证合成上游与真实 APK；真实 Windows 命令包装、真实退出码与真实验证配置需要另一次显式授权。
@@ -84,4 +84,5 @@ ANDROID_HOME=<Android SDK> python scripts/accept_device.py \
 - [架构](../ARCHITECTURE.md)
 - [测试计划](../TEST_PLAN.md)
 - [DEV-007 真实设备验收](DEV-007-device-acceptance-real.md)
+- [DEV-008 第二切片：受控产物与差异](DEV-008-artifacts.md)
 - [ERR-032](../ERRORS.md)：合成验收把成功的验证配置步骤误标为失败（已修复）

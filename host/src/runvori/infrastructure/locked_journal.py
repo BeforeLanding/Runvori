@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from runvori.codex import approval_details
+from runvori.infrastructure import artifact_store
 from runvori.infrastructure.approval_journal import ApprovalJournal
 from runvori.infrastructure.event_journal import (
     MAX_EVENT_BYTES, MAX_SEQ, MAX_THREAD_ID_BYTES,
@@ -706,7 +707,7 @@ class LockedHostJournals:
             if row["status"] not in {"running", "waiting_approval"}:
                 raise EventJournalError("run_not_approvable")
             binding = db.execute(
-                "SELECT process_epoch FROM upstream_turns WHERE run_id=?",
+                "SELECT process_epoch, thread_id FROM upstream_turns WHERE run_id=?",
                 (run_id,)).fetchone()
             if binding is None or binding["process_epoch"] != epoch:
                 raise EventJournalError("stale_epoch")
@@ -740,6 +741,20 @@ class LockedHostJournals:
                 # but no allow can be offered.
                 review = approval_details.redacted(
                     f"{kind}_details_unrecorded", recorded_at)
+            if kind == "file_change":
+                item_id = review.get("item_id")
+                if isinstance(item_id, str) and turn_id:
+                    item_row = db.execute(
+                        "SELECT details_json FROM approval_items "
+                        "WHERE thread_id=? AND turn_id=? AND item_id=?",
+                        (binding["thread_id"], turn_id, item_id)).fetchone()
+                    if item_row is not None:
+                        try:
+                            summary = json.loads(item_row["details_json"])
+                        except (TypeError, ValueError):
+                            summary = None
+                        if isinstance(summary, dict):
+                            review = approval_details.merge_item(review, summary)
             db.execute(
                 "INSERT INTO approvals(approval_id, epoch, upstream_request_id, "
                 "kind, status, version, run_id, request_digest, turn_id, item_id, "
@@ -750,6 +765,13 @@ class LockedHostJournals:
                  review.get("upstream_approval_id"), review.get("requested_at"),
                  approval_details.encode(review),
                  review.get("details_status")))
+            if kind == "file_change":
+                self._sync_file_artifacts_in_tx(
+                    run_id=run_id, source="approval_proposal",
+                    approval_id=approval_id, item_id=review.get("item_id"),
+                    changes=review.get("changes", []),
+                    source_status="proposed", attribution="proposed",
+                    recorded_at=recorded_at)
             event = self.events._append_in_tx(
                 session_id, run_id, "approval.requested",
                 {"approval_id": approval_id, "approval_version": 1,
@@ -1690,6 +1712,18 @@ class LockedHostJournals:
                 "ON CONFLICT(thread_id, turn_id, item_id) DO UPDATE SET "
                 "details_json=excluded.details_json, updated_at=excluded.updated_at",
                 (thread_id, turn_id, item_id, summary_json, recorded_at))
+            item_binding = db.execute(
+                "SELECT run_id FROM upstream_turns WHERE thread_id=? AND turn_id=?",
+                (thread_id, turn_id)).fetchone()
+            if item_binding is not None:
+                self._sync_file_artifacts_in_tx(
+                    run_id=item_binding["run_id"], source="upstream_report",
+                    approval_id=None, item_id=item_id,
+                    changes=summary.get("changes", []),
+                    source_status=(summary.get("status")
+                                   if isinstance(summary.get("status"), str)
+                                   else None),
+                    attribution="reported", recorded_at=recorded_at)
             row = db.execute(
                 "SELECT a.approval_id, a.status, a.version, a.run_id, a.item_id, "
                 "a.details_json, r.session_id, s.session_version, s.snapshot_json "
@@ -1722,6 +1756,11 @@ class LockedHostJournals:
                 "version=version+1 WHERE approval_id=? AND status='pending'",
                 (approval_details.encode(merged), merged.get("details_status"),
                  row["approval_id"]))
+            self._sync_file_artifacts_in_tx(
+                run_id=row["run_id"], source="approval_proposal",
+                approval_id=row["approval_id"], item_id=item_id,
+                changes=merged.get("changes", []), source_status="proposed",
+                attribution="proposed", recorded_at=recorded_at)
             snapshot = json.loads(row["snapshot_json"])
             encoded = _json_bytes(snapshot)
             if len(encoded) > MAX_EVENT_BYTES:
@@ -1739,6 +1778,19 @@ class LockedHostJournals:
         except BaseException:
             db.execute("ROLLBACK")
             raise
+
+    def _sync_file_artifacts_in_tx(
+            self, *, run_id: str, source: str, approval_id: str | None,
+            item_id: str | None, changes, source_status: str | None,
+            attribution: str, recorded_at: str) -> None:
+        try:
+            artifact_store.sync_file_changes(
+                self.events.connection, run_id=run_id, source=source,
+                approval_id=approval_id, item_id=item_id, changes=changes,
+                source_status=source_status, attribution=attribution,
+                created_at=recorded_at, updated_at=recorded_at)
+        except artifact_store.ArtifactError as error:
+            raise EventJournalError("artifact_store_failed") from error
 
     def list_run_approvals(self, run_id: str, *, status: str | None = None
                            ) -> dict:

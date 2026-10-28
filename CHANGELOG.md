@@ -2,6 +2,17 @@
 
 采用开发批次记录；正式发布前不把开发批次称为已发布版本。
 
+## Unreleased · DEV-008 受控产物与差异 · 2026-10-27
+
+- 事件库 v17：新增 `run_artifacts` 与 `artifact_chunks`。命令输出在时间线同一事务内复制已持久化字节；时间线预算丢弃的字节只记 `dropped_bytes`，不从未保存内容补回。文件差异同时保存审批提案与上游报告完成两个来源，首次读取时另做 Git 工作区快照并固定 `attribution=unknown`。
+- 新增 `GET /v1/runs/{run_id}/artifacts` 与 `GET /v1/artifacts/{artifact_id}/content?offset=...&limit=...`。内容端点返回 `application/octet-stream` 和 `X-Artifact-*` 元数据头；客户端只提交产物 ID，不接受本地路径。非法 ID、越界偏移和不可用产物分别返回 400/416/410。
+- Android 结果页新增产物清单与详情子页：命令输出、审批提案、上游报告和 Git 快照分来源显示；分块按 `next_offset` 推进，空输出、截断、二进制、未跟踪文件和内容不可用都有明确文案。
+- 合成设备验收扩到 12 个场景：`j` 完整文件审批允许并查看差异，`k` 拒绝后提案仍可查看，`b` 同时打开命令输出；全绿，`expected_model_turns=0`。
+- 离线新增命令输出分块/哈希/重启一致性、截断丢弃量、审批双来源、Git `unknown` 归因、非法 ID/越界偏移测试。388 项测试（385 通过、3 跳过）、Android JVM 19 项、16 份契约通过。见 [DEV-008 第二切片证据](docs/evidence/DEV-008-artifacts.md)。
+- 修复决定回执到达后、审批状态刷新前按钮短暂重新可用的竞态（[ERR-033](docs/ERRORS.md)）。未覆盖：真实 Codex 文件审批 `complete` 路径、真实大差异/二进制/重命名、回合前基线分离、`artifact.created` 事件与真机下载性能。
+- 修复产物详情快速返回/重开时旧分块可能写入新页面的竞态（[ERR-034](docs/ERRORS.md)）：分块响应按请求代际和当前屏幕校验，过期响应丢弃。
+- 2026-10-28 在当前工作区（含 22:06 的 Host 修改）重新构建 APK 并复跑 12 场景合成设备验收；修复 ERR-034 后再次复跑，两轮均全绿，脱敏报告已更新。
+
 ## Unreleased · DEV-008 命令详情与验证结果 · 2026-10-27
 
 - 事件库 v16：新增 `run_commands`、`run_verifications`，`workspaces` 增加 `verification_json`。命令完成事件在聚合输出写入后落库；命令证据保存 cwd、上游起止时间、退出码、输出字节/丢弃字节与 `pending/complete/truncated/empty` 状态。必需验证命令在回合创建时快照，之后修改工作区不改写旧回合。
@@ -9,7 +20,7 @@
 - Android 新增“回合结果”页：回合状态与验证结论分卡显示，验证项显示退出码是否存在、输出完整度和证据时间，命令列表支持分页。结果页从产品自己的 HTTPS API 取数，没有测试专用捷径。
 - 合成设备验收新增 `i` 场景：`exit 7` 命令使回合 `completed`、验证 `failed`，结果页与命令列表同时显示退出码 7；`b` 同时断言验证 `passed`。完整十场景通过，`expected_model_turns=0`。
 - 离线覆盖未配置、`not_run`、退出码缺失、输出截断、命令分页，以及同一数据目录启动真实 `HostRuntime` 后结果仍可查询。381 项测试（378 通过、3 跳过）、Android JVM 19 项、16 份契约通过。见 [DEV-008 证据](docs/evidence/DEV-008-results.md)。
-- 未覆盖：产物/差异端点、`verification.updated` 事件、真实 Codex 命令包装的验证匹配、真机结果页与生命周期。合成编排的验证配置步骤曾把成功误标为 failed（[ERR-032](docs/ERRORS.md)，已修复）。
+- 第一切片时未覆盖产物/差异端点；第二切片已补，见上。仍未覆盖：`verification.updated` 事件、真实 Codex 命令包装的验证匹配、真机结果页与生命周期。合成编排的验证配置步骤曾把成功误标为 failed（[ERR-032](docs/ERRORS.md)，已修复）。
 
 ## Unreleased · DEV-007 Android 最小业务闭环 · 2026-10-27
 
@@ -20,7 +31,7 @@
 - 真实 Codex 设备验收（同日，1 次模型回合）：真实 APK → 固定指纹 HTTPS → 真实 `HostRuntime` → 真实 app-server，跑通 `s/a/b/c/g/e`。真实模式使用独立场景集与 `ACCEPT_PROMPT`，不依赖合成标记或合成文本；`expected_model_turns=1`、`observed_runs=1`，未重试。`d/f/h`、真实文件审批与真实中断/过期仍未覆盖。见 [真实设备验收](docs/evidence/DEV-007-device-acceptance-real.md)。
 - 删除 `DeviceRelay.kt`、`scripts/device_bridge.py`、`scripts/check_device_bridge.py` 及相关诊断脚本：实验证明模拟器 `10.0.2.2` 经自身 NAT 到达宿主机回环，**不需要** `adb reverse` 或防火墙放行。上一轮“需人工放行防火墙”的判断是错的，README/证据已更正。
 - 修复四个产品缺陷：审批页期间存活轮询停摆；决定提交后从不回查操作状态（缓存永远停在 `accepted`）；TLS 握手在 worker 线程交错导致客户端 EOF（[ERR-029](docs/ERRORS.md)）；拒绝原因被随后的同步逻辑抹掉、横幅关闭只清一半（[ERR-030](docs/ERRORS.md)）。
-- **DEV-007 状态：核心真实链路通过，剩余专项待验收。** 真实 Codex 设备验收仅覆盖 1 次核心闭环（见上条）；真实文件审批、真实中断/过期、产物明细、旋转/杀进程/TalkBack/性能未覆盖（命令明细与结果页已由后续 DEV-008 补齐）。
+- **DEV-007 状态：核心真实链路通过，剩余专项待验收。** 真实 Codex 设备验收仅覆盖 1 次核心闭环（见上条）；真实文件审批、真实中断/过期、旋转/杀进程/TalkBack/性能未覆盖（命令明细、结果页与产物已由后续 DEV-008 补齐）。
 - 374 项测试运行（371 通过、3 项跳过）、Android JVM 单测 19 项通过、16 份契约通过。合成九场景见 [设备验收](docs/evidence/DEV-007-device-acceptance.md)，真实核心闭环见 [真实设备验收](docs/evidence/DEV-007-device-acceptance-real.md)。
 
 ## Unreleased · DEV-006 可通过 HTTPS 操作的最小 Host · 2026-10-27

@@ -19,6 +19,9 @@ from runvori.application.device_reads import DeviceReadError, DeviceReadGateway
 from runvori.application.host_device_access import (
     HostDeviceAccess, HostDeviceAccessError,
 )
+from runvori.infrastructure.artifact_store import (
+    ARTIFACT_CHUNK_BYTES, MAX_ARTIFACT_BYTES, MAX_ARTIFACT_READ_BYTES,
+)
 from runvori.infrastructure.event_journal import EventJournalError
 from runvori.infrastructure.pairing_journal import PairingError
 
@@ -30,7 +33,8 @@ MAX_INPUT_BYTES = 16 * 1024
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 100
 MAX_WAIT_MS = 25000
-HOST_VERSION = "0.0.2"
+DEFAULT_ARTIFACT_CHUNK = ARTIFACT_CHUNK_BYTES
+HOST_VERSION = "0.0.3"
 
 STATUS_BY_CODE = {
     "unauthorized": 401,
@@ -43,6 +47,10 @@ STATUS_BY_CODE = {
     "run_not_found": 404,
     "approval_not_found": 404,
     "operation_not_found": 404,
+    "artifact_not_found": 404,
+    "artifact_unavailable": 410,
+    "invalid_artifact_id": 400,
+    "invalid_range": 416,
     "approval_expired": 410,
     "approval_details_insufficient": 409,
     "resource_changed": 409,
@@ -97,6 +105,23 @@ def _query_int(query: dict, name: str, default: int | None = None) -> int | None
         return int(values[0])
     except (TypeError, ValueError) as error:
         raise ApiError("invalid_cursor") from error
+
+
+def _query_range_int(query: dict, name: str, default: int, *,
+                     minimum: int, maximum: int) -> int:
+    values = query.get(name)
+    if values is None:
+        value = default
+    else:
+        if len(values) != 1:
+            raise ApiError("invalid_range")
+        try:
+            value = int(values[0])
+        except (TypeError, ValueError) as error:
+            raise ApiError("invalid_range") from error
+    if type(value) is not int or not minimum <= value <= maximum:
+        raise ApiError("invalid_range")
+    return value
 
 
 def _body_int(body: dict, name: str, *, minimum: int) -> int:
@@ -201,6 +226,12 @@ class ApiHandlers:
                 and parts[3] == "commands":
             return self._run_commands(method, token, parts[2], query)
         if len(parts) == 4 and parts[0] == "v1" and parts[1] == "runs" \
+                and parts[3] == "artifacts":
+            return self._run_artifacts(method, token, parts[2], query)
+        if len(parts) == 4 and parts[0] == "v1" and parts[1] == "artifacts" \
+                and parts[3] == "content":
+            return self._artifact_content(method, token, parts[2], query)
+        if len(parts) == 4 and parts[0] == "v1" and parts[1] == "runs" \
                 and parts[3] == "interrupt":
             return self._interrupt(method, device_id, parts[2], body)
         if len(parts) == 4 and parts[0] == "v1" and parts[1] == "runs" \
@@ -251,6 +282,46 @@ class ApiHandlers:
             token=token, run_id=run_id, after_item_id=cursor, limit=limit))
         page["server_time"] = self.now()
         return 200, page, {}
+
+    def _run_artifacts(self, method: str, token: bytes, run_id: str,
+                       query: dict) -> tuple[int, dict, dict]:
+        if method != "GET":
+            raise ApiError("invalid_request", status=405)
+        limit = _query_int(query, "limit", DEFAULT_LIMIT)
+        if limit is None or not 1 <= limit <= MAX_LIMIT:
+            raise ApiError("invalid_cursor")
+        cursor_values = query.get("cursor")
+        cursor = None
+        if cursor_values is not None:
+            if len(cursor_values) != 1 or not cursor_values[0]:
+                raise ApiError("invalid_cursor")
+            cursor = cursor_values[0]
+        page = _call(lambda: self.reads.run_artifacts(
+            token=token, run_id=run_id, after_artifact_id=cursor,
+            limit=limit))
+        page["server_time"] = self.now()
+        return 200, page, {}
+
+    def _artifact_content(self, method: str, token: bytes, artifact_id: str,
+                          query: dict) -> tuple[int, bytes, dict]:
+        if method != "GET":
+            raise ApiError("invalid_request", status=405)
+        offset = _query_range_int(query, "offset", 0,
+                                  minimum=0, maximum=MAX_ARTIFACT_BYTES)
+        limit = _query_range_int(query, "limit", DEFAULT_ARTIFACT_CHUNK,
+                                 minimum=1, maximum=MAX_ARTIFACT_READ_BYTES)
+        result = _call(lambda: self.reads.artifact_content(
+            token=token, artifact_id=artifact_id, offset=offset, limit=limit))
+        headers = {
+            "X-Artifact-Size": str(result["size_bytes"]),
+            "X-Artifact-Offset": str(result["offset"]),
+            "X-Artifact-Next-Offset": str(result["next_offset"]),
+            "X-Artifact-SHA256": result["sha256"] or "",
+            "X-Artifact-Representation": result["representation"],
+            "X-Artifact-Truncated": "1" if result["truncated"] else "0",
+            "X-Artifact-Dropped-Bytes": str(result["dropped_bytes"]),
+        }
+        return 200, result["data"], headers
 
     def _host(self, method: str) -> tuple[int, dict, dict]:
         if method != "GET":

@@ -32,6 +32,8 @@
 - `GET /v1/runs/{run_id}`：单回合状态和验证摘要。（已实现，DEV-008）
 - `GET /v1/runs/{run_id}/results`：完整验证项与证据引用。（已实现，DEV-008）
 - `GET /v1/runs/{run_id}/commands?cursor=...&limit=...`：命令明细分页。（已实现，DEV-008）
+- `GET /v1/runs/{run_id}/artifacts?cursor=...&limit=...`：命令输出与文件差异清单。（已实现，DEV-008 第二切片）
+- `GET /v1/artifacts/{artifact_id}/content?offset=...&limit=...`：按产物 ID 分块读取内容。（已实现，DEV-008 第二切片）
 
 手机无远端创建工作区/首会话接口；首会话由本地入口调用同一应用服务创建。以下为实际部署的最小接口；标注“未实现”的端点仍属计划。
 
@@ -114,6 +116,8 @@ Host 内部命令邮箱已实现决定入口和同一幂等键：返回 `accepte
 
 2026-10-27 DEV-008：事件库 v16 新增 `run_commands`、`run_verifications`，工作区增加 `verification_json`。必需验证命令由受信本地 `register-workspace` 声明，并在回合创建时快照；之后修改工作区不会改写旧回合。结果在读取时用持久命令证据和审批决定重放现有验证器，不新增 `verification.updated` 事件。命令明细分页使用命令 `item_id` 作为不透明游标，按该命令的开始事件 seq 升序；不存在的游标返回 `400 invalid_cursor`。合成设备验收见 [DEV-008 证据](evidence/DEV-008-results.md)。
 
+2026-10-27 DEV-008 第二切片：事件库 v17 新增 `run_artifacts` / `artifact_chunks`。产物 ID 确定性生成，内容按 `offset/limit` 分块读取；命令输出只复制时间线已持久化字节，预算丢弃量保留为 `dropped_bytes`。文件差异分 `approval_proposal`、`upstream_report` 与首次读取时的 `git_worktree_snapshot` 三种来源，Git/未跟踪内容明确标为 `attribution=unknown` 或仅元信息。合成设备验收 12 场景见 [第二切片证据](evidence/DEV-008-artifacts.md)。
+
 ### 中断与后续输入
 
 - `POST /v1/runs/{run_id}/interrupt`：`request_id`、`expected_version`。
@@ -143,8 +147,8 @@ Host 内部命令邮箱已实现决定入口和同一幂等键：返回 `accepte
 
 - `GET /v1/runs/{run_id}/results`：回合状态、验证汇总、必需验证项和证据引用；命令明细分页读取。（已实现，DEV-008）
 - `GET /v1/runs/{run_id}/commands?cursor=...&limit=...`：命令、cwd、状态、退出码、时间和输出完整性。（已实现，DEV-008）
-- `GET /v1/runs/{run_id}/artifacts?cursor=...&limit=...`：差异/输出清单，包含来源、大小、哈希、截断和可用性。（未实现）
-- `GET /v1/artifacts/{artifact_id}/content?offset=0&limit=262144`：受控内容的字节块，返回 `application/octet-stream`，元数据响应头含总大小、当前偏移、下一偏移和内容哈希。禁止在 API 中传本地文件路径。（未实现）
+- `GET /v1/runs/{run_id}/artifacts?cursor=...&limit=...`：差异/输出清单，包含来源、大小、哈希、截断、丢弃字节和可用性。游标是上一页最后一项的 `artifact_id`，按首次创建时间与 ID 升序。（已实现，DEV-008 第二切片）
+- `GET /v1/artifacts/{artifact_id}/content?offset=0&limit=262144`：受控内容的字节块，返回 `application/octet-stream`，元数据响应头含总大小、当前偏移、下一偏移、内容哈希、表示形式、截断标记和丢弃字节。禁止在 API 中传本地文件路径。（已实现，DEV-008 第二切片）
 
 `/results` 返回：
 
@@ -158,6 +162,7 @@ Host 内部命令邮箱已实现决定入口和同一幂等键：返回 `accepte
   "created_at": "2026-10-27T04:00:01Z",
   "terminal_at": "2026-10-27T04:00:30Z",
   "command_count": 2,
+  "artifact_count": 3,
   "verification": {
     "configured": true,
     "summary": "failed",
@@ -186,9 +191,38 @@ Host 内部命令邮箱已实现决定入口和同一幂等键：返回 `accepte
 
 `GET /v1/runs/{run_id}` 返回同一回合状态和验证汇总，但不返回完整 `items`；`/results` 才返回逐项证据。`verification.configured=false` 表示工作区没有声明必需项，此时 `summary=not_run`、`items=[]`，客户端不得渲染为通过。回合 `completed` 与验证 `failed` 可以同时成立，客户端必须分开显示。
 
-`/commands` 每项含 `item_id / command / command_truncated / cwd / status / exit_code / exit_code_present / started_at / completed_at / duration_ms / output_state / output_bytes / output_dropped_bytes / started_event_seq / completed_event_seq`。`output_state` 为 `pending / complete / truncated / empty / unknown`；`exit_code_present=false` 时 `exit_code` 必须为 null，不能当 0。游标是上一页最后一项的 `item_id`，按开始事件 seq 升序；`next_cursor=null` 表示结束。
+`/commands` 每项含 `item_id / output_artifact_id / command / command_truncated / cwd / status / exit_code / exit_code_present / started_at / completed_at / duration_ms / output_state / output_bytes / output_dropped_bytes / started_event_seq / completed_event_seq`。`output_artifact_id` 只在对应产物存在时非 null；命令输出正文不塞进命令页。`output_state` 为 `pending / complete / truncated / empty / unknown`；`exit_code_present=false` 时 `exit_code` 必须为 null，不能当 0。游标是上一页最后一项的 `item_id`，按开始事件 seq 升序；`next_cursor=null` 表示结束。
 
-文本分块由客户端增量 UTF-8 解码，不能逐块破坏多字节字符；二进制仅显示元信息。偏移非法返回 `416 invalid_range`；被删除/丢失产物返回 `410 artifact_unavailable`，列表仍保留不可用记录，不伪装成空内容。
+`/artifacts` 每项含：
+
+```json
+{
+  "artifact_id": "art_0123456789abcdef0123456789abcdef",
+  "run_id": "run_demo",
+  "kind": "file_diff",
+  "source": "approval_proposal",
+  "item_id": "patch_demo",
+  "approval_id": "apr_demo",
+  "path": "src/main.py",
+  "move_path": null,
+  "operation": "update",
+  "source_status": "proposed",
+  "attribution": "proposed",
+  "representation": "text",
+  "size_bytes": 128,
+  "sha256": "…",
+  "truncated": false,
+  "dropped_bytes": 0,
+  "content_available": true,
+  "reason": null,
+  "created_at": "2026-10-27T04:00:10Z",
+  "updated_at": "2026-10-27T04:00:11Z"
+}
+```
+
+`kind` 为 `command_output / file_diff`。`source` 为 `command_execution / approval_proposal / upstream_report / git_worktree_snapshot`；`attribution` 为 `not_applicable / proposed / reported / unknown`。审批提案与上游报告分别保存，不能用其中一份冒充另一份。Git 快照在首次读取产物时生成，来源固定标为 `git_worktree_snapshot`、归因固定为 `unknown`，可能包含回合前已有改动；未跟踪文件只记录路径与 `untracked_content_not_captured`，二进制只保留元信息。命令输出只复制时间线实际持久化的字节；预算丢弃的字节计入 `dropped_bytes`，不会被补成完整内容。
+
+内容端点响应头为 `X-Artifact-Size / X-Artifact-Offset / X-Artifact-Next-Offset / X-Artifact-SHA256 / X-Artifact-Representation / X-Artifact-Truncated / X-Artifact-Dropped-Bytes`。客户端必须使用 `X-Artifact-Next-Offset` 推进，不能自己加固定长度；`next_offset == size_bytes` 表示读完。文本分块由客户端增量 UTF-8 解码，不能逐块破坏多字节字符；二进制仅显示元信息。偏移非法返回 `416 invalid_range`；未知 ID 返回 `404 artifact_not_found`；被删除/丢失/内容不可用的产物返回 `410 artifact_unavailable`，列表仍保留不可用记录，不伪装成空内容。
 
 ## 3. 回合状态机
 
@@ -317,10 +351,10 @@ Host 恢复入口在持有单实例锁后，先按权威库中该 epoch 记录�
 
 - `run.created / run.started / run.completed / run.failed / run.interrupted`。（已实现）
 - `message.user / message.started / message.delta / message.completed`，payload 带稳定 `item_id`。（已实现，DEV-007）
-- `command.started / command.output / command.completed`，payload 带 `item_id` 与输出块。（已实现，DEV-007；产物引用仍未实现，见 5.1）
+- `command.started / command.output / command.completed`，payload 带 `item_id` 与输出块。（已实现，DEV-007；命令输出产物在事件写入的同一事务内复制已持久化字节，不新增时间线事件，见 5.1）
 - `timeline.truncated`：单回合文本预算耗尽后的缺口标记。（已实现，DEV-007，见 5.1）
 - `approval.requested / approval.updated / operation.updated`。（已实现）
-- `file_change.updated / artifact.created / artifact.unavailable`。（未实现）
+- `file_change.updated / artifact.created / artifact.unavailable`。（未实现；文件差异产物由 `approvals`、`approval_items` 与首次读取时的 Git 工作区快照生成，见 5.1）
 - `verification.updated / diagnostic.recorded`。（未实现；DEV-008 的验证结果在读取时从 `run_commands` 与 `run_verifications` 计算，不追加该事件）
 
 所有增量事件均按 `(session_id, seq)` 去重。item 更新按同一事件流归并；客户端在应用事件并提交缓存事务后才推进连续游标。未知事件也记录已收到的 seq，并显示“此内容需升级客户端”，不能悄悄省略审批/终态后继续开放操作。发现未知控制语义时进入 incompatible 只读态。

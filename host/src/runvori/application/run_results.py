@@ -14,9 +14,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from runvori.application import git_artifacts
 from runvori.codex.verification import (
     RequiredCommandEvidence, RequiredVerificationSet,
 )
+from runvori.infrastructure import artifact_store
 from runvori.infrastructure.event_journal import EventJournalError
 
 TERMINAL_RUNS = frozenset({"completed", "failed", "interrupted"})
@@ -31,6 +33,28 @@ def _epoch_ms_to_utc(value: Any) -> str | None:
     except (OverflowError, OSError, ValueError):
         return None
     return moment.isoformat().replace("+00:00", "Z")
+
+
+def _now_utc() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _ensure_git_snapshot(connection: sqlite3.Connection, run_id: str) -> None:
+    workspace = connection.execute(
+        "SELECT w.root FROM runs AS r "
+        "JOIN session_workspaces AS sw ON sw.session_id=r.session_id "
+        "JOIN workspaces AS w ON w.workspace_id=sw.workspace_id "
+        "WHERE r.run_id=?", (run_id,)).fetchone()
+    if workspace is None:
+        return
+    try:
+        git_artifacts.ensure_snapshot(
+            connection, run_id=run_id, workspace_root=workspace["root"],
+            recorded_at=_now_utc())
+    except (OSError, ValueError, sqlite3.Error):
+        # The worktree view is best-effort; command and approval evidence
+        # must remain readable even when Git is unavailable.
+        pass
 
 
 def _run_row(connection: sqlite3.Connection, run_id: str) -> sqlite3.Row:
@@ -70,11 +94,13 @@ def _run_times(connection: sqlite3.Connection, row: sqlite3.Row) -> tuple[str | 
     return created_at, terminal_at
 
 
-def _command_view(row: sqlite3.Row) -> dict[str, Any]:
+def _command_view(row: sqlite3.Row, output_artifact_id: str | None = None
+                  ) -> dict[str, Any]:
     exit_code = row["exit_code"] if type(row["exit_code"]) is int else None
     return {
         "run_id": row["run_id"],
         "item_id": row["item_id"],
+        "output_artifact_id": output_artifact_id,
         "command": row["command"],
         "command_truncated": bool(row["command_truncated"]),
         "cwd": row["cwd"],
@@ -121,8 +147,16 @@ def run_commands(connection: sqlite3.Connection, run_id: str, *,
             f"ORDER BY {sort_expr} ASC, item_id ASC LIMIT ?",
             (*params, limit + 1)).fetchall()
         selected = rows[:limit]
+        artifacts = {
+            row["item_id"]: row["artifact_id"]
+            for row in connection.execute(
+                "SELECT item_id, artifact_id FROM run_artifacts "
+                "WHERE run_id=? AND kind='command_output' "
+                "AND source='command_execution'", (row["run_id"],)).fetchall()
+        }
         result = {
-            "items": [_command_view(item) for item in selected],
+            "items": [_command_view(item, artifacts.get(item["item_id"]))
+                      for item in selected],
             "next_cursor": (selected[-1]["item_id"]
                             if len(rows) > limit else None),
             "has_more": len(rows) > limit,
@@ -286,6 +320,9 @@ def _payload(connection: sqlite3.Connection, row: sqlite3.Row,
     count = connection.execute(
         "SELECT COUNT(*) FROM run_commands WHERE run_id=?",
         (row["run_id"],)).fetchone()[0]
+    artifacts = connection.execute(
+        "SELECT COUNT(*) FROM run_artifacts WHERE run_id=?",
+        (row["run_id"],)).fetchone()[0]
     return {
         "run_id": row["run_id"],
         "session_id": row["session_id"],
@@ -296,6 +333,7 @@ def _payload(connection: sqlite3.Connection, row: sqlite3.Row,
         "terminal_at": terminal_at,
         "verification": verification,
         "command_count": int(count),
+        "artifact_count": int(artifacts),
     }
 
 
@@ -312,10 +350,60 @@ def run_detail(connection: sqlite3.Connection, run_id: str) -> dict[str, Any]:
 
 
 def run_results(connection: sqlite3.Connection, run_id: str) -> dict[str, Any]:
+    _run_row(connection, run_id)
+    _ensure_git_snapshot(connection, run_id)
     connection.execute("BEGIN")
     try:
         result = _payload(connection, _run_row(connection, run_id),
                           include_items=True)
+        connection.execute("COMMIT")
+        return result
+    except BaseException:
+        connection.execute("ROLLBACK")
+        raise
+
+
+def run_artifacts(connection: sqlite3.Connection, run_id: str, *,
+                  after_artifact_id: str | None = None,
+                  limit: int = 50) -> dict[str, Any]:
+    """List artifact metadata for one run; content stays behind its own id."""
+    _run_row(connection, run_id)
+    _ensure_git_snapshot(connection, run_id)
+    connection.execute("BEGIN")
+    try:
+        _run_row(connection, run_id)
+        try:
+            page = artifact_store.list_for_run(
+                connection, run_id, after_artifact_id=after_artifact_id,
+                limit=limit)
+        except artifact_store.ArtifactError as error:
+            code = str(error)
+            if code not in {"invalid_cursor"}:
+                code = "invalid_cursor"
+            raise EventJournalError(code) from error
+        connection.execute("COMMIT")
+        return page
+    except BaseException:
+        connection.execute("ROLLBACK")
+        raise
+
+
+def artifact_content(connection: sqlite3.Connection, artifact_id: str, *,
+                     offset: int = 0,
+                     limit: int = artifact_store.ARTIFACT_CHUNK_BYTES
+                     ) -> dict[str, Any]:
+    """Read one bounded chunk of an artifact by its opaque id."""
+    connection.execute("BEGIN")
+    try:
+        try:
+            result = artifact_store.read_content(
+                connection, artifact_id, offset=offset, limit=limit)
+        except artifact_store.ArtifactError as error:
+            code = str(error)
+            if code not in {"artifact_not_found", "artifact_unavailable",
+                            "invalid_range", "invalid_artifact_id"}:
+                code = "artifact_unavailable"
+            raise EventJournalError(code) from error
         connection.execute("COMMIT")
         return result
     except BaseException:

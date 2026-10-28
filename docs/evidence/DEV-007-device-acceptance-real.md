@@ -68,6 +68,6 @@ python scripts/accept_device.py --serial emulator-5554 --real \
 - **真实模式未覆盖 `d / f / h`**：`[expire-request]`、`[file-change]`、`[interrupt]` 是合成上游时序。真实中断/过期需要第二次显式授权的模型回合；真实文件审批的 `complete`/`insufficient` 路径仍未覆盖。
 - **只跑了 1 次真实回合**：不证明批量稳定性，也不证明其他审批类型；失败不重试是本轮约定。
 - **命令字面量未断言**：`command_match_asserted=false`，不能据此宣称展示串等于 `python --version`。
-- **未覆盖**：真实文件审批、命令/产物明细端点（命令明细与 `/results` 已由后续 DEV-008 补齐；产物仍未实现）、旋转/切后台/系统杀进程/清除缓存/200% 字体/TalkBack/性能、物理手机可达路径、证书轮换与过期。
+- **未覆盖**：真实文件审批、命令/产物明细端点（命令明细、`/results` 与产物已由后续 DEV-008 补齐；见 [产物与差异](DEV-008-artifacts.md)）、旋转/切后台/系统杀进程/清除缓存/200% 字体/TalkBack/性能、物理手机可达路径、证书轮换与过期。
 - **AT-16 仍未整体通过**：首发 OS 未定；starting/决定派发/中断切点仍由测试 relay 注入；真实上游正常退出且后代继承 stdio 的 EOF 检测（[ERR-027](../ERRORS.md)）未覆盖。
 - 本轮没有自动重试；若后续运行失败，报告会保留失败场景与断言，不会改写成通过。

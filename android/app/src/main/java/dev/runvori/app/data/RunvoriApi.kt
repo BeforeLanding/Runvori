@@ -168,6 +168,7 @@ class RunvoriApi(
             createdAt = body.text("created_at"),
             terminalAt = body.text("terminal_at"),
             commandCount = body.int("command_count") ?: 0,
+            artifactCount = body.int("artifact_count") ?: 0,
             verification = verification(body.map("verification")),
         )
     }
@@ -186,6 +187,59 @@ class RunvoriApi(
             items = body.list("items").mapNotNull(::runCommand),
             nextCursor = body.text("next_cursor"),
             hasMore = body.body["has_more"] == true,
+        )
+    }
+
+    fun runArtifacts(
+        runId: String,
+        cursor: String? = null,
+        limit: Int = 50,
+    ): ArtifactPage {
+        val query = buildString {
+            append("?limit=").append(limit)
+            if (cursor != null) append("&cursor=").append(encode(cursor))
+        }
+        val body = get("/v1/runs/${encode(runId)}/artifacts$query")
+        return ArtifactPage(
+            items = body.list("items").mapNotNull(::runArtifact),
+            nextCursor = body.text("next_cursor"),
+            hasMore = body.body["has_more"] == true,
+        )
+    }
+
+    fun artifactContent(
+        artifactId: String,
+        offset: Long = 0,
+        limit: Int = 64 * 1024,
+    ): ArtifactContent {
+        val response = endpoint.exchange(
+            "GET",
+            "/v1/artifacts/${encode(artifactId)}/content?offset=$offset&limit=$limit",
+            token = token,
+        )
+        response.error()?.let { throw it }
+        val size = response.headers["x-artifact-size"]?.toLongOrNull()
+            ?: throw ProtocolError("invalid_artifact_content", 200)
+        val actualOffset = response.headers["x-artifact-offset"]?.toLongOrNull()
+            ?: throw ProtocolError("invalid_artifact_content", 200)
+        val nextOffset = response.headers["x-artifact-next-offset"]?.toLongOrNull()
+            ?: throw ProtocolError("invalid_artifact_content", 200)
+        if (actualOffset != offset || nextOffset < actualOffset ||
+            nextOffset > size ||
+            response.rawBody.size.toLong() != nextOffset - actualOffset) {
+            throw ProtocolError("invalid_artifact_content", 200)
+        }
+        return ArtifactContent(
+            data = response.rawBody,
+            offset = actualOffset,
+            nextOffset = nextOffset,
+            sizeBytes = size,
+            sha256 = response.headers["x-artifact-sha256"],
+            representation = response.headers["x-artifact-representation"]
+                ?: "unknown",
+            truncated = response.headers["x-artifact-truncated"] == "1",
+            droppedBytes =
+                response.headers["x-artifact-dropped-bytes"]?.toLongOrNull() ?: 0,
         )
     }
 
@@ -309,6 +363,33 @@ class RunvoriApi(
             outputBytes = (map["output_bytes"] as? Number)?.toLong() ?: 0,
             outputDroppedBytes =
                 (map["output_dropped_bytes"] as? Number)?.toLong() ?: 0,
+            outputArtifactId = map["output_artifact_id"] as? String,
+        )
+    }
+
+    private fun runArtifact(value: Any?): RunArtifact? {
+        val map = value as? Map<*, *> ?: return null
+        return RunArtifact(
+            artifactId = map["artifact_id"] as? String ?: return null,
+            runId = map["run_id"] as? String ?: return null,
+            kind = map["kind"] as? String ?: "unknown",
+            source = map["source"] as? String ?: "unknown",
+            itemId = map["item_id"] as? String,
+            approvalId = map["approval_id"] as? String,
+            path = map["path"] as? String,
+            movePath = map["move_path"] as? String,
+            operation = map["operation"] as? String,
+            sourceStatus = map["source_status"] as? String,
+            attribution = map["attribution"] as? String ?: "unknown",
+            representation = map["representation"] as? String ?: "unknown",
+            sizeBytes = (map["size_bytes"] as? Number)?.toLong() ?: 0,
+            sha256 = map["sha256"] as? String,
+            truncated = map["truncated"] == true,
+            droppedBytes = (map["dropped_bytes"] as? Number)?.toLong() ?: 0,
+            contentAvailable = map["content_available"] == true,
+            reason = map["reason"] as? String,
+            createdAt = map["created_at"] as? String,
+            updatedAt = map["updated_at"] as? String,
         )
     }
 
@@ -390,6 +471,7 @@ data class RunResults(
     val createdAt: String?,
     val terminalAt: String?,
     val commandCount: Int,
+    val artifactCount: Int = 0,
     val verification: VerificationView,
 )
 
@@ -437,6 +519,47 @@ data class RunCommand(
     val outputState: String,
     val outputBytes: Long,
     val outputDroppedBytes: Long,
+    val outputArtifactId: String?,
+)
+
+data class ArtifactPage(
+    val items: List<RunArtifact>,
+    val nextCursor: String?,
+    val hasMore: Boolean,
+)
+
+data class RunArtifact(
+    val artifactId: String,
+    val runId: String,
+    val kind: String,
+    val source: String,
+    val itemId: String?,
+    val approvalId: String?,
+    val path: String?,
+    val movePath: String?,
+    val operation: String?,
+    val sourceStatus: String?,
+    val attribution: String,
+    val representation: String,
+    val sizeBytes: Long,
+    val sha256: String?,
+    val truncated: Boolean,
+    val droppedBytes: Long,
+    val contentAvailable: Boolean,
+    val reason: String?,
+    val createdAt: String?,
+    val updatedAt: String?,
+)
+
+data class ArtifactContent(
+    val data: ByteArray,
+    val offset: Long,
+    val nextOffset: Long,
+    val sizeBytes: Long,
+    val sha256: String?,
+    val representation: String,
+    val truncated: Boolean,
+    val droppedBytes: Long,
 )
 
 data class ApprovalView(

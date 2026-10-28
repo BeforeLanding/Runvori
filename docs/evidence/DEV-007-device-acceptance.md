@@ -70,7 +70,7 @@
 
 - **本文件不包含真实 Codex 结论**：九场景的上游是合成 app-server。真实 Codex 设备验收已于同日单独执行 1 次（`s/a/b/c/g/e`，1 次模型回合，`observed_runs=1`），见 [真实设备验收](DEV-007-device-acceptance-real.md)。真实文件审批、真实中断/过期与 `d/f/h` 仍未覆盖。
 - **`command_matches_probe=false` 仍未消除**：本机 Windows 上 Codex 以 shell 包装串发起命令（[ERR-007](../ERRORS.md)、[ERR-016](../ERRORS.md)）。界面按原样展示上游给出的完整命令串，不简化成未经核实的裸命令；但“展示串等于 `python --version` 字面量”这件事仍未被证实，也未被当作验收前提。
-- **未覆盖的验收项**：真实文件审批（本轮文件审批走的是合成 `insufficient` 路径，`complete` 的文件审批没有端到端证据）；`GET /v1/runs/{run_id}`、命令明细分页、产物清单与产物字节端点当时仍未实现。其中命令明细与 `/results` 已由后续 DEV-008 补齐；产物资源仍未实现，见 [DEV-008 证据](DEV-008-results.md)。
+- **未覆盖的验收项**：真实文件审批（本轮文件审批走的是合成 `insufficient` 路径，`complete` 的文件审批没有端到端证据）；`GET /v1/runs/{run_id}`、命令明细分页、产物清单与产物字节端点当时仍未实现。命令明细、`/results` 与产物资源已由后续 DEV-008 补齐，见 [结果页](DEV-008-results.md) 与 [产物与差异](DEV-008-artifacts.md)；真实文件审批仍未覆盖。
 - **`active_run_exists` 的 UI 呈现无断言**：本轮修掉了“拒绝原因被同步抹掉”的缺陷（[ERR-030](../ERRORS.md)），但设备套件仍没有“已有活动回合时再发起”的场景，因此该提示的实际呈现只有代码依据，没有红绿实验证据；拒绝路径的回归测试待补。
 - **Android 侧未覆盖**：旋转、切后台、系统杀进程（`c` 用重建 ViewModel 模拟进程丢失，不等于真实进程死亡）、清除缓存、200% 字体与 TalkBack、性能基线。
 - **AT-16 未整体通过**：首发 OS 未定；starting/决定派发/中断切点由测试 relay 注入；真实上游正常退出且后代继承 stdio 的 EOF 检测（[ERR-027](../ERRORS.md)）未覆盖。

@@ -60,6 +60,10 @@ class MainActivity : ComponentActivity() {
                             closeResults = viewModel::closeResults,
                             refreshResults = viewModel::refreshResults,
                             loadMoreCommands = viewModel::loadMoreCommands,
+                            loadMoreArtifacts = viewModel::loadMoreArtifacts,
+                            openArtifact = viewModel::openArtifact,
+                            closeArtifact = viewModel::closeArtifact,
+                            loadMoreArtifact = viewModel::loadMoreArtifact,
                             dismissError = viewModel::dismissError,
                         )
                     })

@@ -253,20 +253,29 @@ class _Handler(BaseHTTPRequestHandler):
             raise ApiError("invalid_request")
         return decoded
 
-    def _respond(self, status: int, body: dict,
+    def _respond(self, status: int, body,
                  extra_headers: dict | None = None) -> None:
-        try:
-            encoded = json.dumps(body, ensure_ascii=False,
-                                 separators=(",", ":")).encode("utf-8")
-        except (TypeError, ValueError):
-            status = 500
-            encoded = json.dumps(error_body("internal_error")).encode()
-        if len(encoded) > MAX_PAGE_BYTES:
-            status = 500
-            encoded = json.dumps(error_body("internal_error")).encode()
+        if isinstance(body, (bytes, bytearray)):
+            encoded = bytes(body)
+            content_type = "application/octet-stream"
+            if len(encoded) > MAX_PAGE_BYTES:
+                status = 500
+                encoded = json.dumps(error_body("internal_error")).encode()
+                content_type = "application/json"
+        else:
+            content_type = "application/json"
+            try:
+                encoded = json.dumps(body, ensure_ascii=False,
+                                     separators=(",", ":")).encode("utf-8")
+            except (TypeError, ValueError):
+                status = 500
+                encoded = json.dumps(error_body("internal_error")).encode()
+            if len(encoded) > MAX_PAGE_BYTES:
+                status = 500
+                encoded = json.dumps(error_body("internal_error")).encode()
         try:
             self.send_response(status)
-            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(encoded)))
             self.send_header("X-Runvori-Protocol", PROTOCOL_VERSION)
             for name, value in (extra_headers or {}).items():

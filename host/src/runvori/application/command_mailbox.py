@@ -183,6 +183,21 @@ class HostCommandMailbox:
             "run_id": run_id, "after_item_id": after_item_id,
             "limit": limit}, timeout, cancelled=cancelled)
 
+    def list_run_artifacts(self, *, run_id: str,
+                           after_artifact_id: str | None = None,
+                           limit: int = 50, timeout: float = 5,
+                           cancelled: threading.Event | None = None) -> dict:
+        return self._submit("list_run_artifacts", {
+            "run_id": run_id, "after_artifact_id": after_artifact_id,
+            "limit": limit}, timeout, cancelled=cancelled)
+
+    def read_artifact_content(self, *, artifact_id: str, offset: int = 0,
+                              limit: int = 64 * 1024, timeout: float = 5,
+                              cancelled: threading.Event | None = None) -> dict:
+        return self._submit("read_artifact_content", {
+            "artifact_id": artifact_id, "offset": offset, "limit": limit},
+            timeout, cancelled=cancelled)
+
     def list_sessions(self, *, after_session_id: str | None = None,
                       limit: int = 50, timeout: float = 5,
                       cancelled: threading.Event | None = None) -> dict:
@@ -390,6 +405,15 @@ class HostCommandMailbox:
             return run_results.run_commands(
                 journals.events.connection, values["run_id"],
                 after_item_id=values["after_item_id"], limit=values["limit"])
+        if command.kind == "list_run_artifacts":
+            return run_results.run_artifacts(
+                journals.events.connection, values["run_id"],
+                after_artifact_id=values["after_artifact_id"],
+                limit=values["limit"])
+        if command.kind == "read_artifact_content":
+            return run_results.artifact_content(
+                journals.events.connection, values["artifact_id"],
+                offset=values["offset"], limit=values["limit"])
         if command.kind == "list_sessions":
             return journals.events.list_sessions(
                 after_session_id=values["after_session_id"],

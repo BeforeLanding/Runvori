@@ -12,6 +12,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import dev.runvori.app.data.HostSession
 import dev.runvori.app.data.KeystoreCredentialStore
+import dev.runvori.app.data.RunArtifact
 import dev.runvori.app.data.RunvoriCache
 import dev.runvori.app.domain.PairingInfo
 import dev.runvori.app.domain.TimelineItem
@@ -169,6 +170,10 @@ class DeviceAcceptanceTest {
         closeResults = vm::closeResults,
         refreshResults = vm::refreshResults,
         loadMoreCommands = vm::loadMoreCommands,
+        loadMoreArtifacts = vm::loadMoreArtifacts,
+        openArtifact = vm::openArtifact,
+        closeArtifact = vm::closeArtifact,
+        loadMoreArtifact = vm::loadMoreArtifact,
         dismissError = vm::dismissError,
     )
 
@@ -246,6 +251,27 @@ class DeviceAcceptanceTest {
         }
         compose.onNodeWithTag(Tag.RESULT_RUN_STATUS).assertIsDisplayed()
         compose.onNodeWithTag(Tag.RESULT_VERIFICATION_SUMMARY).assertIsDisplayed()
+    }
+
+    private fun openFirstArtifact(source: String): RunArtifact {
+        waitFor("artifact list", timeoutMs = 30_000) {
+            viewModel.state.value.screen.name == "Results" &&
+                viewModel.state.value.artifacts.any {
+                    it.source == source && it.contentAvailable
+                }
+        }
+        val artifact = viewModel.state.value.artifacts.first {
+            it.source == source && it.contentAvailable
+        }
+        viewModel.openArtifact(artifact)
+        waitFor("artifact content", timeoutMs = 30_000) {
+            viewModel.state.value.screen.name == "Artifact" &&
+                !viewModel.state.value.artifactLoading &&
+                (viewModel.state.value.artifactText.isNotEmpty() ||
+                    artifact.sizeBytes == 0L ||
+                    viewModel.state.value.artifactError != null)
+        }
+        return artifact
     }
 
     private fun openFirstApproval(): TimelineItem.Approval {
@@ -446,6 +472,15 @@ class DeviceAcceptanceTest {
             assertTrue("the workspace verification is configured",
                 results.verification.configured)
             assertEquals("passed", results.verification.summary)
+            val output = openFirstArtifact("command_execution")
+            assertEquals("command_output", output.kind)
+            compose.onNodeWithTag(Tag.ARTIFACT_CONTENT).assertIsDisplayed()
+            assertTrue("the command output must come from the persisted artifact",
+                viewModel.state.value.artifactText.contains("3.12"))
+            viewModel.closeArtifact()
+            waitFor("results after artifact") {
+                viewModel.state.value.screen.name == "Results"
+            }
             viewModel.closeResults()
             waitFor("timeline after results") {
                 viewModel.state.value.screen.name == "Timeline"
@@ -589,6 +624,73 @@ class DeviceAcceptanceTest {
         compose.onNodeWithTag(Tag.verificationExit("failure")).assertIsDisplayed()
         compose.onNodeWithTag(Tag.verificationOutput("failure"))
             .assertIsDisplayed()
+    }
+
+    @Test
+    fun j_file_approval_complete_allows_and_shows_artifacts() {
+        startViewModel(resetCredential = false)
+        waitFor("connected") {
+            viewModel.state.value.screen.name == "Sessions" &&
+                viewModel.state.value.connection == "已连接"
+        }
+        openSession("devsess0")
+        startRun("please change a file [file-change-complete]")
+        openFirstApproval()
+        val approval = viewModel.state.value.approval!!
+        assertEquals("complete", approval.detailsStatus)
+        assertTrue(approval.canAllow)
+        assertTrue(approval.canDeny)
+        assertTrue(approval.allowedDecisions.contains("allow_once"))
+        assertTrue(approval.allowedDecisions.contains("deny"))
+        val change = approval.changes.first()
+        assertEquals("probe-artifact.txt", change.path)
+        assertEquals("add", change.changeType)
+        assertTrue("the diff must be visible before allowing",
+            change.diff.orEmpty().contains("RUNVORI_ARTIFACT_OK"))
+        compose.onNodeWithTag(Tag.ALLOW).performClick()
+        waitFor("run terminal", timeoutMs = terminalTimeoutMs) {
+            viewModel.state.value.activeRun == null
+        }
+        openResults()
+        val proposal = openFirstArtifact("approval_proposal")
+        assertEquals("file_diff", proposal.kind)
+        assertEquals("add", proposal.operation)
+        compose.onNodeWithTag(Tag.ARTIFACT_CONTENT).assertIsDisplayed()
+        compose.onNodeWithTag(Tag.ARTIFACT_METADATA).assertIsDisplayed()
+        assertTrue("the artifact must expose the persisted diff",
+            viewModel.state.value.artifactText.contains("RUNVORI_ARTIFACT_OK"))
+        assertTrue("the upstream report must also be listed",
+            viewModel.state.value.artifacts.any {
+                it.source == "upstream_report" && it.path == "probe-artifact.txt"
+            })
+    }
+
+    @Test
+    fun k_file_approval_denied_keeps_proposal_visible() {
+        startViewModel(resetCredential = false)
+        waitFor("connected") {
+            viewModel.state.value.screen.name == "Sessions" &&
+                viewModel.state.value.connection == "已连接"
+        }
+        openSession("devsess0")
+        startRun("please change a file [file-change-deny]")
+        openFirstApproval()
+        val approval = viewModel.state.value.approval!!
+        assertEquals("complete", approval.detailsStatus)
+        assertTrue(approval.canDeny)
+        compose.onNodeWithTag(Tag.DENY).performClick()
+        waitFor("run terminal", timeoutMs = terminalTimeoutMs) {
+            viewModel.state.value.activeRun == null
+        }
+        openResults()
+        val proposal = openFirstArtifact("approval_proposal")
+        assertEquals("probe-artifact.txt", proposal.path)
+        compose.onNodeWithTag(Tag.ARTIFACT_CONTENT).assertIsDisplayed()
+        assertTrue(viewModel.state.value.artifactText.contains("RUNVORI_ARTIFACT_OK"))
+        assertTrue("a denied file change must remain inspectable",
+            viewModel.state.value.artifacts.any {
+                it.source == "approval_proposal" && it.path == "probe-artifact.txt"
+            })
     }
 
     @Test

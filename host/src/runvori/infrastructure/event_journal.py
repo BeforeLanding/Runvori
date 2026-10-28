@@ -12,6 +12,7 @@ import sqlite3
 from pathlib import Path, PurePath
 from typing import Any, Callable
 
+from runvori.infrastructure import artifact_store
 from runvori.infrastructure.host_identity import new_host_id, valid_host_id
 
 
@@ -79,7 +80,7 @@ class EventJournal:
             self.connection.execute("PRAGMA synchronous=FULL")
             version = self.connection.execute("PRAGMA user_version").fetchone()[0]
             if version not in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
-                               15, 16):
+                               15, 16, 17):
                 raise EventJournalError("unsupported_schema")
             self.connection.executescript("""
                 CREATE TABLE IF NOT EXISTS sessions (
@@ -254,6 +255,7 @@ class EventJournal:
                     PRIMARY KEY (run_id, item_id)
                 );
             """)
+            self.connection.executescript(artifact_store.ARTIFACT_SCHEMA)
             if version < 11:
                 self.connection.execute("BEGIN IMMEDIATE")
                 try:
@@ -334,6 +336,17 @@ class EventJournal:
                             "ALTER TABLE workspaces ADD COLUMN "
                             "verification_json TEXT NOT NULL DEFAULT '[]'")
                     self.connection.execute("PRAGMA user_version=16")
+                    self.connection.execute("COMMIT")
+                except BaseException:
+                    self.connection.execute("ROLLBACK")
+                    raise
+            if version < 17:
+                # v17 introduces persisted artifacts. Old runs keep their
+                # previous evidence state; no artifact is fabricated from
+                # output that was never persisted.
+                self.connection.execute("BEGIN IMMEDIATE")
+                try:
+                    self.connection.execute("PRAGMA user_version=17")
                     self.connection.execute("COMMIT")
                 except BaseException:
                     self.connection.execute("ROLLBACK")
@@ -1604,6 +1617,9 @@ class EventJournal:
                     "WHERE run_id=? AND item_id=?",
                     (command, command_truncated, cwd, status, started_at_ms,
                      seq, recorded_at, run_id, item_id))
+            self._ensure_command_artifact_in_tx(
+                run_id, item_id, source_status=status,
+                reason="command_pending", recorded_at=recorded_at)
             return
         if kind == "command.output":
             text = payload.get("text")
@@ -1627,6 +1643,13 @@ class EventJournal:
                     "output_dropped_bytes=output_dropped_bytes+?, "
                     "output_state=?, updated_at=? WHERE run_id=? AND item_id=?",
                     (added, dropped, output_state, recorded_at, run_id, item_id))
+            artifact_id = self._ensure_command_artifact_in_tx(
+                run_id, item_id, source_status=None,
+                reason="command_pending", recorded_at=recorded_at)
+            if isinstance(text, str) and text:
+                self._artifact_call(
+                    artifact_store.append_content, db, artifact_id,
+                    text.encode("utf-8"), updated_at=recorded_at)
             return
         # command.completed
         status = payload.get("status")
@@ -1669,6 +1692,40 @@ class EventJournal:
                 (command, command_truncated, cwd, status, exit_code,
                  started_at_ms, completed_at_ms, duration_ms, output_state,
                  seq, recorded_at, run_id, item_id))
+        artifact_id = self._ensure_command_artifact_in_tx(
+            run_id, item_id, source_status=status, reason=None,
+            recorded_at=recorded_at)
+        available = output_state in {"complete", "truncated", "empty"}
+        reason = {
+            "complete": "output_complete",
+            "truncated": "output_truncated",
+            "empty": "output_empty",
+        }.get(output_state, "command_incomplete")
+        self._artifact_call(
+            artifact_store.update_status, db, artifact_id,
+            truncated=output_state == "truncated", dropped_bytes=prior_dropped,
+            available=available, reason=reason, source_status=status,
+            representation="text", updated_at=recorded_at)
+
+    def _ensure_command_artifact_in_tx(
+            self, run_id: str, item_id: str, *, source_status: str | None,
+            reason: str | None, recorded_at: str) -> str:
+        artifact_id = artifact_store.make_id(
+            run_id=run_id, kind="command_output", source="command_execution",
+            item_id=item_id)
+        return self._artifact_call(
+            artifact_store.ensure, self.connection, artifact_id=artifact_id,
+            run_id=run_id, kind="command_output", source="command_execution",
+            item_id=item_id, source_status=source_status,
+            attribution="not_applicable", representation="text",
+            reason=reason, created_at=recorded_at, updated_at=recorded_at)
+
+    @staticmethod
+    def _artifact_call(operation, *args, **kwargs):
+        try:
+            return operation(*args, **kwargs)
+        except artifact_store.ArtifactError as error:
+            raise EventJournalError("artifact_store_failed") from error
 
     def list_sessions(self, *, after_session_id: str | None = None,
                       limit: int = 50) -> dict[str, Any]:

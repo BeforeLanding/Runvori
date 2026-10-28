@@ -161,6 +161,34 @@ class DeviceReadGateway:
                 self._require_authorized(journal, token, signal)
             return result
 
+    def run_artifacts(self, *, token: bytes, run_id: str,
+                      after_artifact_id: str | None = None, limit: int = 50,
+                      cancelled: threading.Event | None = None) -> dict:
+        with self._tracked(cancelled) as signal, PairingJournal(
+                self._pairing_db) as journal:
+            self._require_authorized(journal, token, signal)
+            try:
+                result = self._mailbox.list_run_artifacts(
+                    run_id=run_id, after_artifact_id=after_artifact_id,
+                    limit=limit, cancelled=signal)
+            finally:
+                self._require_authorized(journal, token, signal)
+            return result
+
+    def artifact_content(self, *, token: bytes, artifact_id: str,
+                         offset: int = 0, limit: int = 64 * 1024,
+                         cancelled: threading.Event | None = None) -> dict:
+        with self._tracked(cancelled) as signal, PairingJournal(
+                self._pairing_db) as journal:
+            self._require_authorized(journal, token, signal)
+            try:
+                result = self._mailbox.read_artifact_content(
+                    artifact_id=artifact_id, offset=offset, limit=limit,
+                    cancelled=signal)
+            finally:
+                self._require_authorized(journal, token, signal)
+            return result
+
     def events(self, *, token: bytes, session_id: str,
                after_seq: int | None = None,
                before_seq: int | None = None, limit: int = 50,

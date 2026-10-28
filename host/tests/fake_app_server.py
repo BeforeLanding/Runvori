@@ -30,6 +30,8 @@ turn_threads: dict = {}
 pending_scenarios: dict = {}
 # The command result each synthetic item should emit after approval.
 pending_command_results: dict = {}
+# File-change items need their diff again when the decision resolves.
+pending_file_changes: dict = {}
 # A synthetic command approval names the workspace only when the launcher set
 # RUNVORI_FAKE_WORKSPACE. Without it the review is (correctly) unusable for
 # allow, so tests that approve must opt in explicitly.
@@ -117,6 +119,21 @@ for raw in sys.stdin:
                 # end the turn without inventing command output.
                 send({"method": "serverRequest/resolved", "params": {
                     "threadId": thread_id, "requestId": request["id"]}})
+                send({"method": "turn/completed", "params": {
+                    "threadId": thread_id,
+                    "turn": {"id": turn_id, "status": "completed"}}})
+                continue
+            if scenario[0] in ("file_allow", "file_deny"):
+                item_id = pending_items.pop(turn_id, "patch_demo")
+                changes = pending_file_changes.pop(item_id, [])
+                send({"method": "serverRequest/resolved", "params": {
+                    "threadId": thread_id, "requestId": request["id"]}})
+                send({"method": "item/completed", "params": {
+                    "threadId": thread_id, "turnId": turn_id,
+                    "item": {"id": item_id, "type": "fileChange",
+                             "status": ("completed" if scenario[0] == "file_allow"
+                                        else "declined"),
+                             "changes": changes}}})
                 send({"method": "turn/completed", "params": {
                     "threadId": thread_id,
                     "turn": {"id": turn_id, "status": "completed"}}})
@@ -340,14 +357,17 @@ for raw in sys.stdin:
         pending_command_results[item_id] = command_result
         turn_threads[turn_id] = thread_id
         send({"id": request_id, "result": {"turn": {"id": turn_id}}})
-        send({"method": "item/started", "params": {
-            "threadId": thread_id, "turnId": turn_id,
-            "startedAtMs": started_ms,
-            "item": {"type": "commandExecution", "id": item_id,
-                     "command": command,
-                     "cwd": workspace or "",
-                     "commandActions": [],
-                     "status": "inProgress"}}})
+        file_prompt = any(marker in prompt for marker in (
+            "[file-change]", "[file-change-complete]", "[file-change-deny]"))
+        if not file_prompt:
+            send({"method": "item/started", "params": {
+                "threadId": thread_id, "turnId": turn_id,
+                "startedAtMs": started_ms,
+                "item": {"type": "commandExecution", "id": item_id,
+                         "command": command,
+                         "cwd": workspace or "",
+                         "commandActions": [],
+                         "status": "inProgress"}}})
         if "[expire]" in prompt:
             # The turn closes the request on its own, so the pending approval
             # is expired before the phone can decide.
@@ -392,6 +412,27 @@ for raw in sys.stdin:
             pending_approvals[approval_id] = turn_id
             pending_items[turn_id] = item_id
             pending_scenarios[approval_id] = ("deny_file", "")
+            continue
+        if ("[file-change-complete]" in prompt
+                or "[file-change-deny]" in prompt):
+            changes = [{"path": "probe-artifact.txt",
+                        "kind": {"type": "add"},
+                        "diff": "+RUNVORI_ARTIFACT_OK\n"}]
+            pending_file_changes[item_id] = changes
+            send({"method": "item/started", "params": {
+                "threadId": thread_id, "turnId": turn_id,
+                "item": {"id": item_id, "type": "fileChange",
+                         "status": "inProgress", "changes": changes}}})
+            send({"id": approval_id,
+                  "method": "item/fileChange/requestApproval",
+                  "params": file_approval_params(
+                      turn_id=turn_id, item_id=item_id,
+                      thread_id=thread_id)})
+            pending_approvals[approval_id] = turn_id
+            pending_items[turn_id] = item_id
+            pending_scenarios[approval_id] = (
+                "file_allow" if "[file-change-complete]" in prompt
+                else "file_deny", "")
             continue
         if "[interrupt]" in prompt:
             send({"id": approval_id,

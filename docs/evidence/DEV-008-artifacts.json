@@ -1,0 +1,94 @@
+{
+  "device": {
+    "serial": "emulator-5554"
+  },
+  "expected_model_turns": 0,
+  "not_run": [],
+  "real": false,
+  "scenarios": [
+    "s",
+    "a",
+    "b",
+    "c",
+    "d",
+    "f",
+    "h",
+    "g",
+    "i",
+    "j",
+    "k",
+    "e"
+  ],
+  "status": "passed",
+  "steps": [
+    {
+      "port": 60606,
+      "sessions": 2,
+      "step": "host_running"
+    },
+    {
+      "endpoint": "10.0.2.2",
+      "host_bind": "loopback",
+      "status": "ok",
+      "step": "transport"
+    },
+    {
+      "scenario": "s",
+      "status": "passed"
+    },
+    {
+      "scenario": "a",
+      "status": "passed"
+    },
+    {
+      "scenario": "b",
+      "status": "passed"
+    },
+    {
+      "scenario": "c",
+      "status": "passed"
+    },
+    {
+      "scenario": "d",
+      "status": "passed"
+    },
+    {
+      "scenario": "f",
+      "status": "passed"
+    },
+    {
+      "scenario": "h",
+      "status": "passed"
+    },
+    {
+      "scenario": "j",
+      "status": "passed"
+    },
+    {
+      "scenario": "k",
+      "status": "passed"
+    },
+    {
+      "scenario": "g",
+      "status": "passed"
+    },
+    {
+      "count": 1,
+      "status": "ok",
+      "step": "verification_config"
+    },
+    {
+      "scenario": "i",
+      "status": "passed"
+    },
+    {
+      "status": "revoked",
+      "step": "revoke"
+    },
+    {
+      "scenario": "e",
+      "status": "passed"
+    }
+  ],
+  "upstream": "synthetic_app_server"
+}

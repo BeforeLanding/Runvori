@@ -84,7 +84,7 @@ class HostEndpoint(
                 head.append("Content-Type: application/json\r\n")
                 head.append("Content-Length: ").append(payload.size).append("\r\n")
             }
-            head.append("Accept: application/json\r\n")
+            head.append("Accept: application/json, application/octet-stream\r\n")
             head.append("Connection: close\r\n\r\n")
             write.started = true
             val out = socket.outputStream
@@ -121,11 +121,13 @@ class HostEndpoint(
             ?: throw IOException("missing_content_length")
         if (length < 0 || length > MAX_BODY_BYTES) throw IOException("body_too_large")
         val body = readExactly(input, length)
+        val contentType = headers["content-type"].orEmpty().lowercase()
         @Suppress("UNCHECKED_CAST")
-        val decoded = if (body.isEmpty()) emptyMap<String, Any?>()
+        val decoded = if (body.isEmpty() || !contentType.startsWith("application/json"))
+            emptyMap<String, Any?>()
         else JsonValue.parse(String(body, Charsets.UTF_8)) as? Map<String, Any?>
             ?: throw IOException("invalid_body")
-        return HttpResult(status, decoded, headers)
+        return HttpResult(status, decoded, headers, body)
     }
 
     private fun readUntilDoubleCrlf(input: InputStream, limit: Int): ByteArray {
@@ -189,6 +191,7 @@ data class HttpResult(
     val status: Int,
     val body: Map<String, Any?>,
     val headers: Map<String, String>,
+    val rawBody: ByteArray = ByteArray(0),
 ) {
     fun error(): ProtocolError? {
         if (status in 200..299) return null

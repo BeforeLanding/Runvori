@@ -70,6 +70,8 @@ class FakeDeviceAccess:
             snapshot=self._snapshot, events=self._events,
             sessions=self._sessions, run=self._run,
             run_results=self._run_results, run_commands=self._run_commands,
+            run_artifacts=self._run_artifacts,
+            artifact_content=self._artifact_content,
             cancel_all=lambda: None)
 
     def authenticate(self, token):
@@ -106,6 +108,18 @@ class FakeDeviceAccess:
     def _run_commands(self, **kwargs):
         self.read_calls.append(("commands", kwargs))
         return {"items": [], "next_cursor": None, "has_more": False}
+
+    def _run_artifacts(self, **kwargs):
+        self.read_calls.append(("artifacts", kwargs))
+        return {"items": [], "next_cursor": None, "has_more": False}
+
+    def _artifact_content(self, **kwargs):
+        self.read_calls.append(("artifact_content", kwargs))
+        return {"artifact_id": kwargs["artifact_id"], "data": b"abcdef",
+                "size_bytes": 6, "offset": kwargs["offset"],
+                "next_offset": 6, "sha256": "0" * 64,
+                "representation": "text", "truncated": False,
+                "dropped_bytes": 0}
 
 
 class FakeMailbox:
@@ -213,6 +227,33 @@ class HandlerTests(unittest.TestCase):
         with self.assertRaises(ApiError) as caught:
             self.handlers.dispatch("dev1", token, "GET", "/v1/unknown", "", {})
         self.assertEqual(caught.exception.status, 404)
+
+    def test_artifact_list_and_content_are_authenticated_reads(self):
+        _, token = self._auth()
+        status, body, _ = self.handlers.dispatch(
+            "dev1", token, "GET", "/v1/runs/run/artifacts",
+            "limit=5&cursor=art_" + "1" * 32, {})
+        self.assertEqual(200, status)
+        self.assertEqual([], body["items"])
+        call = [item for item in self.device.read_calls
+                if item[0] == "artifacts"][-1]
+        self.assertEqual("art_" + "1" * 32,
+                         call[1]["after_artifact_id"])
+
+        artifact_id = "art_" + "2" * 32
+        status, data, headers = self.handlers.dispatch(
+            "dev1", token, "GET", f"/v1/artifacts/{artifact_id}/content",
+            "offset=0&limit=6", {})
+        self.assertEqual(200, status)
+        self.assertEqual(b"abcdef", data)
+        self.assertEqual("6", headers["X-Artifact-Size"])
+        self.assertEqual("6", headers["X-Artifact-Next-Offset"])
+
+        with self.assertRaises(ApiError) as caught:
+            self.handlers.dispatch(
+                "dev1", token, "GET",
+                f"/v1/artifacts/{artifact_id}/content", "offset=abc", {})
+        self.assertEqual(416, caught.exception.status)
 
     def test_session_list_uses_an_opaque_cursor_and_a_limit(self):
         _, token = self._auth()
