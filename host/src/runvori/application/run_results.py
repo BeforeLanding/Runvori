@@ -2,8 +2,9 @@
 
 The verifier itself is reused from ``runvori.codex.verification``. Product
 runs are not upstream probes: required commands are declared by the trusted
-local workspace registration, are matched by exact command text and resolved
-cwd, and a truncated command can never satisfy a requirement.
+local workspace registration, are matched by exact command text (or one
+complete wrapper shape observed from the pinned Windows CLI) and resolved cwd,
+and a truncated command can never satisfy a requirement.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from runvori.application import git_artifacts
+from runvori.codex import command_match
 from runvori.codex.verification import (
     RequiredCommandEvidence, RequiredVerificationSet,
 )
@@ -188,7 +190,7 @@ def _approved_ids(connection: sqlite3.Connection, run_id: str,
         if not isinstance(command, str) or not isinstance(cwd, str):
             continue
         for requirement in requirements:
-            if command != requirement["command"]:
+            if not command_match.matches(command, requirement["command"]):
                 continue
             try:
                 if (Path(cwd).resolve()
@@ -231,7 +233,7 @@ def _verification(connection: sqlite3.Connection, row: sqlite3.Row) -> dict[str,
         item["key"]: RequiredCommandEvidence(
             thread_id=thread_id, turn_id=turn_id, cwd=Path(item["cwd"]),
             matches_command=lambda value, expected=item["command"]:
-            isinstance(value, str) and value == expected)
+            command_match.matches(value, expected))
         for item in requirements})
     command_rows = connection.execute(
         "SELECT * FROM run_commands WHERE run_id=? "

@@ -58,6 +58,12 @@ DEV-008 把命令从“时间线里的一行”提升为可查询证据：事件
 
 DEV-008 第二切片把结果页接到受控产物：事件库 v17 新增 `run_artifacts` 与 `artifact_chunks`，产物 ID 由 `(run_id, kind, source, item_id/approval_id, path)` 确定性生成，客户端只能凭 ID 读取。命令输出只复制时间线实际持久化的字节，预算丢弃量保留为 `dropped_bytes`；文件差异同时保留“审批提案”和“上游报告完成”两个来源，首次读取时另做一次 Git 工作区快照并固定标为 `attribution=unknown`。`GET /v1/runs/{run_id}/artifacts` 与分块内容端点已接入，Android 增加产物详情子页。`verification.updated`、`artifact.created` 事件仍未实现；真实 Codex 文件审批与 Windows 命令包装匹配仍待验收，见 [第一切片证据](evidence/DEV-008-results.md) 与 [第二切片证据](evidence/DEV-008-artifacts.md)。
 
+DEV-008 第三切片处理真实上游与重启后的证据归属：`approval_details.normalize_item_paths` 只把该 run 登记工作区内的绝对 path/move_path 转为相对 POSIX 路径，工作区外/UNC/转义保持不安全；没有 diff 的审批不能允许。`item_events.py` 把文件 `item/updated` 与 started/completed 同等折叠，command/agent 的 updated 不当作完成。`locked_journal.py` 在写入 `approval_items` 与产物前归一化路径，并在 summary 内标记 `process_epoch`；所有 item/timeline/审批绑定查询按 `(process_epoch, thread_id, turn_id)` 限定。`codex/command_match.py` 识别裸命令、ERR-007/ERR-016 的三种完整 pwsh 包装，以及系统 Windows PowerShell 的未加引号形态和 app-server 序列化形态（双引号路径、反斜杠成对转义、单引号内层），未知形状保持非通过；`run_results.py` 的验证与已批准命令映射共用它。Android 审批页按持久 `approval_version` 刷新 item 迟到补齐的详情。设备验收可在同一端口、同一数据目录、同一证书上重启 Host，并用捕获的 run ID 与摘要做手机侧读回；`--keep` 保留的目录只用于本机核对原文。锁定 0.164 已恢复；真实 `l/m/v/r` 全部通过，见 [第三切片证据](evidence/DEV-008-real-approval-slice.md) 与 [真实 v/r 证据](evidence/DEV-008-vr-real.json)。
+
+Android 生命周期恢复把“位置”和“事实”分开：`NavigationRouteStore` 只持久化 host id、屏幕名和 opaque id，`ViewModelProvider` 在旋转时保留同一 ViewModel；进程重建后按位置重新读取 Host/缓存。决定请求编号在发网络前写入 `operations` 缓存，审批页打开时按 `(kind, approval_id)` 找回并只查询；Host 重启或审批缺失时移除决定按钮。`ON_STOP`/`ON_START` 暂停和恢复轮询，产物分块继续按请求代际丢弃过期响应。见 [生命周期证据](evidence/DEV-008-lifecycle-recovery.md)。
+
+DEV-010 把 Host 不可达时的数据来源固定为本地投影：`HostSession.cachedSessions()` / `cachedSession()` 只读 SQLite，不伪造网络状态；`RunvoriViewModel` 进入离线后展示缓存会话与时间线、关闭写门，并让列表刷新/时间线轮询继续尝试重连，成功后再走原有快照和事件补拉。离线不是新的写入队列：`startRun` 等入口再次检查活连接；恢复后仍按持久游标去重，不以“重新提交”补偿。设备验收把“手机拨号的地址”和“Host 绑定地址”分开：模拟器使用 `10.0.2.2` + 回环，物理设备使用显式 LAN/VPN/DNS 端点，证书 SAN 与绑定都由该端点派生；不会因为切换物理设备而关闭链、主机名或 SPKI 校验。见 [DEV-010 证据](evidence/DEV-010-device-baseline.md)。
+
 - `host/src/runvori/api/`：HTTPS API、认证、请求校验、错误映射。DEV-006 已用标准库实现最小服务；只有 `/v1` 子集的处理器，业务逻辑仍全部经命令邮箱。
 - `host/src/runvori/application/`：启动/中断/审批/同步用例、操作幂等与结果读出；含命令邮箱、设备读取网关、本地命名管道管理入口、`run_results.py` 与首次读取时的 `git_artifacts.py` 快照。
 - `host/src/runvori/domain/`：状态机、活动槽、审批和验证规则，不依赖 FastAPI。

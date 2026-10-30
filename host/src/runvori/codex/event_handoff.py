@@ -40,9 +40,11 @@ def route_observed_event(journals: Any, message: dict, *,
                 record_turn_completed_notification(
                     journals, message, epoch=epoch, recorded_at=recorded_at)}
     if method in ITEM_METHODS:
-        return record_item_event(journals, message, recorded_at=recorded_at)
+        return record_item_event(
+            journals, message, epoch=epoch, recorded_at=recorded_at)
     if method in DELTA_METHODS:
-        return record_delta(journals, message, recorded_at=recorded_at)
+        return record_delta(
+            journals, message, epoch=epoch, recorded_at=recorded_at)
     if "id" in message:
         raise EventHandoffError("unsupported_server_request")
     if "result" in message or "error" in message:

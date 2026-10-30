@@ -161,6 +161,79 @@ def _relative_path(value: Any) -> str | None:
     return value
 
 
+def _workspace_relative(value: Any, workspace_root: str | None) -> Any:
+    """Turn an absolute path inside the registered workspace into a relative
+    POSIX path. Anything else is returned unchanged so the review fails closed.
+    """
+    if (not isinstance(value, str) or not value
+            or not isinstance(workspace_root, str) or not workspace_root):
+        return value
+    # A relative path is already in the review form.
+    if _relative_path(value) is not None:
+        return value
+    try:
+        if not value.isprintable() or "\x00" in value:
+            return value
+        if len(value.encode("utf-8")) > MAX_PATH_BYTES:
+            return value
+        candidate = (PureWindowsPath(value) if "\\" in value
+                     or (len(value) > 1 and value[1] == ":") else Path(value))
+        if not candidate.is_absolute():
+            return value
+        # UNC and device paths are never workspace-relative.
+        drive = str(candidate.drive)
+        if drive.startswith("\\\\") or candidate.anchor.startswith("\\\\"):
+            return value
+        if any(part in ("..", "") for part in candidate.parts):
+            return value
+        root = Path(workspace_root).resolve(strict=True)
+        target = Path(value).resolve(strict=False)
+        if target == root or not target.is_relative_to(root):
+            return value
+        relative = target.relative_to(root)
+        if not relative.parts or any(part in ("", "..") for part in relative.parts):
+            return value
+        return relative.as_posix()
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return value
+
+
+def normalize_item_paths(summary: dict, workspace_root: str | None) -> dict:
+    """Normalize one stored fileChange item summary before it is merged.
+
+    Upstream items name files with absolute paths. The review and artifacts
+    only accept relative paths inside the registered workspace, so the
+    conversion happens here, once, before any review or artifact is written.
+    A path that cannot be proven inside the workspace is kept as supplied and
+    later recorded as ``unsafe_change_path``.
+    """
+    if (not isinstance(summary, dict)
+            or not isinstance(workspace_root, str) or not workspace_root):
+        return summary
+    changes = summary.get("changes")
+    if not isinstance(changes, list):
+        return summary
+    normalized: list[Any] = []
+    changed = False
+    for entry in changes:
+        if not isinstance(entry, dict):
+            normalized.append(entry)
+            continue
+        rewritten = dict(entry)
+        path = _workspace_relative(entry.get("path"), workspace_root)
+        if path != entry.get("path"):
+            rewritten["path"] = path
+            changed = True
+        move_path = _workspace_relative(entry.get("move_path"), workspace_root)
+        if move_path != entry.get("move_path"):
+            rewritten["move_path"] = move_path
+            changed = True
+        normalized.append(rewritten)
+    if not changed:
+        return summary
+    return {**summary, "changes": normalized}
+
+
 def _cwd_inside_workspace(cwd: Any, workspace_root: str | None
                           ) -> tuple[str | None, bool]:
     """Return a displayable cwd only when it resolves inside the workspace."""
@@ -188,12 +261,21 @@ def _apply_changes(review: dict, raw_changes: Any, *, item_truncated: bool) -> N
         path = _relative_path(entry.get("path"))
         if path is None:
             missing.add("unsafe_change_path")
+        raw_move = entry.get("move_path")
+        move_path = _relative_path(raw_move)
+        if isinstance(raw_move, str) and raw_move and move_path is None:
+            missing.add("unsafe_change_path")
+        diff = entry.get("diff")
+        if not isinstance(diff, str) or not diff:
+            # A review that cannot show what will change must stay
+            # inspectable but must not offer a one-time allow.
+            missing.add("diff_missing")
         review["changes"].append({
             "path": path,
             "change_type": (entry.get("change_type")
                             if entry.get("change_type") in CHANGE_TYPES else None),
-            "move_path": _relative_path(entry.get("move_path")),
-            "diff": entry.get("diff"),
+            "move_path": move_path,
+            "diff": diff,
             "diff_truncated": bool(entry.get("diff_truncated")),
         })
     if item_truncated:

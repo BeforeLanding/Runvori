@@ -110,15 +110,18 @@ class TimelineProjectorTest {
     fun `approval events keep identity and status`() {
         val items = TimelineProjector.project(listOf(
             event(1, "approval.requested", mapOf(
-                "approval_id" to "apr1", "kind" to "command",
-                "details_status" to "complete")),
+                "approval_id" to "apr1", "kind" to "file_change",
+                "approval_version" to 1, "details_status" to "insufficient")),
             event(2, "approval.updated", mapOf(
-                "approval_id" to "apr1", "status" to "pending")),
+                "approval_id" to "apr1", "status" to "pending",
+                "approval_version" to 2, "details_status" to "complete")),
         ))
         val approval = items.single() as TimelineItem.Approval
         assertEquals("apr1", approval.approvalId)
-        assertEquals("command", approval.kind)
+        assertEquals("file_change", approval.kind)
         assertEquals("pending", approval.status)
+        assertEquals("complete", approval.detailsStatus)
+        assertEquals(2L, approval.version)
         assertEquals(1L, approval.firstSeq)
     }
 }

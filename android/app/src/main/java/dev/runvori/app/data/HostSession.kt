@@ -25,6 +25,35 @@ class HostSession(
 
     fun credential(): StoredCredential? = credentialStore.load()
 
+    fun isConnected(): Boolean = active != null
+
+    /** The identity a cached projection belongs to, online or not. */
+    fun credentialHostId(): String? = credentialStore.load()?.hostId
+
+    /**
+     * Read the last committed session list without a live connection.
+     *
+     * The offline screen is a projection of the cache, never a fresh claim:
+     * no HTTP request is attempted here and writes remain closed.
+     */
+    fun cachedSessions(): List<CachedSession> {
+        val hostId = credentialHostId() ?: return emptyList()
+        return cache.sessions(hostId)
+    }
+
+    /** Read one cached session and its committed event stream. */
+    fun cachedSession(sessionId: String): CachedSessionView? {
+        val hostId = credentialHostId() ?: return null
+        val session = cache.session(hostId, sessionId) ?: return null
+        val cursor = cache.cursor(hostId, sessionId)
+        return CachedSessionView(
+            session = session,
+            events = cache.events(hostId, sessionId),
+            continuousSeq = cursor.continuousSeq,
+            hasGap = cursor.continuousSeq < session.snapshotSeq,
+        )
+    }
+
     /** Forgets the local pairing; the Host side must be revoked separately. */
     fun forget() {
         active = null
@@ -217,6 +246,9 @@ class HostSession(
         }
     }
 
+    fun latestOperation(kind: String, resourceId: String): CachedOperation? =
+        cache.latestOperation(hostId(), kind, resourceId)
+
     /**
      * Query a submitted operation again.
      *
@@ -279,6 +311,14 @@ data class SessionSync(
     val continuousSeq: Long,
     val hasGap: Boolean,
     val latestSeq: Long,
+)
+
+/** A read-only projection assembled only from the on-disk cache. */
+data class CachedSessionView(
+    val session: CachedSession,
+    val events: List<SessionEvent>,
+    val continuousSeq: Long,
+    val hasGap: Boolean,
 )
 
 sealed interface ConnectionState {

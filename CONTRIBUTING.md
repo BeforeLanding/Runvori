@@ -112,19 +112,36 @@ $env:RUNVORI_REAL_CODEX_HOME = (Resolve-Path .dev/codex-home).Path
 python scripts/accept_https_host_real.py
 ```
 
-结果与限制见 [合成证据](docs/evidence/DEV-006-https-host.md) 与 [真实验收](docs/evidence/DEV-006-https-host-real.md)。命令明细、验证结果与受控产物已由 DEV-008 接通，见 [结果页证据](docs/evidence/DEV-008-results.md) 与 [产物与差异证据](docs/evidence/DEV-008-artifacts.md)。必需验证命令由本地 `register-workspace --verification-command KEY=COMMAND` 声明，手机端不能修改；命令按精确文本与 cwd 匹配，Windows 包装目前保守判为 `unknown/not_run`。
+结果与限制见 [合成证据](docs/evidence/DEV-006-https-host.md) 与 [真实验收](docs/evidence/DEV-006-https-host-real.md)。命令明细、验证结果与受控产物已由 DEV-008 接通，见 [结果页证据](docs/evidence/DEV-008-results.md) 与 [产物与差异证据](docs/evidence/DEV-008-artifacts.md)。必需验证命令由本地 `register-workspace --verification-command KEY=COMMAND` 声明，手机端不能修改；命令按精确文本或已观察的完整 shell 包装与 cwd 匹配，未观察的包装保守判为 `unknown/not_run`。
 
-真实设备验收需要已启动的模拟器，以及已安装的 Debug APK 与 test APK。真实模式有独立场景集 `s/a/b/c/g/e`，使用 `ACCEPT_PROMPT` 与 `allow_once:python --version`；`d/f/h/i/j/k` 会以 `synthetic_only_scenario` 拒绝。先 dry-run 校验，再经显式授权执行 1 次模型回合；失败不自动重试：
+真实设备验收需要已连接且已授权的 adb 设备，以及 Debug APK 与 test APK。模拟器走历史的 `10.0.2.2` NAT 路径；物理手机必须用 `--host-address` 指定手机可达的局域网/VPN IP 或 DNS 名，必要时用 `--listen-address` 指定本机绑定、用 `--host-port` 固定端口以便防火墙放行。证书按端点写 IP/DNS SAN，客户端仍校验证书链、主机名和 SPKI 指纹。
+
+零模型真机入口如下，先 dry-run 核对设备、端点、TLS 与场景集；`device-baseline` 统一使用合成上游，`expected_model_turns=0`：
+
+```powershell
+python scripts/accept_device.py --serial <phone-serial> `
+  --profile device-baseline --host-address <LAN-or-VPN-address-or-DNS> `
+  --apk android/app/build/outputs/apk/debug/app-debug.apk `
+  --test-apk android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk `
+  --dry-run
+```
+
+确认后去掉 `--dry-run`，按需加 `--listen-address`/`--host-port`，并用 `--keep --report .dev/<name>.json` 保留脱敏结果。基线覆盖安装与 APK 版本核对、配对、读取、错误指纹、撤销、离线缓存只读、Host 不可达后的恢复、系统杀进程/force-stop 与 200% 字体；物理设备报告不含原始地址或 serial。
+
+真实模型模式默认场景集为 `s/a/b/c/g/r/e`；`l/m/v/ri/ra` 是真实专用场景（文件允许、文件拒绝、验证结论、执行中中断、回合终止导致审批失效），各有独立提示词；`d/f/h/i/j/k/n/o/q/w/x/t/y/z/s2/s3/fs/off/rec` 会以 `synthetic_only_scenario` 拒绝。`ri/ra` 合计 2 个模型回合；`s3` 是 `ra` 的 0 回合合成伴侣。先 dry-run 校验，再经显式授权按预算执行模型回合；失败不自动重试：
 
 ```powershell
 $env:RUNVORI_REAL_HOST_TESTS = "1"
-$env:RUNVORI_REAL_CODEX = "$env:LOCALAPPDATA\OpenAI\Codex\bin\2993767bd1dfb009\codex.exe"
+$env:RUNVORI_REAL_CODEX = (Resolve-Path .dev/codex-0.164/node_modules/@openai/codex-win32-x64/vendor/x86_64-pc-windows-msvc/bin/codex.exe).Path
 $env:RUNVORI_REAL_CODEX_HOME = (Resolve-Path .dev/codex-home).Path
-python scripts/accept_device.py --serial emulator-5554 --real --dry-run
-python scripts/accept_device.py --serial emulator-5554 --real --report .dev/dev007-real-1call.json
+python scripts/accept_device.py --serial emulator-5554 --real --only ri,ra --dry-run
+python scripts/accept_device.py --serial emulator-5554 --real --only ri,ra --keep `
+  --report .dev/dev009-interrupt-approval-real.json
 ```
 
-`--dry-run` 只校验版本门、设备、场景集与回合预算，不启动 Host、不发起模型回合。`--report` 在成功或失败时都写脱敏 JSON；失败保留报告且不自动重跑。结果与限制见 [真实设备验收](docs/evidence/DEV-007-device-acceptance-real.md)。
+`ri` 只在真实命令输出 `RUNVORI_SLEEP_STARTED` 后中断；自然完成记 `terminal_race_natural_completion`，RPC/202 不算成功。`ra` 从保持打开的审批页中断，要求事件历史中存在回合终止导致的审批 `expired`、最终仍失效、旧决定被拒绝且 `approval_operations=0`；真实上游可能在之后补发 `request_closed` 并改写当前 `resolution_kind`，不能只看当前行。方案与验收结果见 [DEV-009](docs/evidence/DEV-009-interrupt-approval-real.md)。
+
+`--dry-run` 只校验版本门、设备、场景集与回合预算，不启动 Host、不发起模型回合。`--report` 在成功或失败时都写脱敏 JSON；`--keep` 保留一次性数据目录，并在 stderr 打印路径。验证失败时用 `python scripts/inspect_kept_commands.py <保留目录>` 在本机核对 Host 原文；该脚本只允许读取 `.dev` 内目录，原文不得写入报告或证据。失败保留报告且不自动重跑。结果与限制见 [真实设备验收](docs/evidence/DEV-007-device-acceptance-real.md) 与 [真实 v/r 证据](docs/evidence/DEV-008-vr-real.json)。
 
 定向测试使用真实子进程与 fake app-server（不访问模型）：
 

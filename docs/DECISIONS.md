@@ -114,23 +114,33 @@ DEV-002 实现补充：Windows 通过不可继承的 kill-on-close Job 持有进
 
 ## ADR-014：验证要求按回合快照，结果从持久命令证据计算（事件库 v16）
 
-状态：DEV-008 第一切片实现并验证（合成设备验收与离线状态矩阵通过，真实 Codex 验证匹配未跑）。
+状态：DEV-008 第一切片实现并验证（合成设备验收与离线状态矩阵通过）；第三切片新增完整已观察包装匹配，2026-10-30 采集到真实 `v` 的 92 字节 app-server 序列化样本并匹配通过。
 
 选择：工作区通过受信本地 `register-workspace` 声明 `verification_commands`，每个 run 创建时把命令与 cwd 快照到 `run_verifications`；命令 item 在同一事务投影到 `run_commands`。`/v1/runs/{run_id}/results` 读取时把持久证据重放给现有 `codex/verification.py`，不新增 `verification.updated` 事件，也不在内存里保存验证器。`configured=false` 明确表示未配置，空集不报通过；退出码 null 保持 null；命令文本截断不能匹配要求。
 
 原因：如果结果依赖当前工作区配置，用户修改验证命令会追溯改写旧回合的成败，历史证据失去意义；如果只保存在内存，Host 重启后结果就不可查询。验证器本身已有保守的“同一 item 不能充当两项、完成状态与退出码必须自洽、时间顺序必须成立”规则，产品侧复用它可以避免出现第二套更宽松的判定。
 
-后果：修改工作区只影响之后创建的回合。产品匹配是精确命令文本加解析后的 cwd；Windows 命令包装目前没有规范化，真实 Codex 可能落到 `unknown`/`not_run`，必须保留这个保守结果而不是猜测通过。结果页和命令列表是读侧资源；产物/差异由 ADR-015 接续。见 [DEV-008 证据](evidence/DEV-008-results.md)。
+后果：修改工作区只影响之后创建的回合。产品匹配是精确命令文本或已观察的完整 shell 包装（含 app-server 序列化的系统 PowerShell）加解析后的 cwd；未知包装仍保守地落到 `unknown`/`not_run`，不能猜测通过。结果页和命令列表是读侧资源；产物/差异由 ADR-015 接续。见 [DEV-008 证据](evidence/DEV-008-results.md) 与 [第三切片证据](evidence/DEV-008-real-approval-slice.md)。
 
 ## ADR-015：产物只按 ID 读取，内容来自已持久化证据（事件库 v17）
 
-状态：DEV-008 第二切片实现并验证（合成设备验收 12 场景、离线状态与 Git 快照测试通过；真实 Codex 文件审批未跑）。
+状态：DEV-008 第二切片实现并验证（合成设备验收 12 场景、离线状态与 Git 快照测试通过）；第三切片补齐绝对路径归一化、`item/updated` 与审批页刷新，真实 `l/m` 文件审批、`v` 验证结论与 `r` 重启读回均已通过（[第三切片证据](evidence/DEV-008-real-approval-slice.md)、[真实 v/r 证据](evidence/DEV-008-vr-real.json)）。
 
 选择：为命令输出和文件差异建立 `run_artifacts` 元数据与 `artifact_chunks` 内容块。产物 ID 由运行、类型、来源、item/approval 与相对路径确定性生成，客户端在 API 里只能提交 ID，不能提交本地路径。命令输出在时间线写入的同一事务里追加实际持久化字节；预算丢弃量只记 `dropped_bytes`，不从未持久化的聚合输出补回。文件差异保存两份独立来源：“审批提案”来自审批 review，“上游报告完成”来自 `fileChange` item；两者不互相覆盖。Git 工作区快照在首次读取产物时生成，固定 `attribution=unknown`，未跟踪文件只保留路径。内容端点按 `offset/limit` 返回字节，客户端必须用 `next_offset` 推进，并校验总大小与哈希。
 
 原因：结果页需要能回看原始输出和差异，但不能因此把 Host 变成任意文件读取器，也不能把已丢弃内容伪装成完整。把内容复制到独立、有界的产物中，使哈希和重启后读取稳定；保留来源与归因，避免把审批提案或当前工作区改动说成 Agent 已完成。Git 快照在读取时生成而不是回填“回合前基线”，是因为当前 Host 没有可靠的运行前基线捕获；因此它只能作为明确标注的辅助证据。
 
-后果：Git 快照可能包含回合前已有改动，且只覆盖最多 16 个条目；未跟踪文件没有正文，二进制只显示元信息。命令输出上限与单回合时间线预算一致（2 MiB）；更长的上游输出仍会记为截断。当前不发出 `artifact.created`/`artifact.unavailable` 事件，产物在读取时投影；真实 Codex 文件审批的允许路径与 Windows 包装匹配继续单独验收。见 [DEV-008 第二切片证据](evidence/DEV-008-artifacts.md)。
+后果：Git 快照可能包含回合前已有改动，且只覆盖最多 16 个条目；未跟踪文件没有正文，二进制只显示元信息。命令输出上限与单回合时间线预算一致（2 MiB）；更长的上游输出仍会记为截断。当前不发出 `artifact.created`/`artifact.unavailable` 事件，产物在读取时投影。真实上游的文件 item 绝对路径只在证明位于该 run 的登记工作区内时转为相对路径；没有可显示差异的审批不能允许。真实 Codex 文件审批与 Windows 包装匹配已由第三切片单独验收通过。见 [DEV-008 第二切片证据](evidence/DEV-008-artifacts.md) 与 [第三切片证据](evidence/DEV-008-real-approval-slice.md)。
+
+## ADR-016：中断与审批失效只认持久终态，不认 RPC 返回
+
+状态：DEV-009 真实验收完成（首次 2 个模型回合 + `ra` 复跑 1 个回合，均未重试）：`ri` 通过；`ra` 手机侧与失效行为在首次运行中通过，但分类器因上游在回合终止后补发 `request_closed` 误判，修复为读取事件历史后复跑通过。
+
+选择：真实中断必须等到实际执行开始信号后再由手机触发。`ri` 以真实命令自己输出的 `RUNVORI_SLEEP_STARTED` 为开始信号，命令自身有 60 秒上限；只有同一 run 的 `run.interrupted`、中断操作 `confirmed/run_interrupted` 和活动槽释放同时成立才算成功。自然完成先发生时记录 `terminal_race_natural_completion`，不得改写成中断成功；RPC 返回或 HTTP 202 只表示请求已受理。`ra` 在审批页保持打开时通过产品中断入口结束回合；旧审批必须由回合终态转为 `expired`，且事件历史保留该回合终止证据，Host 拒绝旧决定，`approval_operations` 保持 0。真实上游可能在回合终止后关闭请求并把当前 `resolution_kind` 改写为 `request_closed`；失效原因以事件历史为准，不能只看当前行。协议没有可靠上游期限时，不以等待时长判定过期。
+
+原因：中断是竞争操作，上游可能已经完成；把 RPC 答复或手机按钮状态当作终态会误报。审批的失效同样必须来自持久状态，否则“等几秒再提交”会被错误当成过期依据，且可能产生未授权的批准。把竞争结果显式记录为失败，比在验收里等待运气更可复现。
+
+后果：真实 `ri/ra` 各有 1 个模型回合预算，失败即停止、不自动重试；首次运行用满 2 个回合，`ra` 的失败是验收分类器对真实上游关闭顺序的错误假设，不是产品失效路径失败；单独授权的 1 个回合复跑通过。首次失败报告保留不改写。`ri/ra` 通过不代表 `starting` 中断、真实并发竞争、RPC 失败或确认丢失已完成。合成 `s3` 只证明产品路径，不证明真实上游。见 [DEV-009 验收结果](evidence/DEV-009-interrupt-approval-real.md)。
 
 ## 待决策清单
 
@@ -152,9 +162,13 @@ DEV-001 更新：实验环境已确认 Windows、Python 3.12.10、Codex CLI 0.16
 
 2026-10-24 双命令补充：Q-07 两条固定命令的真实逐项与汇总结果为 `passed`，汇总器按协议优先级处理缺失、失败和执行中状态，并防止同一上游 item 重复计入。此结论不关闭任意命令登记、Host 持久化或产品验收，见 [观察](evidence/DEV-003-two-required-verifications.json)。
 
-2026-10-27 DEV-008 补充：Q-07 的必需命令已进入产品 Host：工作区本地声明、回合级快照、命令证据持久化与 `/results` 汇总已接通。匹配规则冻结为精确命令文本 + 解析后的 cwd；Windows Codex 的 PowerShell 包装尚未规范化，真实运行若出现包装只会得到 `unknown`/`not_run`，不会被误判通过。见 [DEV-008 证据](evidence/DEV-008-results.md)。Q-07 仍开放。
+2026-10-27 DEV-008 补充：Q-07 的必需命令已进入产品 Host：工作区本地声明、回合级快照、命令证据持久化与 `/results` 汇总已接通。匹配规则为精确命令文本或已观察的完整 pwsh 包装 + 解析后的 cwd；不认识的包装只会得到 `unknown`/`not_run`，不会被误判通过。真实 Windows 包装样本仍待采集。见 [DEV-008 证据](evidence/DEV-008-results.md)。Q-07 仍开放。
 
 2026-10-27 DEV-008 第二切片补充：Q-07 的文件差异已进入产品 Host，但来源被拆成审批提案、上游报告完成和首次读取时的 Git 工作区快照；后两者（尤其是 Git）不会自动归因于 Agent。未跟踪文件只记录路径，二进制只保留元信息，Git 快照最多 16 个条目，且没有回合前基线可用于精确分离。真实 Codex 文件审批 `complete`、重命名/大差异和基线分离仍开放。见 [DEV-008 第二切片证据](evidence/DEV-008-artifacts.md)。Q-07 仍开放。
+
+2026-10-28 DEV-008 第三切片补充：真实文件 item 的绝对路径按该 run 的登记工作区归一化为相对路径；工作区外、UNC/设备前缀、转义、根目录本身和无法解析的路径保持不安全；没有 diff 的文件审批不能允许。`item/updated` 折叠、审批页按持久版本刷新、item/timeline 查询按 `process_epoch` 限定已实现。Windows 包装匹配只接受完整已观察形状；2026-10-30 用 app-server `thread/read` 取得真实 `v` 的 92 字节原文——`"C:\\windows\\…\\powershell.exe" -Command '<exact>'`，路径在双引号内成对转义——并为该序列化补上精确匹配；执行数组所示的未加引号形态保留为保守等价形，`..`、其他盘符/可执行文件、附加参数和未知形状仍不通过。锁定 0.164 已恢复到隔离目录；真实 `l`（允许）、`m`（拒绝）、`v`（验证通过）与 `r`（重启读回一致）全部通过，两次授权运行共 4 个模型回合，无自动重试。见 [第三切片证据](evidence/DEV-008-real-approval-slice.md)、[真实 v/r 证据](evidence/DEV-008-vr-real.json) 与 [ERR-038](ERRORS.md)。Q-07 仍开放。
+
+2026-10-28 DEV-008 Android 生命周期补充：旋转和进程重建恢复只持久化位置（host/screen/opaque id），所有可见事实重新读取；决定请求编号在发网络前写入本地操作缓存，回执丢失后只查询不重发；Host 重启或审批缺失时移除决定按钮。系统 `am kill` 与 `force-stop` 分别验证。见 [生命周期证据](evidence/DEV-008-lifecycle-recovery.md) 与 [ERR-039](ERRORS.md)。
 
 2026-10-24 失败路径补充：Q-07 的固定 `exit 7` 真实退出码为 7，回合 `completed` 与验证 `failed` 同时成立；该单一固定命令只证明非零路径，见 [观察](evidence/DEV-003-nonzero-verification.json)。
 

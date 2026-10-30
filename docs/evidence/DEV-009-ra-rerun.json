@@ -1,0 +1,107 @@
+{
+  "approval_scopes": {
+    "b": "allow_once:python --version",
+    "l": "allow_once:file_change",
+    "m": "deny:file_change",
+    "ra": "no_decision:pending_approval_invalidated_by_turn_termination",
+    "ri": "allow_once:interrupt_probe_sleep_command",
+    "v": "allow_once:python --version"
+  },
+  "codex_version": "codex-cli 0.164.0-alpha.11.1",
+  "command_match_asserted": false,
+  "command_samples": {
+    "present": false
+  },
+  "device": {
+    "serial": "emulator-5554"
+  },
+  "expected_model_turns": 1,
+  "interrupt_checks": {
+    "ra": {
+      "success": "pending approval expired with resolution turn_terminal, old decision refused, zero approval operations",
+      "terminal_timeout_seconds": 240,
+      "trigger": "product interrupt entry while the approval page stays open"
+    }
+  },
+  "model_turn_scenarios": [
+    "ra"
+  ],
+  "not_run": [
+    "s",
+    "a",
+    "b",
+    "c",
+    "d",
+    "f",
+    "h",
+    "g",
+    "o",
+    "q",
+    "w",
+    "x",
+    "i",
+    "l",
+    "m",
+    "v",
+    "ri",
+    "r",
+    "j",
+    "k",
+    "n",
+    "y",
+    "z",
+    "s2",
+    "s3",
+    "t",
+    "e"
+  ],
+  "observed_runs": 1,
+  "pairing_bootstrap": true,
+  "real": true,
+  "scenarios": [
+    "ra"
+  ],
+  "status": "passed",
+  "steps": [
+    {
+      "port": 61063,
+      "sessions": 2,
+      "step": "host_running"
+    },
+    {
+      "endpoint": "10.0.2.2",
+      "host_bind": "loopback",
+      "status": "ok",
+      "step": "transport"
+    },
+    {
+      "scenario": "p",
+      "status": "passed"
+    },
+    {
+      "scenario": "ra",
+      "status": "passed"
+    },
+    {
+      "active_slot_run_id": null,
+      "approval_late_closure_observed": true,
+      "approval_operations": 0,
+      "approval_resolution_kind": "request_closed",
+      "approval_status": "expired",
+      "approval_turn_terminal_observed": true,
+      "approvals": 1,
+      "interrupt_outcome": "run_interrupted",
+      "interrupt_status": "confirmed",
+      "pending_approvals": 0,
+      "phone_test_passed": true,
+      "run_id": "EC3EKdniBt5MYhgeGP6tTGYhQI2l5up_",
+      "run_status": "interrupted",
+      "scenario": "ra",
+      "session_runs": 1,
+      "start_signal_observed": false,
+      "status": "passed",
+      "step": "interrupt_evidence"
+    }
+  ],
+  "upstream": "real_codex"
+}

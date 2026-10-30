@@ -2,7 +2,7 @@
 
 让开发者离开电脑后，仍能在手机上查看 Codex 任务、处理审批、检查执行结果。
 
-项目目前处于 M0 技术验证阶段，首版定位为「开发者离席后的 Codex 移动接管」。已提供 Python 本地探针、隔离 Codex 握手、schema 校验、故障测试，以及可由独立 HTTPS 客户端操作的最小 Host（配对、会话列表、快照、时间线、回合、审批详情与决定、中断、操作查询、命令明细、验证结果与受控产物）。Android 客户端已能配对、列出 Host 管理的会话、读时间线、阅读并决定审批、发起新回合与中断，并在结果页分开查看回合状态、验证结论、命令输出和文件差异；设备验收用真实 APK 对真实 `HostRuntime` 跑通十二个合成场景，并已用真实 Codex 完成 1 次核心闭环设备验收（1 次模型回合）。真机安装、真实中断/过期、真实文件审批 `complete` 路径与 Windows 命令包装仍未完成。
+项目目前处于 M0 技术验证阶段，首版定位为「开发者离席后的 Codex 移动接管」。已提供 Python 本地探针、隔离 Codex 握手、schema 校验、故障测试，以及可由独立 HTTPS 客户端操作的最小 Host（配对、会话列表、快照、时间线、回合、审批详情与决定、中断、操作查询、命令明细、验证结果与受控产物）。Android 客户端已能配对、列出 Host 管理的会话、读时间线、阅读并决定审批、发起新回合与中断，并在结果页分开查看回合状态、验证结论、命令输出和文件差异；设备验收用真实 APK 对真实 `HostRuntime` 跑通二十三个合成场景，并已用真实 Codex 完成 1 次核心闭环设备验收（1 次模型回合）。真实 `l/m` 文件允许/拒绝、`v` 验证结论与 `r` 重启读回均通过；真实 `ri/ra` 中断专项通过：首次 2 个模型回合中 `ri` 通过，`ra` 手机侧通过但 Host 分类器因上游补发 `request_closed` 误判；离线修复后经单独授权的 1 个回合复跑 `ra` 通过。DEV-010 新增真机地址/绑定分离与零模型基线入口，模拟器 14 场景（含离线只读缓存、恢复补拉、200% 字体）通过；**实际手机尚未接入，真机安装与可达性仍未完成**。
 
 参见 [Runvori 定位收敛与首版方案](docs/定位与首版方案.md)，包含参考项目研究、首版范围、验收标准及 6–8 周安排。
 
@@ -27,13 +27,23 @@ python scripts/runvori.py doctor
 python scripts/probe_https_host.py   # 合成上游的 HTTPS 客户端闭环，不访问模型
 ```
 
-前两条与 `probe_https_host.py` 离线运行；doctor 需要 PATH 中的精确版本 Codex，会创建隔离的临时 HOME，验证初始化与会话列表，不发起模型回合。Android 设备验收需要已启动的模拟器与已安装的 Debug APK：
+前两条与 `probe_https_host.py` 离线运行；doctor 需要 PATH 中的精确版本 Codex，会创建隔离的临时 HOME，验证初始化与会话列表，不发起模型回合。Android 设备验收需要已启动的模拟器或已授权的物理手机，以及已安装的 Debug APK 与 test APK。模拟器仍走历史路径：
 
 ```powershell
-python scripts/accept_device.py --serial emulator-5554   # 合成上游，十二个场景，不访问模型
+python scripts/accept_device.py --serial emulator-5554   # 合成上游，二十三个场景，不访问模型
 ```
 
-详情见 [贡献指南](CONTRIBUTING.md)、[本轮证据](docs/evidence/DEV-001.md)、[HTTPS 闭环证据](docs/evidence/DEV-006-https-host.md)、[合成设备验收](docs/evidence/DEV-007-device-acceptance.md)、[真实设备验收](docs/evidence/DEV-007-device-acceptance-real.md)、[DEV-008 结果页证据](docs/evidence/DEV-008-results.md) 与 [DEV-008 产物与差异证据](docs/evidence/DEV-008-artifacts.md)。
+真机零模型基线需要手机可达的局域网/VPN 地址或 DNS 名；`--host-address` 与设备 serial 分开配置，证书继续按端点写 SAN 并校验链、主机名和 SPKI：
+
+```powershell
+python scripts/accept_device.py --serial <phone-serial> `
+  --profile device-baseline --host-address <LAN-or-VPN-address-or-DNS> `
+  --apk android/app/build/outputs/apk/debug/app-debug.apk `
+  --test-apk android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk `
+  --dry-run
+```
+
+详情见 [贡献指南](CONTRIBUTING.md)、[本轮证据](docs/evidence/DEV-001.md)、[HTTPS 闭环证据](docs/evidence/DEV-006-https-host.md)、[合成设备验收](docs/evidence/DEV-007-device-acceptance.md)、[真实设备验收](docs/evidence/DEV-007-device-acceptance-real.md)、[DEV-008 结果页证据](docs/evidence/DEV-008-results.md)、[DEV-008 产物与差异证据](docs/evidence/DEV-008-artifacts.md) 与 [DEV-008 第三切片证据](docs/evidence/DEV-008-real-approval-slice.md)、[DEV-009 中断/审批失效运行方案](docs/evidence/DEV-009-interrupt-approval-plan.md) 与 [DEV-010 零模型设备基线](docs/evidence/DEV-010-device-baseline.md)。
 
 ## 文档入口
 

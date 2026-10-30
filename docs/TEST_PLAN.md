@@ -1,12 +1,14 @@
 # 测试、验收与证据计划
 
-日期：2026-10-23（2026-10-27 增补 DEV-007 真实设备验收）。状态：测试设计与已执行证据并存；各节标注覆盖范围，未标注的用例仍未执行，不代表通过。需求来源：[PRD](PRD.md)。
+日期：2026-10-23（2026-10-27 增补 DEV-007 真实设备验收，2026-10-28 增补 DEV-008 第三切片，2026-10-30 增补 DEV-009 中断/审批失效方案、首次真实 `ri/ra` 运行与 `ra` 复跑通过、DEV-010 真机地址配置与零模型基线）。状态：测试设计与已执行证据并存；各节标注覆盖范围，未标注的用例仍未执行，不代表通过。需求来源：[PRD](PRD.md)。
 
 DEV-001 补充：已建立 stdio 探针的合成故障测试和真实握手检查，见 [本轮证据](evidence/DEV-001.md)；它们是 M0 前置检查，本文 AT 产品验收仍未执行。
 
 DEV-007 真实设备验收（2026-10-27）：除合成九场景外，已用真实 Codex 执行 1 次核心闭环设备验收（`s/a/b/c/g/e`，`expected_model_turns=1`、`observed_runs=1`，未重试）。真实模式使用独立场景集与 `ACCEPT_PROMPT`，不跑 `d/f/h` 的合成指令；见 [真实设备验收](evidence/DEV-007-device-acceptance-real.md)。**状态：核心真实链路通过，剩余专项待验收。**
 
 DEV-008 结果页与验证证据（2026-10-27）：事件库 v16 持久化命令与回合级验证要求；离线覆盖未配置、`not_run`、退出码缺失、输出截断、命令分页，以及同一数据目录启动真实 `HostRuntime` 后结果仍可查询。合成设备验收新增 `i` 场景，在真实 APK 上验证回合 `completed` 与验证 `failed` 同时显示；`b` 同时验证 `passed`。见 [DEV-008 证据](evidence/DEV-008-results.md)。未跑真实 Codex 的验证匹配。
+
+DEV-010 零模型设备基线（2026-10-30）：`scripts/accept_device.py` 新增 `--host-address`/`--listen-address`/`--host-port`，设备 serial 与 Host 端点分离；模拟器保留 `10.0.2.2`，物理设备必须指定 LAN/VPN/DNS 可达地址，证书按 IP/DNS 写 SAN，TLS 链、主机名与 SPKI 校验不放宽。新增 `--profile device-baseline`，合成上游 14 场景、`expected_model_turns=0`，覆盖 APK 安装/版本核对、配对、会话读取、审批、验证、产物、离线只读缓存、Host 同端口重启后的游标恢复、系统杀进程/force-stop 和 200% 字体。模拟器 `Medium_Phone` API 37 最终全绿；**实际手机未连接，本轮没有真机证据**。见 [DEV-010 证据](evidence/DEV-010-device-baseline.md) 与 [脱敏报告](evidence/DEV-010-device-baseline.json)。
 
 ## 1. 验证层次
 
@@ -65,9 +67,13 @@ DEV-006 补充（2026-10-27）：详情不足、被截断、cwd 无法证明在�
 
 DEV-007 补充（2026-10-27）：设备验收 `d` 场景在真实 APK 上验证——请求被上游结束、审批转 `expired` 后，UI 的允许与拒绝**都不可用**（`can_allow=false`、`can_deny=false`），绕过 UI 直接用 API 对同一审批提交 `allow_once` 被 Host 拒绝。`c` 场景验证回合终态后重连不会让旧审批重新可用。未覆盖：等待审批时重启 app-server 使新 epoch 复用同号请求。真实模式本轮未跑 `d`；真实中断/过期需要第二次显式授权的模型回合。
 
+DEV-009 真实运行（2026-10-30，`ra` 首次 1 个回合 + 复跑 1 个回合，均未重试）：真实审批页保持打开，通过产品中断入口结束回合。复跑手机侧通过——旧审批为 `expired`、允许与拒绝不可用、绕过 UI 的 `allow_once` 被 `approval_expired` 拒绝、缓存审批操作数为 0；Host 侧 run 为 `interrupted`、中断操作 `confirmed/run_interrupted`、活动槽释放、`pending_approvals=0`、`approval_operations=0`，事件历史保留回合终止导致的 `expired`。首次运行中真实 Codex 在回合终止后又关闭上游请求，把当前 `resolution_kind` 改写为 `request_closed`，首次分类器只接受最终 `turn_terminal`，因此判失败并停止；证据读取器已改为从事件历史确认回合终止失效并允许其后的 `request_closed`，随后单独授权的 1 个回合复跑通过。首次失败报告保留，不追溯改写。合成伴侣 `s3` 已在真实 APK + 合成上游上通过。见 [验收结果](evidence/DEV-009-interrupt-approval-real.md) 与 [运行方案](evidence/DEV-009-interrupt-approval-plan.md)。
+
 ### AT-07 中断与终态竞争（FR-05）
 
 从 running、waiting_approval、starting 请求中断；重复中断返回已有结果。模拟完成与中断竞争、RPC 失败和确认丢失。只有真实终态或确定的进程停止才显示已中断；已经完成则仍显示 completed，文件改动保持可检查。
+
+DEV-009 首次真实运行（2026-10-30，`ri` 1 个模型回合，未重试）：真实命令输出 `RUNVORI_SLEEP_STARTED` 后手机请求中断，同一 run 终态为 `run.interrupted`，中断操作 `confirmed/run_interrupted`，活动槽释放，手机场景通过。自然完成仍记 `terminal_race_natural_completion`，RPC 返回或 202 单独不算证据。离线覆盖触发超时、终态超时、终态竞争与未确认中断。该路径只覆盖运行中中断；`starting` 中断、真实并发竞争、RPC 失败和确认丢失仍需分别验证。见 [运行方案](evidence/DEV-009-interrupt-approval-plan.md)。
 
 ### AT-08 单活动回合与启动幂等（FR-02、NFR-01）
 
@@ -83,6 +89,8 @@ DEV-006 部分覆盖（2026-10-27）：合成闭环在一次完整回合后，�
 
 DEV-007 补充（2026-10-27）：设备验收的 `c` 场景在真实 APK 上制造历史后丢弃内存连接，用新建 ViewModel 从磁盘游标重同步，断言缓存事件 seq 无重复、从 1 连续、`syncGap=false` 且终态事件仍在。这是**进程内重建**，不等于系统杀进程或断网 30 秒；缺口、超前游标与身份变化的注入仍未在设备侧覆盖。真实 Codex 设备验收的 `c` 复用 `b` 已写入 `devsess0` 的历史重同步，不额外产生模型回合，见 [真实设备验收](evidence/DEV-007-device-acceptance-real.md)。
 
+DEV-010 补充（2026-10-30，模拟器）：`off` 在 Host 被停止后启动真实 APK，展示缓存会话与时间线，`writable=false`、发送入口不存在，编程 `startRun` 被拒且缓存操作数不变；`rec` 在 Host 同端口、同数据目录、同证书重启后从游标重拉，seq 连续、无重复、无缺口，终态事件仍在。Host 侧 `runs`/`approval_operations` 在离线与恢复期间不变。这不是真实 Wi-Fi/移动数据断开 30 秒，也不证明物理手机可达；见 [DEV-010 证据](evidence/DEV-010-device-baseline.md)。
+
 ### AT-10 Android 生命周期（FR-06）
 
 分别旋转、切后台、系统杀进程、清除缓存后重新打开。保留缓存的场景恢复正确会话与锚点；清除缓存后重新读取，不伪造恢复成功。模拟 Room 写事务失败，游标不得超过已落盘事件。
@@ -91,9 +99,13 @@ DEV-007 补充（2026-10-27）：设备验收的 `c` 场景在真实 APK 上制�
 
 DEV-007 部分覆盖（2026-10-27）：设备验收 `c` 场景丢弃内存中的 `HostSession`/ViewModel，保留磁盘缓存后新建 ViewModel 重连，得到正确的会话、连续游标与终态事件。这只等价于“进程内重建”，**不是**系统杀进程；旋转、切后台、清除缓存、Room 写事务失败（本实现用 `SQLiteOpenHelper`，尚无注入写失败的用例）均未执行。
 
+DEV-010 补充（2026-10-30，模拟器）：`o` 覆盖切后台与进程重建后的审批恢复并等待写门打开后决定；`y/z` 分别记录系统 `am kill` 与 `force-stop` 后审批恢复，Host `runs`/`approval_operations` 计数不变；`off/rec` 覆盖 Host 不可达时的只读缓存与恢复。清除缓存、真实物理设备和所有厂商进程管理行为仍未覆盖。
+
 ### AT-11 阅读与可访问性（FR-03、FR-06、NFR-03、NFR-04）
 
 用户浏览历史时持续追加事件、更新同一长消息、向前分页、旋转并重建进程，检查同一 item 与内部偏移保持；“回到最新”进入跟随模式。长代码、200% 字体、TalkBack、明暗主题及错误提示均可用。量化方法见下文。
+
+DEV-010 补充（2026-10-30，模拟器）：`fs` 将系统 `font_scale` 设为 2.0，确认配置生效后检查会话行、时间线和审批页状态可读取，并能滚动到拒绝按钮完成决定；运行后恢复字体设置。只覆盖关键控件，不是完整 TalkBack、长列表或全页面视觉验收。
 
 ### AT-12 安全与数据清理（FR-01、FR-10、NFR-02）
 
@@ -107,13 +119,17 @@ DEV-008 第二切片补充（2026-10-27）：产物内容端点只接受 `art_` 
 
 准备测试通过、退出码非零、未配置验证、配置后未执行、退出码缺失、中途终止、非验证命令失败等案例。检查 required 验证项的映射和汇总规则。模型输出“全部通过”但没有真实证据时仍为 not_run/unknown；回合 completed 可以同时验证 failed。
 
-DEV-008 部分覆盖（2026-10-27）：`test_run_results.py` 覆盖通过+非零混合、未配置、配置后未运行、退出码缺失、输出截断、命令分页和 `HostRuntime` 重开后的结果查询；合成设备验收 `i` 在真实 APK 上覆盖回合 `completed` + 验证 `failed`，`b` 覆盖 `passed` 并从结果页打开命令输出产物，`j`/`k` 覆盖文件审批允许/拒绝后的差异产物。验证配置只能由受信本地入口声明，命令按精确文本和 cwd 匹配；Windows shell 包装与真实 Codex 退出码仍未验证。见 [第一切片证据](evidence/DEV-008-results.md) 与 [第二切片证据](evidence/DEV-008-artifacts.md)。
+DEV-008 部分覆盖（2026-10-27）：`test_run_results.py` 覆盖通过+非零混合、未配置、配置后未运行、退出码缺失、输出截断、命令分页和 `HostRuntime` 重开后的结果查询；合成设备验收 `i` 在真实 APK 上覆盖回合 `completed` + 验证 `failed`，`b` 覆盖 `passed` 并从结果页打开命令输出产物，`j`/`k` 覆盖文件审批允许/拒绝后的差异产物。验证配置只能由受信本地入口声明，命令按精确文本或已观察的完整 shell 包装和 cwd 匹配；真实 Codex 包装样本与真实退出码已由第三切片采集并验证通过。见 [第一切片证据](evidence/DEV-008-results.md)、[第二切片证据](evidence/DEV-008-artifacts.md) 与 [第三切片证据](evidence/DEV-008-real-approval-slice.md)。
 
 ### AT-14 差异来源（FR-07）
 
 准备干净/脏工作区、未跟踪文件、重命名、二进制和大差异；检查回合前基线、上游改动和当前 Git 差异的标签。无法分离的改动不归因于 Agent。产物缺失或截断必须可见，不能显示空白通过。
 
 DEV-008 第二切片补充（2026-10-27）：`/artifacts` 与按 ID 分块读取已实现。离线覆盖命令输出的空/截断/哈希/分块无重复、Host 重开一致性、审批提案与上游报告两种来源、Git 工作区快照的 `unknown` 归因、未跟踪文件仅元信息、非法 ID 与越界偏移。合成设备 `j` 覆盖完整文件审批的允许路径和差异查看，`k` 覆盖拒绝后提案仍可查看；`b` 覆盖命令输出查看。**仍未覆盖**真实 Codex 文件审批 `complete` 路径、真实重命名/二进制/大差异、回合前基线与回合内改动的准确分离、文件改动时间线事件、真机产物下载和性能。AT-14 仍为部分覆盖。
+
+DEV-008 第三切片补充（2026-10-28，2026-10-30 修复复验）：离线覆盖真实文件 item 绝对路径按登记工作区归一化、工作区外/UNC/转义拒绝、`diff_missing`、不安全 move_path、审批先到/后到、`item/updated` 折叠、新 epoch 不继承旧 item、三种已观察 pwsh 包装及系统 Windows PowerShell 两种形态通过、附加参数/其他 shell/危险展开拒绝、`HostRuntime` 重开后产物字节与哈希一致。2026-10-30 新增真实 app-server 序列化（92 字节、双引号路径成对转义、单引号内层）的正向与边界测试：`test_observed_quoted_system_powershell_wrapper_matches`、`test_observed_app_server_wrapper_passes_verification`、`test_quoted_system_powershell_boundaries_are_rejected`、`test_unobserved_wrapper_variation_does_not_pass_verification`。合成设备扩到 14 场景：`n` 验证审批页在 item 后到时从 `insufficient` 刷新为可允许且绝对路径显示为相对；`r` 验证 Host 同端口/同数据目录/同证书重启后命令与产物 SHA-256 一致；`j/k` 在重启后回归。锁定 0.164 已恢复到隔离目录；真实 `l` 文件允许与 `m` 文件拒绝通过（Host 文件字节分别为 AFTER/BEFORE）；2026-10-30 修复包装匹配后获授权的真实 `v,r` 通过：`observed_runs=1`、`command_match_asserted=true`，重启后命令与产物摘要一致（[ERR-038](ERRORS.md) 已关闭）。411 项离线测试（408 通过、3 项环境跳过）、16 份契约通过。见 [第三切片证据](evidence/DEV-008-real-approval-slice.md) 与 [真实 v/r 证据](evidence/DEV-008-vr-real.json)。
+
+Android 生命周期专项补充（2026-10-28）：合成设备新增 `o`（切后台 + 进程重建恢复审批）、`q`（回执丢失后不重复决定）、`w`（审批缺失 stale）、`x`（产物快速切换/重开不串内容）、`t`（真实 Activity 旋转）、`y/z`（系统 `am kill` 与 `force-stop` 分别记录）、`s2`（Host 重启后旧审批失效）；全部通过，`runs` 与 `approval_operations` 计数在杀进程后不变。见 [生命周期证据](evidence/DEV-008-lifecycle-recovery.md)。仍未覆盖真机、200% 字体、TalkBack、长列表性能与连续十次演示。
 
 ### AT-15 历史新回合（FR-08）
 

@@ -3,8 +3,11 @@ package dev.runvori.app.ui
 import dev.runvori.app.data.ApprovalView
 import dev.runvori.app.data.CachedOperation
 import dev.runvori.app.data.CachedSession
+import dev.runvori.app.data.CachedSessionView
 import dev.runvori.app.data.ConnectionState
 import dev.runvori.app.data.HostSession
+import dev.runvori.app.data.NavigationRoute
+import dev.runvori.app.data.NavigationRouteStore
 import dev.runvori.app.data.OperationReceipt
 import dev.runvori.app.data.RunArtifact
 import dev.runvori.app.data.RunCommand
@@ -16,10 +19,12 @@ import dev.runvori.app.domain.PairingInfo
 import dev.runvori.app.domain.ProtocolError
 import dev.runvori.app.domain.TimelineItem
 import dev.runvori.app.domain.TimelineProjector
+import androidx.lifecycle.ViewModel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -36,24 +41,84 @@ import java.util.UUID
  * for status queries. When the response is lost the UI shows "result
  * unconfirmed" and offers a query, not a second attempt.
  */
-class RunvoriViewModel(private val session: HostSession) {
+class RunvoriViewModel(
+    private val session: HostSession,
+    private val routes: NavigationRouteStore? = null,
+) : ViewModel() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var pollJob: Job? = null
+    private var started = false
+    private var routeRestored = false
     private val artifactBuffer = java.io.ByteArrayOutputStream()
     // Bumped whenever the artifact screen changes; a chunk that returns after
     // the user moved on must not append itself to the next artifact.
     private var artifactGeneration = 0
+    // A file-review item can arrive after the request; refresh the open
+    // approval only when its timeline version or status advanced.
+    private var approvalRefreshKey: String? = null
+    private var approvalRefreshInFlight = false
 
     private val _state = MutableStateFlow(AppState())
     val state: StateFlow<AppState> = _state.asStateFlow()
 
     fun start() {
+        if (started) {
+            resume()
+            return
+        }
+        started = true
         scope.launch { reconnect() }
+    }
+
+    /**
+     * The Activity is visible again. Keep the current screen and bring its
+     * data up to date; a rotation must not fall back to the session list.
+     */
+    fun resume() {
+        if (!started) {
+            start()
+            return
+        }
+        if (_state.value.connection != "已连接") {
+            // Returning to the foreground is also a recovery opportunity: an
+            // offline screen keeps its cached projection while a fresh
+            // connection attempt runs.
+            if (_state.value.connection in OFFLINE_MESSAGES) {
+                scope.launch { reconnect() }
+            }
+            return
+        }
+        when (_state.value.screen) {
+            Screen.Sessions -> {
+                refreshSessions()
+                refreshOperations()
+            }
+            Screen.Timeline, Screen.Approval -> {
+                val sessionId = _state.value.selectedSessionId ?: return
+                startPolling(sessionId)
+                syncSelectedSession()
+            }
+            Screen.Results -> refreshResults()
+            Screen.Artifact, Screen.Pairing -> Unit
+        }
+    }
+
+    /** Stop background polling without discarding the screen or its data. */
+    fun pause() {
+        pollJob?.cancel()
+        pollJob = null
     }
 
     fun close() {
         pollJob?.cancel()
+        pollJob = null
+        scope.cancel()
+    }
+
+    override fun onCleared() {
+        close()
+        super.onCleared()
     }
 
     private suspend fun reconnect() {
@@ -66,26 +131,135 @@ class RunvoriViewModel(private val session: HostSession) {
                 _state.value = _state.value.copy(
                     connection = "已连接", busy = false,
                     hostName = result.credential.hostName,
-                    hostId = result.credential.hostId,
-                    screen = Screen.Sessions)
-                refreshSessions()
-                refreshOperations()
+                    hostId = result.credential.hostId)
+                if (!routeRestored) {
+                    routeRestored = true
+                    if (restoreRoute(result.credential.hostId)) {
+                        refreshOperations()
+                        return
+                    }
+                }
+                when (_state.value.screen) {
+                    Screen.Timeline, Screen.Approval -> {
+                        val sessionId = _state.value.selectedSessionId
+                        if (sessionId != null) {
+                            startPolling(sessionId)
+                            syncSelectedSession()
+                        }
+                        refreshOperations()
+                    }
+                    Screen.Results -> {
+                        refreshOperations()
+                        _state.value.resultsRunId?.let(::loadResults)
+                    }
+                    Screen.Artifact -> refreshOperations()
+                    else -> {
+                        _state.value = _state.value.copy(screen = Screen.Sessions)
+                        persistRoute(Screen.Sessions)
+                        refreshSessions()
+                        refreshOperations()
+                    }
+                }
             }
-            ConnectionState.NotPaired -> _state.value = _state.value.copy(
-                connection = "未配对", busy = false, screen = Screen.Pairing)
-            ConnectionState.Unauthorized -> _state.value = _state.value.copy(
-                connection = "配对凭据已失效，请在电脑重新配对", busy = false,
-                writable = false, screen = Screen.Pairing)
+            ConnectionState.NotPaired -> {
+                routes?.clear()
+                _state.value = _state.value.copy(
+                    connection = "未配对", busy = false, screen = Screen.Pairing)
+            }
+            ConnectionState.Unauthorized -> {
+                routes?.clear()
+                _state.value = _state.value.copy(
+                    connection = "配对凭据已失效，请在电脑重新配对", busy = false,
+                    writable = false, screen = Screen.Pairing)
+            }
             ConnectionState.Incompatible -> _state.value = _state.value.copy(
                 connection = "版本不兼容，请更新后重连", busy = false,
                 writable = false)
-            ConnectionState.IdentityChanged -> _state.value = _state.value.copy(
-                connection = "Host 身份已改变，请重新配对", busy = false,
-                writable = false, screen = Screen.Pairing)
-            is ConnectionState.Offline -> _state.value = _state.value.copy(
-                connection = "离线，显示上次同步内容", busy = false,
-                writable = false)
+            ConnectionState.IdentityChanged -> {
+                routes?.clear()
+                _state.value = _state.value.copy(
+                    connection = "Host 身份已改变，请重新配对", busy = false,
+                    writable = false, screen = Screen.Pairing)
+            }
+            is ConnectionState.Offline -> {
+                // The cache is the only source while the Host is unreachable.
+                // It is read-only: `writable` stays false and every write
+                // entry point re-checks the live connection.
+                val credential = session.credential()
+                val hostId = credential?.hostId.orEmpty()
+                val cached = if (hostId.isEmpty()) emptyList()
+                else session.cachedSessions().map(::row)
+                val screen = if (_state.value.screen == Screen.Pairing)
+                    Screen.Sessions else _state.value.screen
+                _state.value = _state.value.copy(
+                    connection = OFFLINE_MESSAGE, busy = false,
+                    writable = false, hostId = hostId,
+                    hostName = credential?.hostName ?: _state.value.hostName,
+                    sessions = if (cached.isEmpty()) _state.value.sessions
+                    else cached,
+                    screen = screen)
+                if (screen == Screen.Sessions) persistRoute(Screen.Sessions)
+            }
         }
+    }
+
+    /**
+     * Restore the screen a previous process was reading. Only the location is
+     * restored; every visible fact is re-read from the Host and cache, and an
+     * approval that no longer exists is shown as stale, never as actionable.
+     */
+    private suspend fun restoreRoute(hostId: String): Boolean {
+        val route = routes?.load() ?: return false
+        if (route.hostId != hostId) {
+            routes.clear()
+            return false
+        }
+        when (route.screen) {
+            Screen.Timeline.name -> {
+                val sessionId = route.sessionId ?: return false
+                _state.value = _state.value.copy(
+                    screen = Screen.Timeline, selectedSessionId = sessionId,
+                    timeline = emptyList(), approval = null)
+                syncSelectedSession()
+                startPolling(sessionId)
+            }
+            Screen.Approval.name -> {
+                val approvalId = route.approvalId ?: return false
+                _state.value = _state.value.copy(
+                    screen = Screen.Approval, selectedSessionId = route.sessionId,
+                    approval = null, busy = true)
+                route.sessionId?.let {
+                    startPolling(it)
+                    syncSelectedSession()
+                }
+                openApproval(approvalId)
+            }
+            Screen.Results.name -> {
+                val runId = route.runId ?: return false
+                _state.value = _state.value.copy(
+                    screen = Screen.Results, selectedSessionId = route.sessionId)
+                openResultsFor(runId)
+            }
+            else -> {
+                _state.value = _state.value.copy(screen = Screen.Sessions)
+                refreshSessions()
+            }
+        }
+        return true
+    }
+
+    private fun persistRoute(screen: Screen, approvalId: String? = null,
+                             runId: String? = null) {
+        val store = routes ?: return
+        val hostId = _state.value.hostId
+        if (hostId.isEmpty()) return
+        store.save(NavigationRoute(
+            hostId = hostId,
+            screen = screen.name,
+            sessionId = _state.value.selectedSessionId,
+            approvalId = approvalId ?: _state.value.approval?.approvalId,
+            runId = runId ?: _state.value.resultsRunId,
+        ))
     }
 
     // -- pairing ---------------------------------------------------------
@@ -122,6 +296,8 @@ class RunvoriViewModel(private val session: HostSession) {
         scope.launch {
             try {
                 session.pair(info, endpoint)
+                routes?.clear()
+                routeRestored = true
                 _state.value = _state.value.copy(
                     busy = false, pairingReview = null)
                 reconnect()
@@ -143,8 +319,9 @@ class RunvoriViewModel(private val session: HostSession) {
     }
 
     fun unpair() {
-        pollJob?.cancel()
+        pause()
         session.forget()
+        routes?.clear()
         _state.value = AppState(
             connection = "未配对", screen = Screen.Pairing,
             pairingError = "已在手机解除配对；电脑上的设备仍在，需要时请在电脑撤销")
@@ -154,6 +331,10 @@ class RunvoriViewModel(private val session: HostSession) {
     fun refreshSessions() {
         scope.launch {
             _state.value = _state.value.copy(loading = true, error = null)
+            if (!ensureConnected()) {
+                applyCachedSessions()
+                return@launch
+            }
             try {
                 val sessions = session.syncSessions()
                 _state.value = _state.value.copy(
@@ -162,9 +343,7 @@ class RunvoriViewModel(private val session: HostSession) {
             } catch (error: ProtocolError) {
                 handle(error)
             } catch (error: IOException) {
-                _state.value = _state.value.copy(
-                    loading = false, connection = "离线，显示上次同步内容",
-                    writable = false, error = "网络不可达，保留上次同步内容")
+                applyCachedSessions()
             }
         }
     }
@@ -174,37 +353,146 @@ class RunvoriViewModel(private val session: HostSession) {
         _state.value = _state.value.copy(
             screen = Screen.Timeline, selectedSessionId = sessionId,
             timeline = emptyList(), syncGap = false, writable = false,
-            approval = null, error = null, notice = null)
+            approval = null, approvalStale = false,
+            approvalStaleReason = null, error = null, notice = null)
+        persistRoute(Screen.Timeline)
+        if (!session.isConnected()) {
+            session.cachedSession(sessionId)?.let(::applyCachedSession)
+        }
         syncSelectedSession()
         startPolling(sessionId)
     }
 
     fun backToSessions() {
-        pollJob?.cancel()
+        pause()
         _state.value = _state.value.copy(
             screen = Screen.Sessions, selectedSessionId = null,
-            approval = null, timeline = emptyList())
+            approval = null, approvalStale = false, approvalStaleReason = null,
+            timeline = emptyList())
+        persistRoute(Screen.Sessions)
         refreshSessions()
+    }
+
+    /**
+     * Re-open the Host if the previous attempt failed. Returns false only when
+     * the caller must stay on the cached projection; the state already names
+     * the reason.
+     */
+    private suspend fun ensureConnected(): Boolean {
+        if (session.isConnected()) return true
+        return when (val result = runCatching { session.connect() }.getOrElse {
+            ConnectionState.Offline(it.javaClass.simpleName)
+        }) {
+            is ConnectionState.Online -> {
+                _state.value = _state.value.copy(
+                    connection = "已连接", busy = false,
+                    hostName = result.credential.hostName,
+                    hostId = result.credential.hostId)
+                true
+            }
+            ConnectionState.Unauthorized -> {
+                routes?.clear()
+                _state.value = _state.value.copy(
+                    connection = "配对凭据已失效，请在电脑重新配对",
+                    busy = false, writable = false, screen = Screen.Pairing)
+                false
+            }
+            ConnectionState.IdentityChanged -> {
+                routes?.clear()
+                _state.value = _state.value.copy(
+                    connection = "Host 身份已改变，请重新配对", busy = false,
+                    writable = false, screen = Screen.Pairing)
+                false
+            }
+            ConnectionState.Incompatible -> {
+                _state.value = _state.value.copy(
+                    connection = "版本不兼容，请更新后重连", busy = false,
+                    writable = false)
+                false
+            }
+            ConnectionState.NotPaired -> {
+                routes?.clear()
+                _state.value = _state.value.copy(
+                    connection = "未配对", busy = false,
+                    writable = false, screen = Screen.Pairing)
+                false
+            }
+            is ConnectionState.Offline -> {
+                _state.value = _state.value.copy(
+                    connection = OFFLINE_MESSAGE, busy = false,
+                    writable = false)
+                false
+            }
+        }
+    }
+
+    private fun applyCachedSessions() {
+        val hostId = session.credentialHostId()
+        // No credential means the pairing screen owns the state; do not
+        // relabel an unpaired client as an offline one.
+        if (hostId == null) {
+            _state.value = _state.value.copy(loading = false)
+            return
+        }
+        _state.value = _state.value.copy(
+            loading = false,
+            connection = OFFLINE_MESSAGE,
+            writable = false,
+            hostId = hostId,
+            sessions = session.cachedSessions().map(::row),
+            error = OFFLINE_HINT)
+    }
+
+    /** Project one cached session without claiming it is current. */
+    private fun applyCachedSession(view: CachedSessionView) {
+        val row = view.session
+        val active = row.activeRunId?.let {
+            ActiveRunView(it, row.activeRunStatus ?: "unknown",
+                row.activeRunVersion)
+        }
+        _state.value = _state.value.copy(
+            loading = false,
+            connection = OFFLINE_MESSAGE,
+            writable = false,
+            timeline = TimelineProjector.project(view.events),
+            continuousSeq = view.continuousSeq,
+            latestSeq = row.snapshotSeq,
+            syncGap = view.hasGap,
+            sessionVersion = row.sessionVersion,
+            workspaceName = row.workspaceName,
+            activeRun = active,
+            error = OFFLINE_HINT)
     }
 
     private fun syncSelectedSession() {
         val sessionId = _state.value.selectedSessionId ?: return
         scope.launch {
             _state.value = _state.value.copy(loading = true)
+            if (!ensureConnected()) {
+                val cached = session.cachedSession(sessionId)
+                if (cached != null) applyCachedSession(cached)
+                else _state.value = _state.value.copy(
+                    loading = false, connection = OFFLINE_MESSAGE,
+                    writable = false, error = OFFLINE_HINT)
+                return@launch
+            }
             try {
                 applySync(session.syncSession(sessionId))
                 refreshOperations()
             } catch (error: ProtocolError) {
                 handle(error)
             } catch (error: IOException) {
-                _state.value = _state.value.copy(
-                    loading = false, connection = "离线，显示上次同步内容",
-                    writable = false, error = "网络不可达，显示上次同步内容")
+                val cached = session.cachedSession(sessionId)
+                if (cached != null) applyCachedSession(cached)
+                else _state.value = _state.value.copy(
+                    loading = false, connection = OFFLINE_MESSAGE,
+                    writable = false, error = OFFLINE_HINT)
             }
         }
     }
 
     private fun startPolling(sessionId: String) {
+        pollJob?.cancel()
         pollJob = scope.launch {
             var backoff = 1_000L
             while (true) {
@@ -214,6 +502,15 @@ class RunvoriViewModel(private val session: HostSession) {
                 // terminal state would be stale the moment the user returns.
                 if (_state.value.screen == Screen.Sessions) return@launch
                 if (_state.value.selectedSessionId != sessionId) return@launch
+                if (!session.isConnected() && !ensureConnected()) {
+                    // A revoked or incompatible Host is terminal; a network
+                    // failure is retried without leaving the cached timeline.
+                    if (_state.value.connection !in OFFLINE_MESSAGES) {
+                        return@launch
+                    }
+                    backoff = (backoff * 2).coerceAtMost(30_000L)
+                    continue
+                }
                 try {
                     val sync = session.syncSession(sessionId)
                     applySync(sync)
@@ -258,6 +555,161 @@ class RunvoriViewModel(private val session: HostSession) {
             error = if (_state.value.error in TRANSIENT_ERRORS) null
             else _state.value.error,
         )
+        val open = _state.value.approval
+        if (_state.value.screen == Screen.Approval && open != null
+                && !_state.value.busy && _state.value.decisionInFlight == null) {
+            val item = items.filterIsInstance<TimelineItem.Approval>()
+                .firstOrNull { it.approvalId == open.approvalId }
+            if (item != null) {
+                val newerVersion = (item.version ?: 0L) > open.version
+                val changed = item.detailsStatus != open.detailsStatus ||
+                    item.status != open.status
+                if (newerVersion || changed) {
+                    refreshOpenApproval(open.approvalId, item.version,
+                        item.status, item.detailsStatus)
+                }
+            } else if (open.status in OPEN_APPROVAL_STATUSES) {
+                // The approval is gone from the timeline. It may have expired
+                // during a Host restart; re-read it instead of leaving stale
+                // buttons on screen.
+                refreshOpenApproval(open.approvalId, null, null, null,
+                    nonce = sync.latestSeq)
+            }
+        }
+    }
+
+    /**
+     * Re-read an approval whose review content changed while its screen is
+     * open. The timeline event and the approval row commit together, so a
+     * version in the timeline is a safe trigger; the request is de-duplicated
+     * and never replaces a newer open view with an older response.
+     */
+    private fun refreshOpenApproval(approvalId: String, version: Long?,
+                                    status: String?, detailsStatus: String?,
+                                    nonce: Long? = null) {
+        val key = listOf(approvalId, version, status, detailsStatus, nonce)
+            .joinToString("|")
+        if (approvalRefreshInFlight || approvalRefreshKey == key) return
+        approvalRefreshKey = key
+        approvalRefreshInFlight = true
+        scope.launch {
+            try {
+                val refreshed = session.api().approval(approvalId)
+                val current = _state.value.approval
+                if (current != null
+                        && _state.value.screen == Screen.Approval
+                        && current.approvalId == approvalId
+                        && refreshed.version >= current.version) {
+                    _state.value = _state.value.copy(
+                        approval = refreshed, approvalStale = false,
+                        approvalStaleReason = null)
+                    recoverApprovalDecision(refreshed)
+                }
+            } catch (error: ProtocolError) {
+                if (error.code in STALE_APPROVAL_ERRORS) {
+                    markApprovalStale(staleApprovalMessage(error.code))
+                }
+            } catch (error: IOException) {
+                // A transient read failure is not proof the approval vanished;
+                // the next sync retries.
+            } finally {
+                val current = _state.value.approval
+                if (version != null && current != null
+                        && current.approvalId == approvalId
+                        && current.version < version) {
+                    // The API did not catch up yet; a later sync retries.
+                    approvalRefreshKey = null
+                }
+                approvalRefreshInFlight = false
+            }
+        }
+    }
+
+    /**
+     * A decision may have been submitted before the screen was reopened. The
+     * operation row is written before the network call, so finding one here
+     * means the product must query it, not offer a second decision.
+     */
+    private fun recoverApprovalDecision(view: ApprovalView) {
+        if (view.approvalId.isEmpty() || _state.value.approvalStale) return
+        if (view.status !in OPEN_APPROVAL_STATUSES) return
+        val operation = runCatching {
+            session.latestOperation("approval", view.approvalId)
+        }.getOrNull() ?: return
+        if (operation.status == "failed" && !operation.unresolvable) return
+        val unresolved = operation.unresolvable ||
+            operation.status == "unknown"
+        _state.value = _state.value.copy(
+            decisionInFlight = operation.requestId,
+            decisionNotice = if (unresolved)
+                "结果待确认：已有审批决定提交，正在用原请求编号核对"
+            else "已有审批决定已提交，等待 Host 确认…",
+            decisionUnresolved = unresolved)
+        reconcileDecision(view.approvalId, operation.requestId)
+    }
+
+    private fun reconcileDecision(approvalId: String, requestId: String) {
+        scope.launch {
+            var unresolved = false
+            var failed = false
+            var confirmed = false
+            try {
+                val receipt = session.api().operation(
+                    OPERATION_QUERY_KIND, requestId)
+                val hostId = runCatching { session.hostId() }.getOrNull()
+                if (hostId != null) {
+                    session.cacheOperation(hostId, receipt, OPERATION_QUERY_KIND)
+                }
+                when (receipt.status) {
+                    "confirmed" -> confirmed = true
+                    "failed" -> failed = true
+                    "unknown" -> unresolved = true
+                }
+            } catch (error: ProtocolError) {
+                // A missing operation means the Host never persisted the
+                // write. It is still unresolved from the user's point of
+                // view: the decision may have crossed the network before the
+                // failure, so do not silently resubmit it.
+                unresolved = true
+            } catch (error: IOException) {
+                unresolved = true
+            }
+            val current = _state.value.approval
+            if (current == null || current.approvalId != approvalId) return@launch
+            _state.value = _state.value.copy(
+                decisionInFlight = if (failed) null else _state.value.decisionInFlight,
+                decisionNotice = when {
+                    failed -> "操作未完成，请查看原因"
+                    unresolved -> "结果待确认：可稍后查询此操作"
+                    confirmed -> "已确认处理"
+                    else -> "等待 Codex 处理"
+                },
+                decisionUnresolved = unresolved)
+        }
+    }
+
+    private fun markApprovalStale(message: String) {
+        val current = _state.value.approval
+        _state.value = _state.value.copy(
+            approval = current?.copy(
+                status = if (current.status in OPEN_APPROVAL_STATUSES)
+                    "expired" else current.status,
+                canAllow = false, canDeny = false,
+                allowedDecisions = emptyList()),
+            approvalStale = true,
+            approvalStaleReason = message,
+            busy = false,
+            decisionInFlight = null,
+            pendingDecision = null,
+            decisionNotice = null,
+            decisionUnresolved = false)
+    }
+
+    private fun staleApprovalMessage(code: String): String = when (code) {
+        "approval_not_found" -> "审批已不存在，Host 可能已重启；按钮已失效"
+        "approval_expired" -> "审批已失效，不能再允许或拒绝"
+        "resource_changed" -> "审批状态已变化，按钮已失效；请返回刷新"
+        else -> "审批不可用，按钮已失效"
     }
 
     fun loadEarlier() {
@@ -283,12 +735,21 @@ class RunvoriViewModel(private val session: HostSession) {
      * timeline row carrying a run id identifies the completed result.
      */
     fun openResults() {
+        if (!session.isConnected()) {
+            _state.value = _state.value.copy(
+                notice = "离线，无法读取结果；恢复连接后再试")
+            return
+        }
         val runId = _state.value.activeRun?.runId
             ?: _state.value.timeline.lastOrNull { it.runId != null }?.runId
         if (runId == null) {
             _state.value = _state.value.copy(notice = "还没有可查看的回合结果")
             return
         }
+        openResultsFor(runId)
+    }
+
+    private fun openResultsFor(runId: String) {
         artifactGeneration++
         _state.value = _state.value.copy(
             screen = Screen.Results, resultsRunId = runId, results = null,
@@ -298,6 +759,7 @@ class RunvoriViewModel(private val session: HostSession) {
             artifactsHasMore = false, artifactsLoading = false,
             artifact = null, artifactText = "", artifactNextOffset = null,
             artifactError = null, error = null, notice = null)
+        persistRoute(Screen.Results, runId = runId)
         artifactBuffer.reset()
         loadResults(runId)
     }
@@ -384,6 +846,9 @@ class RunvoriViewModel(private val session: HostSession) {
         artifactBuffer.reset()
         val available = artifact.contentAvailable
         val binary = artifact.representation == "binary"
+        // A process loss returns to the results list, not to a half-loaded
+        // artifact that has no durable content buffer.
+        persistRoute(Screen.Results)
         _state.value = _state.value.copy(
             screen = Screen.Artifact, artifact = artifact, artifactText = "",
             artifactLoadedBytes = 0, artifactNextOffset = 0,
@@ -449,6 +914,7 @@ class RunvoriViewModel(private val session: HostSession) {
             screen = Screen.Results, artifact = null, artifactText = "",
             artifactNextOffset = null, artifactError = null,
             artifactLoading = false)
+        persistRoute(Screen.Results)
         artifactBuffer.reset()
     }
 
@@ -462,6 +928,7 @@ class RunvoriViewModel(private val session: HostSession) {
             artifactsHasMore = false, artifactsLoading = false,
             artifact = null, artifactText = "", artifactNextOffset = null,
             artifactError = null, artifactLoading = false)
+        persistRoute(Screen.Timeline, runId = null)
         artifactBuffer.reset()
         syncSelectedSession()
     }
@@ -503,18 +970,34 @@ class RunvoriViewModel(private val session: HostSession) {
 
     // -- approvals -------------------------------------------------------
     fun openApproval(approvalId: String) {
+        if (!session.isConnected()) {
+            _state.value = _state.value.copy(
+                error = "离线，无法读取审批详情；恢复连接后再试")
+            return
+        }
+        approvalRefreshKey = null
         _state.value = _state.value.copy(
             screen = Screen.Approval, approval = null, busy = true, error = null,
+            approvalStale = false, approvalStaleReason = null,
             decisionInFlight = null, pendingDecision = null,
             decisionNotice = null, decisionUnresolved = false)
+        persistRoute(Screen.Approval, approvalId = approvalId)
         scope.launch {
             try {
                 val view = session.api().approval(approvalId)
                 _state.value = _state.value.copy(busy = false, approval = view)
+                recoverApprovalDecision(view)
             } catch (error: ProtocolError) {
-                _state.value = _state.value.copy(
-                    busy = false, screen = Screen.Timeline,
-                    error = approvalMessage(error))
+                if (error.code in STALE_APPROVAL_ERRORS) {
+                    _state.value = _state.value.copy(
+                        busy = false, screen = Screen.Approval,
+                        approval = null, approvalStale = true,
+                        approvalStaleReason = staleApprovalMessage(error.code))
+                } else {
+                    _state.value = _state.value.copy(
+                        busy = false, screen = Screen.Timeline,
+                        error = approvalMessage(error))
+                }
             } catch (error: IOException) {
                 _state.value = _state.value.copy(
                     busy = false, screen = Screen.Timeline,
@@ -524,7 +1007,11 @@ class RunvoriViewModel(private val session: HostSession) {
     }
 
     fun closeApproval() {
-        _state.value = _state.value.copy(screen = Screen.Timeline)
+        approvalRefreshKey = null
+        _state.value = _state.value.copy(
+            screen = Screen.Timeline, approvalStale = false,
+            approvalStaleReason = null)
+        persistRoute(Screen.Timeline)
         // Decisions often resolve while the approval screen is open; refresh
         // so the timeline shows the output without a manual pull.
         syncSelectedSession()
@@ -538,16 +1025,34 @@ class RunvoriViewModel(private val session: HostSession) {
     fun decide(decision: String) {
         val approval = _state.value.approval ?: return
         if (_state.value.decisionInFlight != null) return
+        val hostId = runCatching { session.hostId() }.getOrNull()
+            ?: run {
+                _state.value = _state.value.copy(
+                    error = "未连接，不能提交审批决定")
+                return
+            }
+        val previous = runCatching {
+            session.latestOperation("approval", approval.approvalId)
+        }.getOrNull()
+        if (previous != null && previous.status != "failed") {
+            _state.value = _state.value.copy(
+                decisionInFlight = previous.requestId,
+                decisionNotice = if (previous.unresolvable ||
+                    previous.status == "unknown")
+                    "结果待确认：已有审批决定提交，不能重复发送"
+                else "已有审批决定已提交，正在核对…",
+                decisionUnresolved = previous.unresolvable ||
+                    previous.status == "unknown")
+            return
+        }
         val requestId = "dec-" + UUID.randomUUID().toString()
+        // Persist the request id before the network call. If the response is
+        // lost or the process dies, the same id is queried, never re-sent.
+        recordOperation(hostId, requestId, "approval", approval.approvalId)
         _state.value = _state.value.copy(
             decisionInFlight = requestId,
             pendingDecision = decision,
             decisionNotice = "已提交，等待 Host 确认…")
-        val hostId = runCatching { session.hostId() }.getOrNull()
-        if (hostId != null) {
-            session.api()
-            recordOperation(hostId, requestId, "approval", approval.runId)
-        }
         scope.launch {
             try {
                 val receipt = session.activeApi()!!.decide(
@@ -620,9 +1125,16 @@ class RunvoriViewModel(private val session: HostSession) {
                 session.cacheOperation(hostId, receipt, OPERATION_QUERY_KIND)
             }
             val current = _state.value.approval ?: return
-            val refreshed = runCatching {
+            val refreshed = try {
                 session.api().approval(current.approvalId)
-            }.getOrNull() ?: return
+            } catch (error: ProtocolError) {
+                if (error.code in STALE_APPROVAL_ERRORS) {
+                    markApprovalStale(staleApprovalMessage(error.code))
+                }
+                return
+            } catch (error: IOException) {
+                return
+            }
             val operationFinal = receipt?.status in setOf(
                 "confirmed", "failed", "unknown")
             val approvedFinal = refreshed.status in setOf(
@@ -655,9 +1167,19 @@ class RunvoriViewModel(private val session: HostSession) {
 
     private fun refreshApproval(approvalId: String) {
         scope.launch {
-            val refreshed = runCatching { session.api().approval(approvalId) }
-                .getOrNull() ?: return@launch
-            _state.value = _state.value.copy(approval = refreshed)
+            try {
+                val refreshed = session.api().approval(approvalId)
+                _state.value = _state.value.copy(
+                    approval = refreshed, approvalStale = false,
+                    approvalStaleReason = null)
+                recoverApprovalDecision(refreshed)
+            } catch (error: ProtocolError) {
+                if (error.code in STALE_APPROVAL_ERRORS) {
+                    markApprovalStale(staleApprovalMessage(error.code))
+                }
+            } catch (error: IOException) {
+                // Keep the current view; a later sync retries.
+            }
         }
     }
 
@@ -713,6 +1235,11 @@ class RunvoriViewModel(private val session: HostSession) {
         val sessionId = _state.value.selectedSessionId ?: return
         if (input.isBlank()) return
         if (_state.value.startInFlight) return
+        if (!session.isConnected()) {
+            _state.value = _state.value.copy(
+                error = "离线，不能提交新回合", notice = null)
+            return
+        }
         val requestId = "run-" + UUID.randomUUID().toString()
         val expected = _state.value.sessionVersion
         _state.value = _state.value.copy(
@@ -883,10 +1410,17 @@ class RunvoriViewModel(private val session: HostSession) {
         const val APPROVAL_POLLS = 8
         const val APPROVAL_POLL_DELAY = 1_000L
         const val OPERATION_QUERY_KIND = "approval"
+        val OPEN_APPROVAL_STATUSES = setOf(
+            "pending", "decision_recorded", "dispatching")
+        val STALE_APPROVAL_ERRORS = setOf(
+            "approval_not_found", "approval_expired", "resource_changed")
         /** Messages a completed sync makes untrue; every other error stands. */
         val TRANSIENT_ERRORS = setOf(
             "网络不可达，保留上次同步内容",
             "网络不可达，显示上次同步内容")
+        const val OFFLINE_MESSAGE = "离线，显示上次同步内容"
+        const val OFFLINE_HINT = "网络不可达，显示上次同步内容；当前为只读"
+        val OFFLINE_MESSAGES = setOf(OFFLINE_MESSAGE, "正在重新连接")
     }
 }
 
@@ -949,6 +1483,8 @@ data class AppState(
     val sessionVersion: Long = 0,
     val activeRun: ActiveRunView? = null,
     val approval: ApprovalView? = null,
+    val approvalStale: Boolean = false,
+    val approvalStaleReason: String? = null,
     val pairingReview: PairingInfo? = null,
     val pairingError: String? = null,
     val error: String? = null,

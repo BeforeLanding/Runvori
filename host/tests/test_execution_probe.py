@@ -7,14 +7,16 @@ from unittest.mock import patch
 from runvori.cli import ROOT
 from runvori.codex.execution_probe import (
     BINARY_BYTES, BINARY_COMMAND, DIRTY_TRACKED_BEFORE,
-    FILE_CHANGE_BYTES, INTERRUPT_COMMAND,
+    FILE_APPROVAL_BEFORE, FILE_APPROVAL_NAME, FILE_CHANGE_BYTES,
+    INTERRUPT_COMMAND,
     INTERRUPT_MARKER, SAFE_COMMAND, WRITE_COMMAND,
     NONZERO_VERIFY_COMMAND, SECOND_VERIFY_COMMAND, MOVE_DESTINATION_BYTES,
     exact_move_item, is_safe_command, move_item_matches, prepare_dirty_fixture,
-    prepare_binary_fixture, prepare_fixture, prepare_move_fixture, run_probe,
+    prepare_binary_fixture, prepare_file_approval_fixture, prepare_fixture,
+    prepare_move_fixture, run_probe,
     safe_accept_decision,
     shape, validate_binary_fixture, validate_dirty_fixture,
-    validate_fixture, validate_move_fixture,
+    validate_file_approval_fixture, validate_fixture, validate_move_fixture,
 )
 from runvori.codex.stdio import RpcError, TransportError
 
@@ -129,6 +131,20 @@ class ExecutionProbeTests(unittest.TestCase):
                 prepare_fixture(ROOT, fixture)
             with self.assertRaisesRegex(TransportError, "fixture_outside_workspace_scratch"):
                 prepare_fixture(ROOT, Path(temp).parent.parent / "outside")
+
+    def test_file_approval_fixture_is_committed_and_clean(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / ".dev") as temp:
+            fixture = prepare_file_approval_fixture(
+                ROOT, Path(temp) / "fixture")
+            self.assertEqual(validate_file_approval_fixture(
+                ROOT, fixture), fixture.resolve())
+            self.assertEqual(
+                (fixture / FILE_APPROVAL_NAME).read_bytes(),
+                FILE_APPROVAL_BEFORE)
+            (fixture / FILE_APPROVAL_NAME).write_bytes(b"tampered\n")
+            with self.assertRaisesRegex(
+                    TransportError, "invalid_file_approval_fixture"):
+                validate_file_approval_fixture(ROOT, fixture)
 
     def test_opt_in_probe_redacts_values_and_answers_once(self):
         with tempfile.TemporaryDirectory(dir=ROOT / ".dev") as temp:

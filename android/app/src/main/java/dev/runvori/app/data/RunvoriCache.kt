@@ -336,19 +336,19 @@ class RunvoriCache(context: Context) :
         readableDatabase.rawQuery(
             "SELECT * FROM operations WHERE host_id=? ORDER BY updated_at DESC",
             arrayOf(hostId)).use { cursor ->
-            while (cursor.moveToNext()) {
-                result.add(CachedOperation(
-                    requestId = cursor.getString(1),
-                    kind = cursor.getString(2),
-                    resourceId = cursor.getString(3),
-                    status = cursor.getString(4),
-                    outcome = cursor.getString(5),
-                    unresolvable = cursor.getInt(6) == 1,
-                ))
-            }
+            while (cursor.moveToNext()) result.add(cursor.toOperation())
         }
         return result
     }
+
+    private fun Cursor.toOperation() = CachedOperation(
+        requestId = getString(1),
+        kind = getString(2),
+        resourceId = getString(3),
+        status = getString(4),
+        outcome = getString(5),
+        unresolvable = getInt(6) == 1,
+    )
 
     fun markUnresolvable(hostId: String, requestId: String) {
         val values = ContentValues().apply {
@@ -358,6 +358,20 @@ class RunvoriCache(context: Context) :
         writableDatabase.update("operations", values,
             "host_id=? AND request_id=?", arrayOf(hostId, requestId))
     }
+
+    /**
+     * The latest submitted operation for one resource. A decision is recorded
+     * before its network call, so this survives a lost response or a process
+     * kill and is what stops the UI from offering a second decision.
+     */
+    fun latestOperation(hostId: String, kind: String,
+                        resourceId: String): CachedOperation? =
+        readableDatabase.rawQuery(
+            "SELECT * FROM operations WHERE host_id=? AND kind=? " +
+                "AND resource_id=? ORDER BY updated_at DESC, rowid DESC LIMIT 1",
+            arrayOf(hostId, kind, resourceId)).use { cursor ->
+            if (cursor.moveToFirst()) cursor.toOperation() else null
+        }
 
     fun putApproval(hostId: String, view: ApprovalView) {
         val values = ContentValues().apply {

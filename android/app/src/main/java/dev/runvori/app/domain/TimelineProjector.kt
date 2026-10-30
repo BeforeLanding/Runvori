@@ -149,6 +149,7 @@ object TimelineProjector {
                 ?: if (event.type == "approval.requested") "pending"
                 else prior?.status ?: "unknown",
             detailsStatus = payload.text("details_status") ?: prior?.detailsStatus,
+            version = payload.long("approval_version") ?: prior?.version,
         )
     }
 
@@ -160,4 +161,7 @@ object TimelineProjector {
 
     private fun Map<String, Any?>.integer(name: String): Int? =
         (this[name] as? Number)?.toInt()
+
+    private fun Map<String, Any?>.long(name: String): Long? =
+        (this[name] as? Number)?.toLong()
 }

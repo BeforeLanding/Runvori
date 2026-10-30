@@ -107,6 +107,36 @@ class EventHandoffTests(unittest.TestCase):
         return epoch
 
     @unittest.skipUnless(os.name == "nt", "Windows locked Host integration")
+    def test_item_updated_projects_file_changes_only(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / ".dev") as temp:
+            with LockedHostJournals(Path(temp)) as startup:
+                epoch = self._running(startup)
+                ignored = route_observed_event(
+                    startup, {"method": "item/updated", "params": {
+                        "threadId": "thread_demo", "turnId": "turn_demo",
+                        "item": {"id": "cmd", "type": "commandExecution",
+                                 "command": "python --version",
+                                 "status": "completed", "exitCode": 0}}},
+                    epoch=epoch, recorded_at="2026-10-28T00:00:04Z")
+                self.assertEqual(ignored, {
+                    "kind": "ignored_notification",
+                    "reason": "item_updated_not_projected"})
+                folded = route_observed_event(
+                    startup, {"method": "item/updated", "params": {
+                        "threadId": "thread_demo", "turnId": "turn_demo",
+                        "item": {"id": "patch", "type": "fileChange",
+                                 "status": "inProgress", "changes": [{
+                                     "path": "a.txt",
+                                     "kind": {"type": "add"},
+                                     "diff": "+a\n"}]}}},
+                    epoch=epoch, recorded_at="2026-10-28T00:00:05Z")
+                self.assertEqual(folded["kind"], "item_recorded")
+                summary = startup.events.connection.execute(
+                    "SELECT details_json FROM approval_items "
+                    "WHERE item_id='patch'").fetchone()[0]
+                self.assertIn('"path":"a.txt"', summary)
+
+    @unittest.skipUnless(os.name == "nt", "Windows locked Host integration")
     def test_stdio_request_terminal_then_late_closure(self):
         with tempfile.TemporaryDirectory(dir=ROOT / ".dev") as temp:
             with LockedHostJournals(Path(temp)) as startup:

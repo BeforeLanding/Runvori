@@ -2,6 +2,30 @@
 
 此处保存已发生的错误。规则唯一来源为 [AGENTS.md](../AGENTS.md)，进度见 [progress.md](../progress.md)。禁止粘贴未脱敏栈、个人目录、令牌或真实会话。
 
+## ERR-037：审批 item 后到时已打开的审批页不刷新（代码审查发现，已修复）
+
+- 日期/阶段：2026-10-28，DEV-008 第三切片实现。
+- 触发：真实 Codex 可能先发 `item/fileChange/requestApproval`，再在 `item/updated` 带路径与 diff。Host 会写 `approval.updated` 并推进版本，但 `RunvoriViewModel.applySync` 只更新 timeline；已打开的审批页仍显示 `insufficient`，用户只能退出重进。
+- 根因：审批页的 `ApprovalView` 只在 `openApproval` 与决定轮询时重读；timeline 的审批版本/详情状态变化没有驱动刷新。
+- 修复与回归：`TimelineItem.Approval` 保存 `approval_version`；`applySync` 在审批页打开时按 version/status/detailsStatus 变化触发一次带去重和在途标志的刷新，不覆盖更新版本。新增合成 `n` 场景（审批先到、10 秒后 `item/started` 空 changes、再 `item/updated` 绝对路径）断言页面内从 `insufficient` 变为可允许；14 场景合成验收全绿，Android JVM 19 项通过。真实 Codex 该时序仍未运行。
+- 规则：上游 item 迟到是正常时序；审批页必须由持久版本驱动刷新，不能要求用户重新进入。
+
+## ERR-036：Host 重启后 item/timeline 绑定未按 epoch 限定（代码审查发现，已修复）
+
+- 日期/阶段：2026-10-28，DEV-008 第三切片实现与合成重启验收。
+- 触发：`upstream_turns` 的唯一键包含 `process_epoch`，但 `record_approval_item`、`append_timeline_bound`、`item_has_text` 只按 `(thread_id, turn_id)` 查询；重启后若上游复用 thread/turn id，可能命中旧 run，造成 item 归错或文本被当作已流式写入。
+- 根因：上游事件入口没有把当前 epoch 传到 item/timeline 查询；合成 peer 重启后也从 1 重新编号，暴露了该路径。
+- 修复与回归：`route_observed_event` 把 epoch 传入 `record_item_event/record_delta`；所有绑定查询与待处理审批查询增加 `process_epoch`/`thread_id`/`epoch` 限定；`approval_items` 的 summary 内写 `process_epoch`，跨 epoch 不合并旧改动（无 schema 迁移、不回填）。合成 peer 的 turn/item/approval id 加进程后缀。新增新 epoch 不继承旧 item 的测试与 `r` 重启读回场景；14 场景合成验收全绿。
+- 规则：上游标识只在 `(process_epoch, thread_id, turn_id)` 内唯一；跨 epoch 查询必须显式限定，无法确认时失败关闭。
+
+## ERR-035：真实文件 item 的绝对路径被误判为不安全（代码审查发现，已修复）
+
+- 日期/阶段：2026-10-28，DEV-008 第三切片实现。
+- 触发：真实 Codex 的 `fileChange` item 用工作区内绝对路径命名文件；产品 `approval_details._relative_path` 无条件拒绝绝对路径。合成 `j/k` 使用相对路径，未暴露该问题；真实文件审批会落到 `insufficient`，无法显示差异或允许。
+- 根因：审批归一化只按“上游字符串必须是相对路径”实现，没有按该 run 的登记工作区转换绝对路径；产物同步也会因此生成绝对/相对两份 ID 或 `unsafe_path`。
+- 修复与回归：新增 `approval_details.normalize_item_paths`，在写入 `approval_items` 与产物前按 run 的工作区根转换绝对 path/move_path；工作区外、UNC、`..`、根目录本身和无法解析的路径保持原样并记为 `unsafe_change_path`。`diff` 缺失记为 `diff_missing`，不提供允许。新增审批先到/后到、产物双来源相对路径、工作区外拒绝的测试；合成 14 场景与 405 项离线测试通过。后续真实 `l`（允许）与 `m`（拒绝）已通过，Host 文件字节分别等于 AFTER/BEFORE，见 [真实文件审批第三切片](evidence/DEV-008-real-approval-slice.md)。
+- 规则：上游路径必须先按该 run 的登记工作区证明归属，再转为相对路径；不能因为“上游给的是绝对路径”就整条拒绝，也不能信任未证明的路径。
+
 ## ERR-034：快速返回再打开产物时旧分块可能写入新页面（代码审查发现，已修复）
 
 - 日期/阶段：2026-10-28，DEV-008 第二切片交付审查。
@@ -367,6 +391,35 @@
 - 修复：真实模式增加 Codex 绝对路径/版本/`CODEX_HOME` 校验与敏感环境清理、一次性 fixture 工作区、线程绑定预检、`s/a/b/c/g/e` 白名单、`ACCEPT_PROMPT` base64 传递、真实断言分支与 240 秒超时、`--dry-run`、`--report` 和 `runs` 计数校验；`d/f/h` 在真实模式被拒绝。
 - 验证：`--real --dry-run` 输出 `expected_model_turns=1`；改后合成九场景全绿；随后真实设备验收 1 次通过（`observed_runs=1`），见 [真实设备验收](evidence/DEV-007-device-acceptance-real.md)。
 - 规则：真实模式必须有独立场景集、独立提示词与断言，并先过版本门；不能把合成时序、合成文本或“加了 `--real`”本身当作真实证据。
+
+## ERR-038：真实验证使用了系统 Windows PowerShell 包装，结论未通过（已修复并真实复验通过）
+
+- 日期/阶段：2026-10-28 首次失败；2026-10-30 取得原文、修复并复验，DEV-008 真实验收 `v`、`r`。
+- 触发：恢复锁定 `0.164.0-alpha.11.1` 后，按授权执行 `l/m/v` 三个真实回合。`l`（文件允许）与 `m`（文件拒绝）通过，Host 侧文件字节分别等于 AFTER/BEFORE；`v` 的回合 `completed`、执行命令退出码 0、输出 `Python 3.12.10`，但 `/results` 的验证结论不是 `passed`。
+- 证据（首次）：脱敏报告把唯一命令记为 `unrecognized`、长度 92。Codex 会话日志显示实际执行命令数组为 `C:\windows\System32\WindowsPowerShell\v1.0\powershell.exe`、`-Command`、`python --version`，退出码 0；该日志不是 Host 保存的 `command` 字段原文，验收临时目录随后被清理，未能直接核对 92 字节字符串。
+- 根因（2026-10-30）：Host 保存的不是执行数组的裸拼接，而是 app-server 的序列化文本——可执行文件用双引号包裹、路径反斜杠成对转义、内层命令用单引号。真实 `v` 回合的原文是 92 字节的 `"C:\\windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'python --version'`；此前的匹配只识别未加引号的系统 PowerShell 形态，首次补丁又来自执行数组而非 Host 原文，因此没有覆盖它。
+- 原文取得：用隔离 `CODEX_HOME` 启动真实 app-server 并对该 thread 调用 `thread/read`（`includeTurns`），协议层原样返回上述 92 字节字符串，未发起模型回合；授权的 1 回合复验用 `--keep` 保留 Host 数据目录，`scripts/inspect_kept_commands.py` 确认 Host `run_commands.command` 与之逐字节一致。原文只在本机 `.dev` 内查看，报告和提交证据仍只有分类、内层匹配标志与长度。
+- 修复：`command_match` 接受“双引号包裹的固定系统 Windows PowerShell 绝对路径 + `-Command '<exact>'`”这一完整序列化形状；Windows 会折叠重复分隔符，因此成对反斜杠、单反斜杠和再多分隔符都解析为同一固定路径，但 `..`、其他盘符/可执行文件、`-NoProfile`、双引号内层、附加参数或尾随内容一律拒绝。执行数组所示的未加引号形态保留为保守等价形。`--keep` 现在在 stderr 打印保留目录；新增 `scripts/inspect_kept_commands.py` 只允许读取 `.dev` 内的保留目录，用于本地核对原文。
+- 验证：单测与结果集成测试直接使用该 92 字节原文及反例；411 项离线测试（408 通过、3 项环境跳过）、16 份契约通过。获授权的真实 `v,r` 运行通过：`observed_runs=1`，`v` 的命令分类为 `system_powershell_wrapper`、长度 92、内层完全匹配，`command_match_asserted=true`；`r` 在 Host 同端口、epoch 前进后读回，Host 与手机的 run、命令 SHA-256、产物 SHA-256 全部一致。见 [真实 v/r 证据](evidence/DEV-008-vr-real.json)。
+- 规则：真实验证失败必须保留脱敏分类与长度，并在可丢弃工作区核对原文；取得原文前不得用长度或执行数组猜测放行。匹配只接受完整已观察形状，路径必须解析为固定可执行文件，内层必须与要求完全一致；`--keep` 的原文只限本机 `.dev` 诊断，不得进入报告或证据。
+
+## ERR-039：旋转或进程重建后回到会话列表，未确认决定可能再次出现
+
+- 日期/阶段：2026-10-28，Android 生命周期恢复专项。
+- 触发：原 `MainActivity` 每次 `onCreate` 新建 `RunvoriViewModel`；配置变更或进程重建后回到会话列表，正在阅读的审批、结果或产物页面丢失。决定请求编号只在内存中，响应丢失或进程被杀后重开不会恢复“已提交、待确认”状态；Host 重启后已打开的旧审批也可能继续显示可点击按钮。
+- 根因：没有持久的页面位置；写请求的操作记录虽已先写缓存，但读取侧未按 `(kind, approval_id)` 找回；审批刷新失败时错误被吞掉，旧视图保持可操作。
+- 修复：`MainActivity` 改用 `ViewModelProvider`，旋转保留同一 ViewModel；新增只含 host id、屏幕名和 opaque id 的 `NavigationRouteStore`，进程重建时恢复位置并从 Host/缓存重新读取事实。`RunvoriCache.latestOperation` 按审批找回先前提交的请求；打开审批时只查询该请求，未知结果保持按钮禁用，不重发。Host 重启或审批不存在时显示 stale 并移除按钮；Host 启动/停止时暂停/恢复轮询。产物分块继续按请求代际和当前屏幕丢弃过期响应。
+- 验证：合成设备 `o`（切后台 + 进程重建恢复审批）、`q`（回执丢失后重开，不重复决定）、`w`（审批不存在时 stale）、`x`（快速切换/重开产物不串内容）、`t`（真实 Activity 旋转）、`y/z`（系统 `am kill` 与 `force-stop` 分别记录）、`s2`（Host 重启后旧审批失效）通过；详见 [生命周期证据](evidence/DEV-008-lifecycle-recovery.md)。
+- 规则：写请求先持久化请求编号再发网络；进程重建只恢复位置，所有可见事实必须重新读取；未知不等于成功，未知也不能自动变成第二次提交。
+
+## ERR-040：合成 peer 在 Host 重启后 resuming 错 thread，掩盖生命周期场景
+
+- 日期/阶段：2026-10-28，Android 生命周期全套合成验收。
+- 触发：`i,r,j,k,n` 通过后，`u` 在 `devsess1` 启动回合时 Host 报 `host_stopped`；Host 的 `run-result.json` 记录 `upstream_recovered`、`cause=run_start_fault`。此前 `t` 也以 Compose 60 秒超时失败。
+- 根因：`r` 重启后新的合成 app-server 对 `thread/resume` 总是返回 `thread_demo`，而 `devsess1` 绑定的是 `thread_demo_2`。Host 正确判定 resume 身份不符并恢复连接；重启后首次在第二个会话启动回合会触发。`j/k/n` 都在 `devsess0`，所以之前没有暴露。
+- 修复：合成 peer 在 `thread/resume` 回显请求中的 `threadId`；产品 Host 的失败关闭不变。
+- 验证：`i,r,j,k,n,y` 复跑通过；全套 22 个合成场景正在复跑，结果以本轮报告为准。该问题只在测试替身，不能据此放宽真实 resume 身份核对。
+- 规则：合成 peer 必须模拟已观察的真实 resume 身份；Host 在身份不符时恢复连接是预期行为，不能为了测试通过而放宽。
 
 ## 记录模板
 

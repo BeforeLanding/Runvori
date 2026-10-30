@@ -47,7 +47,7 @@ class RunResultsTests(unittest.TestCase):
             startup, {"method": method, "params": params}, epoch=epoch,
             recorded_at=f"2026-10-27T00:00:{second:02d}Z")
 
-    def _command(self, startup, epoch, *, item_id: str, command: str,
+    def _command(self, startup, epoch, *, item_id: str, command: str = "python --version",
                  second: int, output: str | None = None,
                  exit_code: int | None = 0, status: str = "completed",
                  output_repeats: int = 0, thread_id: str = "thread_demo",
@@ -119,6 +119,40 @@ class RunResultsTests(unittest.TestCase):
                 self.assertEqual("failed", again["verification"]["summary"])
                 self.assertEqual("completed", again["status"])
                 self.assertEqual(2, again["command_count"])
+
+    def test_known_wrapper_passes_but_unknown_wrapper_never_does(self):
+        wrapper = (
+            '"C:\\Users\\probe\\.cache\\codex-runtimes'
+            '\\codex-primary-runtime\\dependencies\\native\\powershell'
+            '\\pwsh.exe" -Command \'python --version\'')
+        with tempfile.TemporaryDirectory() as temp:
+            with self._opened(temp, [
+                    {"key": "python", "command": "python --version"}]
+                    ) as startup:
+                epoch = startup.approvals.current_epoch()
+                self._command(startup, epoch, item_id="cmd",
+                              command=wrapper, second=4, output="3.12\n")
+                self._finish(startup, epoch, second=6)
+                result = run_results.run_results(
+                    startup.events.connection, "run")
+                self.assertEqual("passed", result["verification"]["summary"])
+                self.assertEqual("passed",
+                                 result["verification"]["items"][0]["status"])
+        with tempfile.TemporaryDirectory() as temp:
+            with self._opened(temp, [
+                    {"key": "python", "command": "python --version"}]
+                    ) as startup:
+                epoch = startup.approvals.current_epoch()
+                self._command(startup, epoch, item_id="cmd",
+                              command="bash -lc 'python --version'",
+                              second=4, output="3.12\n")
+                self._finish(startup, epoch, second=6)
+                result = run_results.run_results(
+                    startup.events.connection, "run")
+                self.assertNotEqual(
+                    "passed", result["verification"]["summary"])
+                self.assertIn(result["verification"]["items"][0]["status"],
+                              {"unknown", "not_run"})
 
     def test_workspace_update_does_not_rewrite_an_existing_run(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -210,6 +244,50 @@ class RunResultsTests(unittest.TestCase):
                 long = next(item for item in commands if item["item_id"] == "long")
                 self.assertEqual("truncated", long["output_state"])
                 self.assertGreater(long["output_dropped_bytes"], 0)
+
+    def test_observed_app_server_wrapper_passes_verification(self):
+        # The exact string the real app-server persisted for the DEV-008 `v`
+        # turn; the report measured 92 UTF-8 bytes (ERR-038).
+        observed = (r'"C:\\windows\\System32\\WindowsPowerShell\\v1.0'
+                    r'\\powershell.exe" -Command ' + "'python --version'")
+        self.assertEqual(92, len(observed.encode("utf-8")))
+        with tempfile.TemporaryDirectory() as temp:
+            with self._opened(temp, [
+                    {"key": "python", "command": "python --version"}]) as startup:
+                epoch = startup.approvals.current_epoch()
+                self._command(startup, epoch, item_id="cmd", command=observed,
+                              second=4, output="Python 3.12.10\r\n",
+                              exit_code=0)
+                self._finish(startup, epoch, second=6)
+                result = run_results.run_results(
+                    startup.events.connection, "run")
+                self.assertEqual("completed", result["status"])
+                self.assertEqual("passed", result["verification"]["summary"])
+                item = result["verification"]["items"][0]
+                self.assertEqual("passed", item["status"])
+                self.assertEqual("exit_zero", item["reason"])
+                self.assertEqual(0, item["exit_code"])
+                commands = run_results.run_commands(
+                    startup.events.connection, "run")["items"]
+                self.assertEqual(observed, commands[0]["command"])
+
+    def test_unobserved_wrapper_variation_does_not_pass_verification(self):
+        observed = (r'"C:\\windows\\System32\\WindowsPowerShell\\v1.0'
+                    r'\\powershell.exe" -NoProfile -Command '
+                    r"\'python --version\'")
+        with tempfile.TemporaryDirectory() as temp:
+            with self._opened(temp, [
+                    {"key": "python", "command": "python --version"}]) as startup:
+                epoch = startup.approvals.current_epoch()
+                self._command(startup, epoch, item_id="cmd", command=observed,
+                              second=4, output="Python 3.12.10\r\n",
+                              exit_code=0)
+                self._finish(startup, epoch, second=6)
+                result = run_results.run_results(
+                    startup.events.connection, "run")
+                self.assertEqual("completed", result["status"])
+                self.assertEqual("not_run", result["verification"]["summary"])
+                self.assertNotEqual("passed", result["verification"]["items"][0]["status"])
 
     def test_command_pages_are_stable_and_do_not_repeat_items(self):
         with tempfile.TemporaryDirectory() as temp:

@@ -87,6 +87,78 @@ class NormalizationTests(unittest.TestCase):
                 self.assertEqual(merged["details_status"], "insufficient")
                 self.assertIn("unsafe_change_path", merged["missing"])
 
+    def test_absolute_workspace_paths_are_normalized_for_review(self):
+        root = Path(ROOT)
+        summary = approval_details.item_changes({
+            "id": "p", "type": "fileChange", "status": "inProgress",
+            "changes": [{
+                "path": str(root / "sub" / "a.txt"),
+                "kind": {"type": "update",
+                         "move_path": str(root / "sub" / "b.txt")},
+                "diff": "-old\n+new\n"}]})
+        normalized = approval_details.normalize_item_paths(summary, str(root))
+        self.assertEqual(normalized["changes"][0]["path"], "sub/a.txt")
+        self.assertEqual(normalized["changes"][0]["move_path"], "sub/b.txt")
+        request = approval_details.file_change_details({"itemId": "p"})
+        review = approval_details.normalize(
+            request, workspace_root=str(root),
+            recorded_at="2026-10-28T00:00:00Z")
+        merged = approval_details.merge_item(review, normalized)
+        self.assertEqual("complete", merged["details_status"])
+        self.assertTrue(approval_details.can_allow(
+            merged, status="pending", decided=False))
+
+    def test_paths_outside_the_workspace_stay_unsafe_after_normalization(self):
+        root = Path(ROOT)
+        outside = (
+            str(root.parent / "escape.txt"),
+            str(root / ".." / "escape.txt"),
+            "\\\\server\\share\\a.txt",
+            "",
+        )
+        for path in outside:
+            with self.subTest(path=path):
+                summary = approval_details.item_changes({
+                    "id": "p", "type": "fileChange",
+                    "changes": [{"path": path, "kind": {"type": "add"},
+                                 "diff": "+a"}]})
+                normalized = approval_details.normalize_item_paths(
+                    summary, str(root))
+                request = approval_details.file_change_details({"itemId": "p"})
+                review = approval_details.normalize(
+                    request, workspace_root=str(root),
+                    recorded_at="2026-10-28T00:00:00Z")
+                merged = approval_details.merge_item(review, normalized)
+                self.assertEqual("insufficient", merged["details_status"])
+                self.assertIn("unsafe_change_path", merged["missing"])
+
+    def test_missing_diff_and_unsafe_move_path_block_allow(self):
+        root = Path(ROOT)
+        for change, reason in (
+                ({"path": "a.txt", "kind": {"type": "add"}, "diff": None},
+                 "diff_missing"),
+                ({"path": "a.txt",
+                  "kind": {"type": "update",
+                           "move_path": str(root.parent / "escape.txt")},
+                  "diff": "+a"}, "unsafe_change_path"),
+                ({"path": "a.txt", "kind": {"type": "add"}, "diff": ""},
+                 "diff_missing")):
+            with self.subTest(reason=reason, change=change):
+                summary = approval_details.item_changes({
+                    "id": "p", "type": "fileChange",
+                    "changes": [change]})
+                summary = approval_details.normalize_item_paths(
+                    summary, str(root))
+                request = approval_details.file_change_details({"itemId": "p"})
+                review = approval_details.normalize(
+                    request, workspace_root=str(root),
+                    recorded_at="2026-10-28T00:00:00Z")
+                merged = approval_details.merge_item(review, summary)
+                self.assertEqual("insufficient", merged["details_status"])
+                self.assertIn(reason, merged["missing"])
+                self.assertFalse(approval_details.can_allow(
+                    merged, status="pending", decided=False))
+
     def test_truncated_diff_blocks_allow_but_stays_visible(self):
         request = approval_details.file_change_details({"itemId": "p"})
         review = approval_details.normalize(
@@ -221,6 +293,126 @@ class ApprovalDetailStorageTests(unittest.TestCase):
                 self.assertEqual(view["changes"][0]["path"], "a.txt")
                 self.assertTrue(view["changes"][0]["diff_reference"]
                                 .startswith("diffref:run:"))
+
+    def test_item_before_approval_with_absolute_path_is_normalized(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / ".dev") as temp:
+            with LockedHostJournals(Path(temp)) as startup:
+                epoch, workspace = self._running(startup)
+                recorded = route_observed_event(
+                    startup, {"method": "item/started", "params": {
+                        "threadId": "thread_demo", "turnId": "turn_demo",
+                        "item": {"id": "patch", "type": "fileChange",
+                                 "status": "inProgress", "changes": [{
+                                     "path": str(workspace / "a.txt"),
+                                     "kind": {"type": "add"},
+                                     "diff": "+new\n"}]}}},
+                    epoch=epoch, recorded_at="2026-10-28T00:00:04Z")
+                self.assertEqual(recorded["kind"], "item_recorded")
+                startup.record_upstream_approval_request(
+                    thread_id="thread_demo", turn_id="turn_demo", epoch=epoch,
+                    upstream_request_id="str:5", kind="file_change",
+                    approval_id="apr", request_digest=b"r" * 32,
+                    details=approval_details.file_change_details({
+                        "itemId": "patch", "startedAtMs": 1700000000001}),
+                    recorded_at="2026-10-28T00:00:05Z")
+                view = startup.get_approval_view("apr")
+                self.assertEqual(view["details_status"], "complete")
+                self.assertTrue(view["can_allow"])
+                self.assertEqual(view["changes"][0]["path"], "a.txt")
+
+    def test_item_summary_from_an_old_epoch_is_not_reused(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / ".dev") as temp:
+            with LockedHostJournals(Path(temp)) as startup:
+                epoch, workspace = self._running(startup)
+                route_observed_event(
+                    startup, {"method": "item/started", "params": {
+                        "threadId": "thread_demo", "turnId": "turn_demo",
+                        "item": {"id": "patch", "type": "fileChange",
+                                 "changes": [{
+                                     "path": str(workspace / "a.txt"),
+                                     "kind": {"type": "add"},
+                                     "diff": "+old\n"}]}}},
+                    epoch=epoch, recorded_at="2026-10-28T00:00:04Z")
+                version = startup.events.connection.execute(
+                    "SELECT version FROM runs WHERE run_id='run'"
+                ).fetchone()[0]
+                second = startup.recover_host_after_isolation(
+                    old_process_epoch=epoch, expected_run_id="run",
+                    expected_run_version=version, reason="host_restart",
+                    recorded_at="2026-10-28T00:00:06Z")["epoch"]
+                self.assertEqual(second, epoch + 1)
+                session_version = startup.events.snapshot(
+                    "session")["session_version"]
+                startup.events.reserve_run_request(
+                    "session", "run2", actor_id="device", request_id="start2",
+                    expected_session_version=session_version, input_text="go",
+                    recorded_at="2026-10-28T00:00:07Z")
+                startup.events.claim_run_dispatch(
+                    "device", "start2", process_epoch=second,
+                    recorded_at="2026-10-28T00:00:08Z")
+                startup.events.confirm_run_started(
+                    "device", "start2", process_epoch=second,
+                    thread_id="thread_demo", turn_id="turn_demo",
+                    recorded_at="2026-10-28T00:00:09Z")
+                startup.record_upstream_approval_request(
+                    thread_id="thread_demo", turn_id="turn_demo", epoch=second,
+                    upstream_request_id="str:6", kind="file_change",
+                    approval_id="apr2", request_digest=b"s" * 32,
+                    details=approval_details.file_change_details({
+                        "itemId": "patch", "startedAtMs": 1700000000001}),
+                    recorded_at="2026-10-28T00:00:10Z")
+                # The epoch-1 item summary must not complete the new review.
+                self.assertEqual(
+                    startup.get_approval_view("apr2")["details_status"],
+                    "insufficient")
+                route_observed_event(
+                    startup, {"method": "item/updated", "params": {
+                        "threadId": "thread_demo", "turnId": "turn_demo",
+                        "item": {"id": "patch", "type": "fileChange",
+                                 "changes": [{
+                                     "path": str(workspace / "a.txt"),
+                                     "kind": {"type": "add"},
+                                     "diff": "+new\n"}]}}},
+                    epoch=second, recorded_at="2026-10-28T00:00:11Z")
+                view = startup.get_approval_view("apr2")
+                self.assertEqual(view["details_status"], "complete")
+                self.assertIn("+new", view["changes"][0]["diff"])
+
+    def test_absolute_item_update_is_folded_and_artifacts_are_relative(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / ".dev") as temp:
+            with LockedHostJournals(Path(temp)) as startup:
+                epoch, workspace = self._running(startup)
+                startup.record_upstream_approval_request(
+                    thread_id="thread_demo", turn_id="turn_demo", epoch=epoch,
+                    upstream_request_id="str:4", kind="file_change",
+                    approval_id="apr", request_digest=b"q" * 32,
+                    details=approval_details.file_change_details({
+                        "itemId": "patch", "startedAtMs": 1700000000001}),
+                    recorded_at="2026-10-28T00:00:04Z")
+                self.assertFalse(startup.get_approval_view("apr")["can_allow"])
+                recorded = route_observed_event(
+                    startup, {"method": "item/updated", "params": {
+                        "threadId": "thread_demo", "turnId": "turn_demo",
+                        "item": {"id": "patch", "type": "fileChange",
+                                 "status": "inProgress", "changes": [{
+                                     "path": str(workspace / "a.txt"),
+                                     "kind": {"type": "update",
+                                              "move_path": str(workspace / "b.txt")},
+                                     "diff": "-old\n+new\n"}]}}},
+                    epoch=epoch, recorded_at="2026-10-28T00:00:05Z")
+                self.assertEqual(recorded["kind"], "approval_details_updated")
+                view = startup.get_approval_view("apr")
+                self.assertEqual(view["details_status"], "complete")
+                self.assertTrue(view["can_allow"])
+                self.assertEqual(view["changes"][0]["path"], "a.txt")
+                self.assertEqual(view["changes"][0]["move_path"], "b.txt")
+                rows = startup.events.connection.execute(
+                    "SELECT source, path FROM run_artifacts WHERE run_id='run'"
+                ).fetchall()
+                sources = {row["source"] for row in rows}
+                self.assertIn("approval_proposal", sources)
+                self.assertIn("upstream_report", sources)
+                self.assertEqual({"a.txt"}, {row["path"] for row in rows})
 
     def test_v13_approval_migrates_to_insufficient(self):
         with tempfile.TemporaryDirectory(dir=ROOT / ".dev") as temp:

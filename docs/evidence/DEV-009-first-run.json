@@ -1,0 +1,156 @@
+{
+  "approval_scopes": {
+    "b": "allow_once:python --version",
+    "l": "allow_once:file_change",
+    "m": "deny:file_change",
+    "ra": "no_decision:pending_approval_invalidated_by_turn_termination",
+    "ri": "allow_once:interrupt_probe_sleep_command",
+    "v": "allow_once:python --version"
+  },
+  "code": "real_scenario_failed:ra",
+  "codex_version": "codex-cli 0.164.0-alpha.11.1",
+  "command_match_asserted": false,
+  "command_samples": {
+    "present": true,
+    "requirements": [
+      {
+        "command_count": 1,
+        "commands": [
+          {
+            "index": 0,
+            "inner_exact": false,
+            "kind": "unrecognized",
+            "length": 135
+          }
+        ],
+        "inner_exact": false,
+        "key": "python",
+        "kind": "unrecognized",
+        "length": 135
+      }
+    ]
+  },
+  "device": {
+    "serial": "emulator-5554"
+  },
+  "expected_model_turns": 2,
+  "interrupt_checks": {
+    "ra": {
+      "success": "pending approval expired with resolution turn_terminal, old decision refused, zero approval operations",
+      "terminal_timeout_seconds": 240,
+      "trigger": "product interrupt entry while the approval page stays open"
+    },
+    "ri": {
+      "command_max_seconds": 60,
+      "race": "natural completion before the interrupt is recorded as terminal_race_natural_completion, never as success",
+      "start_timeout_seconds": 180,
+      "success": "run.interrupted for the same run, interrupt operation confirmed/run_interrupted, active slot released",
+      "terminal_timeout_seconds": 240,
+      "trigger": "command.output contains RUNVORI_SLEEP_STARTED"
+    }
+  },
+  "model_turn_scenarios": [
+    "ri",
+    "ra"
+  ],
+  "not_run": [
+    "s",
+    "a",
+    "b",
+    "c",
+    "d",
+    "f",
+    "h",
+    "g",
+    "o",
+    "q",
+    "w",
+    "x",
+    "i",
+    "l",
+    "m",
+    "v",
+    "r",
+    "j",
+    "k",
+    "n",
+    "y",
+    "z",
+    "s2",
+    "s3",
+    "t",
+    "e"
+  ],
+  "observed_runs": 2,
+  "pairing_bootstrap": true,
+  "real": true,
+  "scenarios": [
+    "ri",
+    "ra"
+  ],
+  "status": "failed",
+  "steps": [
+    {
+      "port": 52518,
+      "sessions": 2,
+      "step": "host_running"
+    },
+    {
+      "endpoint": "10.0.2.2",
+      "host_bind": "loopback",
+      "status": "ok",
+      "step": "transport"
+    },
+    {
+      "scenario": "p",
+      "status": "passed"
+    },
+    {
+      "scenario": "ri",
+      "status": "passed"
+    },
+    {
+      "active_slot_run_id": null,
+      "approval_operations": 1,
+      "approval_resolution_kind": "request_closed",
+      "approval_status": "resolved",
+      "approvals": 1,
+      "interrupt_outcome": "run_interrupted",
+      "interrupt_status": "confirmed",
+      "pending_approvals": 0,
+      "phone_test_passed": true,
+      "run_id": "VhydvbN-YD5hGvm8vPP_mC4nxGyJ2Fwx",
+      "run_status": "interrupted",
+      "scenario": "ri",
+      "session_runs": 1,
+      "start_signal_observed": true,
+      "status": "passed",
+      "step": "interrupt_evidence"
+    },
+    {
+      "scenario": "ra",
+      "status": "passed"
+    },
+    {
+      "active_slot_run_id": null,
+      "approval_operations": 0,
+      "approval_resolution_kind": "request_closed",
+      "approval_status": "expired",
+      "approvals": 1,
+      "code": "approval_not_invalidated",
+      "interrupt_outcome": "run_interrupted",
+      "interrupt_status": "confirmed",
+      "pending_approvals": 0,
+      "phone_test_passed": true,
+      "run_id": "byeFr0UVzDsXTYkuS56rmoZ6TONUnQfc",
+      "run_status": "interrupted",
+      "scenario": "ra",
+      "session_runs": 1,
+      "start_signal_observed": false,
+      "status": "failed",
+      "step": "interrupt_evidence"
+    }
+  ],
+  "stopped_after_failure": "ra",
+  "upstream": "real_codex"
+}

@@ -1,0 +1,111 @@
+{
+  "approval_scopes": {
+    "b": "allow_once:python --version",
+    "l": "allow_once:file_change",
+    "m": "deny:file_change",
+    "v": "allow_once:python --version"
+  },
+  "code": "real_scenario_failed:v",
+  "codex_version": "codex-cli 0.164.0-alpha.11.1",
+  "command_match_asserted": false,
+  "command_samples": {
+    "present": true,
+    "requirements": [
+      {
+        "inner_exact": false,
+        "key": "python",
+        "kind": "unrecognized",
+        "length": 92
+      }
+    ]
+  },
+  "device": {
+    "serial": "emulator-5554"
+  },
+  "expected_model_turns": 3,
+  "model_turn_scenarios": [
+    "l",
+    "m",
+    "v"
+  ],
+  "not_run": [
+    "s",
+    "a",
+    "b",
+    "c",
+    "d",
+    "f",
+    "h",
+    "g",
+    "i",
+    "j",
+    "k",
+    "n",
+    "e"
+  ],
+  "observed_runs": 3,
+  "pairing_bootstrap": true,
+  "real": true,
+  "scenarios": [
+    "l",
+    "m",
+    "v",
+    "r"
+  ],
+  "status": "failed",
+  "steps": [
+    {
+      "port": 62556,
+      "sessions": 2,
+      "step": "host_running"
+    },
+    {
+      "endpoint": "10.0.2.2",
+      "host_bind": "loopback",
+      "status": "ok",
+      "step": "transport"
+    },
+    {
+      "scenario": "p",
+      "status": "passed"
+    },
+    {
+      "scenario": "l",
+      "status": "passed"
+    },
+    {
+      "matches": true,
+      "present": true,
+      "sha256": "6be7e1e053efc47853f1831babc6acc5d3cc5aa4b07fcbb17779a1901d847f5f",
+      "size_bytes": 23,
+      "status": "ok",
+      "step": "file_after_allow"
+    },
+    {
+      "scenario": "m",
+      "status": "passed"
+    },
+    {
+      "matches": true,
+      "present": true,
+      "sha256": "ecba3ce1ad01b8707b18a29ff6cedf405ce13e07d0af767420ff161913feabfc",
+      "size_bytes": 24,
+      "status": "ok",
+      "step": "file_after_deny"
+    },
+    {
+      "count": 1,
+      "status": "ok",
+      "step": "verification_config_v"
+    },
+    {
+      "assertions": [
+        "at dev.runvori.app.DeviceAcceptanceTest.v_real_verification_result_is_passed(DeviceAcceptanceTest.kt:975)"
+      ],
+      "scenario": "v",
+      "status": "failed"
+    }
+  ],
+  "stopped_after_failure": "v",
+  "upstream": "real_codex"
+}

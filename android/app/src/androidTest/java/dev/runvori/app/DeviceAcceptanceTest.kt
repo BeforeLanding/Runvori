@@ -7,14 +7,17 @@ import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import dev.runvori.app.data.HostSession
 import dev.runvori.app.data.KeystoreCredentialStore
+import dev.runvori.app.data.NavigationRouteStore
 import dev.runvori.app.data.RunArtifact
 import dev.runvori.app.data.RunvoriCache
 import dev.runvori.app.domain.PairingInfo
+import dev.runvori.app.domain.ProtocolError
 import dev.runvori.app.domain.TimelineItem
 import dev.runvori.app.ui.Actions
 import dev.runvori.app.ui.RunvoriApp
@@ -30,6 +33,7 @@ import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.security.MessageDigest
 
 /**
  * Real APK → pinned HTTPS → real HostRuntime → synthetic (or real) upstream.
@@ -73,14 +77,36 @@ class DeviceAcceptanceTest {
         get() = InstrumentationRegistry.getArguments()
             .getString("real_mode") == "1"
 
+    private fun arg(name: String): String =
+        InstrumentationRegistry.getArguments().getString(name).orEmpty()
+
+    private fun requiredArg(name: String): String {
+        val value = arg(name)
+        check(value.isNotEmpty()) { "$name is required" }
+        return value
+    }
+
     private fun runPrompt(synthetic: String): String {
         if (!realMode) return synthetic
-        val encoded = InstrumentationRegistry.getArguments()
-            .getString("run_prompt_b64").orEmpty()
-        check(encoded.isNotEmpty()) { "run_prompt_b64 is required in real mode" }
+        val encoded = requiredArg("run_prompt_b64")
         return String(android.util.Base64.decode(
             encoded, android.util.Base64.NO_WRAP), Charsets.UTF_8)
     }
+
+    /** Each real scenario carries its own prompt; none shares a marker set. */
+    private fun realPrompt(name: String): String {
+        check(realMode) { "$name is a real-mode scenario" }
+        val encoded = requiredArg("run_prompt_${name}_b64")
+        return String(android.util.Base64.decode(
+            encoded, android.util.Base64.NO_WRAP), Charsets.UTF_8)
+    }
+
+    private fun sha256Hex(value: String): String =
+        MessageDigest.getInstance("SHA-256")
+            .digest(value.toByteArray(Charsets.UTF_8))
+            .joinToString("") {
+                (it.toInt() and 0xff).toString(16).padStart(2, '0')
+            }
 
     private val acceptTimeoutMs: Long
         get() = if (realMode) 60_000 else 30_000
@@ -91,6 +117,11 @@ class DeviceAcceptanceTest {
     private val terminalTimeoutMs: Long
         get() = if (realMode) 240_000 else 45_000
 
+    /** The real command prints this before sleeping; it proves execution
+     *  started, not merely that the approval was answered. */
+    private val executionStartTimeoutMs: Long
+        get() = if (realMode) 180_000 else 30_000
+
     @Before
     fun setUp() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
@@ -100,7 +131,14 @@ class DeviceAcceptanceTest {
 
     @After
     fun tearDown() {
-        if (this::viewModel.isInitialized) viewModel.close()
+        if (this::viewModel.isInitialized) {
+            viewModel.pause()
+            viewModel.close()
+            // Let any cache read that was already running finish before the
+            // SQLite connection pool is closed. A pending approval keeps a
+            // sync in flight longer than the ordinary scenarios.
+            Thread.sleep(500)
+        }
         cache.close()
     }
 
@@ -274,6 +312,66 @@ class DeviceAcceptanceTest {
         return artifact
     }
 
+    /**
+     * Scenarios that run after the pairing bootstrap (or after `b`) reuse the
+     * stored credential instead of consuming the one-shot pairing payload.
+     */
+    private fun startWithStoredCredential() {
+        assertNotNull("this scenario needs a prior pairing", store.load())
+        startViewModel(resetCredential = false)
+        waitFor("connected", timeoutMs = 30_000) {
+            viewModel.state.value.connection == "已连接"
+        }
+    }
+
+    private lateinit var routes: NavigationRouteStore
+
+    /** Start with a durable route store, as the production Activity does. */
+    private fun startWithRoutes() {
+        assertNotNull("this scenario needs a prior pairing", store.load())
+        routes = NavigationRouteStore(
+            InstrumentationRegistry.getInstrumentation().targetContext)
+        routes.clear()
+        session = freshSession(resetCredential = false)
+        viewModel = RunvoriViewModel(session, routes)
+        renderOnce()
+        viewModel.start()
+        waitFor("connected with routes", timeoutMs = 30_000) {
+            viewModel.state.value.connection == "已连接"
+        }
+    }
+
+    /** Replace the in-memory view model but keep the durable route pointer. */
+    private fun restoreAfterProcessLoss() {
+        viewModel.close()
+        session = freshSession(resetCredential = false)
+        attach(RunvoriViewModel(session, routes))
+        viewModel.start()
+    }
+
+    private fun openArtifact(source: String, path: String? = null): RunArtifact {
+        waitFor("artifact $source", timeoutMs = 30_000) {
+            viewModel.state.value.screen.name == "Results" &&
+                viewModel.state.value.artifacts.any {
+                    it.source == source &&
+                        (path == null || it.path == path) && it.contentAvailable
+                }
+        }
+        val artifact = viewModel.state.value.artifacts.first {
+            it.source == source && (path == null || it.path == path) &&
+                it.contentAvailable
+        }
+        viewModel.openArtifact(artifact)
+        waitFor("artifact content", timeoutMs = 30_000) {
+            viewModel.state.value.screen.name == "Artifact" &&
+                !viewModel.state.value.artifactLoading &&
+                (viewModel.state.value.artifactText.isNotEmpty() ||
+                    artifact.sizeBytes == 0L ||
+                    viewModel.state.value.artifactError != null)
+        }
+        return artifact
+    }
+
     private fun openFirstApproval(): TimelineItem.Approval {
         // The newest pending request, not the oldest entry: a session keeps
         // approvals from earlier scenarios, and those are already resolved.
@@ -291,6 +389,138 @@ class DeviceAcceptanceTest {
                 viewModel.state.value.approval != null
         }
         return approval
+    }
+
+    /** The terminal event for exactly the run this scenario interrupted. */
+    private fun terminalFor(runId: String): TimelineItem.RunEvent? =
+        viewModel.state.value.timeline
+            .filterIsInstance<TimelineItem.RunEvent>()
+            .lastOrNull {
+                it.runId == runId && it.type in setOf(
+                    "run.completed", "run.failed", "run.interrupted")
+            }
+
+    private fun terminalNameFor(runId: String): String =
+        terminalFor(runId)?.type ?: "none"
+
+    /** Wait for the real command's own output marker, or fail with the
+     *  terminal that arrived instead. A fixed sleep never satisfies this. */
+    private fun awaitExecutionStart(runId: String) {
+        val deadline = System.currentTimeMillis() + executionStartTimeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            val started = viewModel.state.value.timeline
+                .filterIsInstance<TimelineItem.Command>()
+                .any { it.output.contains("RUNVORI_SLEEP_STARTED") }
+            if (started) return
+            viewModel.state.value.error?.let {
+                throw AssertionError("execution_start_refused: " + it)
+            }
+            val terminal = terminalFor(runId)
+            if (terminal != null) {
+                throw AssertionError(
+                    "execution_start_not_observed; terminal=" + terminal.type)
+            }
+            Thread.sleep(100)
+        }
+        throw AssertionError("execution_start_timeout")
+    }
+
+    private fun interruptOperation(runId: String, timeoutMs: Long) {
+        val hostId = viewModel.state.value.hostId
+        waitFor("interrupt operation recorded", timeoutMs = timeoutMs) {
+            cache.operations(hostId).any {
+                it.kind == "interrupt" && it.resourceId == runId
+            }
+        }
+        val cached = cache.operations(hostId).first {
+            it.kind == "interrupt" && it.resourceId == runId
+        }
+        val refreshed = session.refreshOperation(cached)
+        assertEquals("the interrupt operation must be confirmed",
+            "confirmed", refreshed.status)
+        assertEquals("the interrupt must have ended the run",
+            "run_interrupted", refreshed.outcome)
+    }
+
+    /**
+     * Open a real (or synthetic) approval, end the turn through the product
+     * interrupt entry while the page stays open, and prove the old request is
+     * invalid and cannot be decided behind the disabled UI.
+     */
+    private fun approvalPageInterruptExpiresApproval(
+        sessionId: String, input: String,
+    ) {
+        startWithStoredCredential()
+        openSession(sessionId)
+        startRun(input)
+        waitFor("active run identity", timeoutMs = acceptTimeoutMs) {
+            viewModel.state.value.activeRun != null
+        }
+        val runId = viewModel.state.value.activeRun!!.runId
+        val hostId = viewModel.state.value.hostId
+        val approval = openFirstApproval()
+        val approvalId = approval.approvalId
+        val initialVersion = viewModel.state.value.approval!!.version
+        assertEquals(0, cache.operations(hostId).count {
+            it.kind == "approval" && it.resourceId == approvalId
+        })
+        assertEquals("the approval page must stay open",
+            "Approval", viewModel.state.value.screen.name)
+
+        // End the turn through the product interrupt entry while the approval
+        // is still pending. The confirmation dialog is the same one the
+        // timeline uses.
+        compose.onNodeWithTag(Tag.INTERRUPT).performClick()
+        assertTrue("interrupt must ask before acting",
+            viewModel.state.value.interruptConfirm)
+        compose.onNodeWithTag(Tag.CONFIRM_INTERRUPT).performClick()
+        waitFor("run terminal after interrupt", timeoutMs = terminalTimeoutMs) {
+            viewModel.state.value.activeRun == null
+        }
+        val terminal = terminalFor(runId)
+        assertNotNull("the interrupted run must reach a terminal event",
+            terminal)
+        assertEquals(
+            "a natural completion before the interrupt is a race, not success",
+            "run.interrupted", terminal!!.type)
+
+        waitFor("approval expired after turn termination",
+            timeoutMs = terminalTimeoutMs) {
+            val current = viewModel.state.value.approval
+            current != null && current.approvalId == approvalId &&
+                current.status == "expired"
+        }
+        val expired = viewModel.state.value.approval!!
+        assertFalse("an expired approval must not offer allow", expired.canAllow)
+        assertFalse("an expired approval must not offer deny", expired.canDeny)
+        compose.onNodeWithTag(Tag.ALLOW).assertIsNotEnabled()
+        compose.onNodeWithTag(Tag.DENY).assertIsNotEnabled()
+
+        // Bypassing the disabled UI must still be refused by the Host, and the
+        // refusal must not create or dispatch an approval operation.
+        val refused = runCatching {
+            session.api().decide(approvalId,
+                "ra-bypass-" + System.currentTimeMillis(),
+                if (expired.version > 0) expired.version else initialVersion,
+                "allow_once")
+        }
+        assertTrue("the Host must refuse a decision on the old approval",
+            refused.isFailure)
+        val error = refused.exceptionOrNull()
+        assertTrue("expected a protocol refusal, got: " + error,
+            error is ProtocolError)
+        assertEquals("approval_expired", (error as ProtocolError).code)
+        assertEquals(
+            "no approval decision may be recorded or dispatched",
+            0, cache.operations(hostId).count {
+                it.kind == "approval" && it.resourceId == approvalId
+            })
+        assertEquals("the approval page must remain visible",
+            "Approval", viewModel.state.value.screen.name)
+        assertTrue("the terminal must be for the same run",
+            viewModel.state.value.timeline
+                .filterIsInstance<TimelineItem.RunEvent>()
+                .any { it.runId == runId && it.type == "run.interrupted" })
     }
 
     // -- scenarios -------------------------------------------------------
@@ -764,6 +994,621 @@ class DeviceAcceptanceTest {
             viewModel.state.value.activeRun == null
         }
         compose.onNodeWithTag(Tag.SEND_RUN).assertIsDisplayed()
+    }
+
+    @Test
+    fun p_pairing_bootstrap() {
+        // Consumes the one-shot pairing payload so a standalone real/synthetic
+        // scenario set can reuse the stored credential. No model turn.
+        startViewModel(resetCredential = true)
+        pair()
+    }
+
+    @Test
+    fun n_file_approval_absolute_updated_after_open() {
+        check(!realMode) { "n is a synthetic-only ordering scenario" }
+        startWithStoredCredential()
+        openSession("devsess0")
+        startRun("please change a file [file-change-absolute-first]")
+        openFirstApproval()
+        val initial = viewModel.state.value.approval!!
+        assertEquals("file_change", initial.kind)
+        // The request arrives first; the review must be unusable until the
+        // item update lands, even while this screen stays open.
+        assertEquals("insufficient", initial.detailsStatus)
+        assertFalse(initial.canAllow)
+        compose.onNodeWithTag(Tag.INSUFFICIENT).assertIsDisplayed()
+        compose.onNodeWithTag(Tag.ALLOW).assertIsNotEnabled()
+        waitFor("review completes while open", timeoutMs = 60_000) {
+            viewModel.state.value.screen.name == "Approval" &&
+                viewModel.state.value.approval?.detailsStatus == "complete" &&
+                viewModel.state.value.approval?.canAllow == true
+        }
+        val review = viewModel.state.value.approval!!
+        assertEquals("probe-artifact.txt", review.changes.first().path)
+        assertTrue("the updated diff must be visible",
+            review.changes.first().diff.orEmpty().contains("RUNVORI_ARTIFACT_OK"))
+        viewModel.decide("allow_once")
+        waitFor("run terminal", timeoutMs = terminalTimeoutMs) {
+            viewModel.state.value.activeRun == null
+        }
+        openResults()
+        assertEquals("completed", viewModel.state.value.results!!.status)
+        val proposal = openArtifact("approval_proposal", "probe-artifact.txt")
+        assertEquals("proposed", proposal.attribution)
+        assertTrue(viewModel.state.value.artifactText
+            .contains("RUNVORI_ARTIFACT_OK"))
+        viewModel.closeArtifact()
+        waitFor("results after proposal") {
+            viewModel.state.value.screen.name == "Results"
+        }
+        val report = openArtifact("upstream_report", "probe-artifact.txt")
+        assertEquals("reported", report.attribution)
+        assertTrue("the upstream report must be readable",
+            viewModel.state.value.artifactText.contains("RUNVORI_ARTIFACT_OK"))
+    }
+
+    @Test
+    fun l_real_file_approval_allow_shows_diff_and_report() {
+        check(realMode) { "l is a real-mode scenario" }
+        startWithStoredCredential()
+        openSession("devsessallow")
+        startRun(realPrompt("l"))
+        openFirstApproval()
+        waitFor("complete file review", timeoutMs = approvalTimeoutMs) {
+            viewModel.state.value.approval?.detailsStatus == "complete" &&
+                viewModel.state.value.approval?.canAllow == true &&
+                viewModel.state.value.approval?.changes?.isNotEmpty() == true
+        }
+        val approval = viewModel.state.value.approval!!
+        assertEquals("file_change", approval.kind)
+        assertEquals("approval-target.txt", approval.changes.first().path)
+        val diff = approval.changes.first().diff.orEmpty()
+        assertTrue("the proposed old line must be visible",
+            diff.contains("RUNVORI_APPROVAL_BEFORE"))
+        assertTrue("the proposed new line must be visible",
+            diff.contains("RUNVORI_APPROVAL_AFTER"))
+        compose.onNodeWithTag(Tag.ALLOW).performClick()
+        waitFor("run terminal", timeoutMs = terminalTimeoutMs) {
+            viewModel.state.value.activeRun == null
+        }
+        openResults()
+        assertEquals("completed", viewModel.state.value.results!!.status)
+        val proposal = openArtifact("approval_proposal", "approval-target.txt")
+        assertEquals("proposed", proposal.attribution)
+        assertEquals("file_diff", proposal.kind)
+        assertTrue(viewModel.state.value.artifactText
+            .contains("RUNVORI_APPROVAL_AFTER"))
+        viewModel.closeArtifact()
+        waitFor("results after proposal") {
+            viewModel.state.value.screen.name == "Results"
+        }
+        val report = openArtifact("upstream_report", "approval-target.txt")
+        assertEquals("reported", report.attribution)
+        assertTrue("the upstream completion report must be readable",
+            viewModel.state.value.artifactText.contains("RUNVORI_APPROVAL_AFTER"))
+        assertTrue("the two sources must stay distinct",
+            proposal.artifactId != report.artifactId)
+    }
+
+    @Test
+    fun m_real_file_approval_denied_keeps_proposal_visible() {
+        check(realMode) { "m is a real-mode scenario" }
+        startWithStoredCredential()
+        openSession("devsessdeny")
+        startRun(realPrompt("m"))
+        openFirstApproval()
+        waitFor("complete file review", timeoutMs = approvalTimeoutMs) {
+            viewModel.state.value.approval?.detailsStatus == "complete" &&
+                viewModel.state.value.approval?.canDeny == true &&
+                viewModel.state.value.approval?.changes?.isNotEmpty() == true
+        }
+        val approval = viewModel.state.value.approval!!
+        assertEquals("approval-target.txt", approval.changes.first().path)
+        assertTrue("the proposed denied content must be visible",
+            approval.changes.first().diff.orEmpty()
+                .contains("RUNVORI_APPROVAL_DENIED"))
+        compose.onNodeWithTag(Tag.DENY).performClick()
+        waitFor("run terminal", timeoutMs = terminalTimeoutMs) {
+            viewModel.state.value.activeRun == null
+        }
+        openResults()
+        assertEquals("completed", viewModel.state.value.results!!.status)
+        val proposal = openArtifact("approval_proposal", "approval-target.txt")
+        assertEquals("proposed", proposal.attribution)
+        assertEquals("a denied proposal must stay inspectable",
+            "approval-target.txt", proposal.path)
+        assertTrue(viewModel.state.value.artifactText
+            .contains("RUNVORI_APPROVAL_DENIED"))
+    }
+
+    @Test
+    fun v_real_verification_result_is_passed() {
+        check(realMode) { "v is a real-mode scenario" }
+        startWithStoredCredential()
+        openSession("devsess0")
+        startRun(realPrompt("v"))
+        openFirstApproval()
+        val approval = viewModel.state.value.approval!!
+        assertEquals("command", approval.kind)
+        assertTrue("the review must carry a command",
+            !approval.command.isNullOrBlank())
+        assertTrue("the command cwd must be inside the workspace",
+            approval.cwdInsideWorkspace)
+        assertTrue(approval.allowedDecisions.contains("allow_once"))
+        compose.onNodeWithTag(Tag.ALLOW).performClick()
+        waitFor("run terminal", timeoutMs = terminalTimeoutMs) {
+            viewModel.state.value.activeRun == null
+        }
+        openResults()
+        val results = viewModel.state.value.results!!
+        assertEquals("completed", results.status)
+        assertTrue(results.verification.configured)
+        assertEquals("passed", results.verification.summary)
+        val item = results.verification.items.first { it.key == "python" }
+        assertEquals("passed", item.status)
+        assertTrue(item.exitCodePresent)
+        assertEquals(0, item.exitCode)
+        assertTrue("the executed command must carry exit 0",
+            viewModel.state.value.commands.any {
+                it.exitCodePresent && it.exitCode == 0
+            })
+        compose.onNodeWithTag(Tag.RESULT_VERIFICATION_SUMMARY)
+            .assertIsDisplayed()
+        compose.onNodeWithTag(Tag.verificationItem("python"))
+            .assertIsDisplayed()
+    }
+
+    @Test
+    fun ri_execution_interrupt_has_confirmed_terminal_and_released_slot() {
+        check(realMode) { "ri is a real-mode scenario" }
+        startWithStoredCredential()
+        openSession("devsess0")
+        startRun(realPrompt("ri"))
+        waitFor("active run identity", timeoutMs = acceptTimeoutMs) {
+            viewModel.state.value.activeRun != null
+        }
+        val runId = viewModel.state.value.activeRun!!.runId
+        val hostId = viewModel.state.value.hostId
+
+        openFirstApproval()
+        val approval = viewModel.state.value.approval!!
+        assertEquals("complete", approval.detailsStatus)
+        assertTrue(approval.cwdInsideWorkspace)
+        compose.onNodeWithTag(Tag.ALLOW).performClick()
+        // The receipt proves only that the decision was submitted. Execution
+        // starting is proven by the command's own output below.
+        waitFor("approval decision submitted", timeoutMs = acceptTimeoutMs) {
+            cache.operations(hostId).any {
+                it.kind == "approval" && it.resourceId == approval.approvalId
+            }
+        }
+        viewModel.closeApproval()
+        waitFor("timeline after approval", timeoutMs = 30_000) {
+            viewModel.state.value.screen.name == "Timeline"
+        }
+
+        // The interrupt is requested only after the real command printed its
+        // start marker; a missing marker or an earlier terminal is a failure,
+        // never a reason to wait a fixed number of seconds and try anyway.
+        awaitExecutionStart(runId)
+        if (viewModel.state.value.activeRun == null) {
+            throw AssertionError(
+                "terminal_race_natural_completion; terminal=" +
+                    terminalNameFor(runId))
+        }
+        compose.onNodeWithTag(Tag.INTERRUPT).performClick()
+        assertTrue("interrupt must ask before acting",
+            viewModel.state.value.interruptConfirm)
+        compose.onNodeWithTag(Tag.CONFIRM_INTERRUPT).performClick()
+        waitFor("run terminal after interrupt", timeoutMs = terminalTimeoutMs) {
+            viewModel.state.value.activeRun == null
+        }
+
+        val terminal = terminalFor(runId)
+        assertNotNull("the interrupted run must reach a terminal event",
+            terminal)
+        assertEquals(
+            "a natural completion before the interrupt is a race, not success",
+            "run.interrupted", terminal!!.type)
+        interruptOperation(runId, terminalTimeoutMs)
+        waitFor("composer after interrupt", timeoutMs = 30_000) {
+            viewModel.state.value.writable
+        }
+        compose.onNodeWithTag(Tag.SEND_RUN).assertIsDisplayed()
+        assertTrue("the command's real start output must stay on the timeline",
+            viewModel.state.value.timeline
+                .filterIsInstance<TimelineItem.Command>()
+                .any { it.output.contains("RUNVORI_SLEEP_STARTED") })
+    }
+
+    @Test
+    fun ra_turn_termination_expires_waiting_approval() {
+        check(realMode) { "ra is a real-mode scenario" }
+        approvalPageInterruptExpiresApproval("devsess1", realPrompt("ra"))
+    }
+
+    @Test
+    fun s3_approval_page_interrupt_expires_request() {
+        check(!realMode) { "s3 is the synthetic companion of ra" }
+        approvalPageInterruptExpiresApproval(
+            "devsess1", "wait for the approval [interrupt]")
+    }
+
+    @Test
+    fun r_restart_readback_keeps_command_and_artifact_hashes() {
+        val sessionId = requiredArg("restart_session")
+        val runId = requiredArg("restart_run_id")
+        startWithStoredCredential()
+        openSession(sessionId)
+        openResults()
+        val results = viewModel.state.value.results!!
+        assertEquals("the captured run must still be the latest result",
+            runId, results.runId)
+
+        val commandItemId = arg("restart_command_item_id")
+        val commandSha = arg("restart_command_sha256")
+        if (commandItemId.isNotEmpty() && commandSha.isNotEmpty()) {
+            val command = viewModel.state.value.commands
+                .firstOrNull { it.itemId == commandItemId }
+            assertNotNull("the captured command must still be listed", command)
+            assertFalse("the captured command must not be truncated",
+                command!!.commandTruncated)
+            assertEquals("the command text must survive the restart",
+                commandSha, sha256Hex(command.command.orEmpty()))
+        }
+
+        val artifactId = arg("restart_artifact_id")
+        val artifactSha = arg("restart_artifact_sha256")
+        val artifactSize = arg("restart_artifact_size")
+        if (artifactId.isNotEmpty() && artifactSha.isNotEmpty() &&
+            artifactSize.isNotEmpty()) {
+            waitFor("captured artifact in results", timeoutMs = 30_000) {
+                viewModel.state.value.artifacts
+                    .any { it.artifactId == artifactId }
+            }
+            val artifact = viewModel.state.value.artifacts
+                .first { it.artifactId == artifactId }
+            assertEquals("the persisted artifact digest must not change",
+                artifactSha, artifact.sha256)
+            assertEquals(artifactSize.toLong(), artifact.sizeBytes)
+            assertTrue(artifact.contentAvailable)
+            viewModel.openArtifact(artifact)
+            waitFor("full artifact content", timeoutMs = 30_000) {
+                val current = viewModel.state.value
+                current.screen.name == "Artifact" && !current.artifactLoading &&
+                    current.artifactError == null &&
+                    (artifact.sizeBytes == 0L ||
+                        (current.artifactNextOffset ?: 0L) >= artifact.sizeBytes)
+            }
+            val current = viewModel.state.value
+            assertEquals("text", current.artifactRepresentation)
+            assertFalse(current.artifactTruncated)
+            assertEquals(artifact.sizeBytes, current.artifactLoadedBytes)
+            assertEquals("the artifact bytes must survive the restart",
+                artifactSha, sha256Hex(current.artifactText))
+        }
+    }
+
+    @Test
+    fun o_approval_survives_pause_and_process_restore() {
+        startWithRoutes()
+        openSession("devsess1")
+        startRun("please change a file [file-change]")
+        val approval = openFirstApproval()
+        assertEquals("Approval", viewModel.state.value.screen.name)
+
+        // Backgrounding must not drop the screen or submit anything.
+        viewModel.pause()
+        Thread.sleep(500)
+        assertEquals("Approval", viewModel.state.value.screen.name)
+        assertNotNull(viewModel.state.value.approval)
+        viewModel.resume()
+        waitFor("approval after foreground", timeoutMs = 30_000) {
+            viewModel.state.value.screen.name == "Approval" &&
+                viewModel.state.value.approval != null
+        }
+        assertTrue(viewModel.state.value.approval?.canDeny == true)
+
+        // Process loss: a new view model starts from the durable route and
+        // the cache, and re-reads the approval from the Host.
+        restoreAfterProcessLoss()
+        waitFor("restored approval", timeoutMs = 30_000) {
+            viewModel.state.value.screen.name == "Approval" &&
+                viewModel.state.value.approval?.approvalId == approval.approvalId
+        }
+        assertEquals("Approval", viewModel.state.value.screen.name)
+        assertTrue(viewModel.state.value.approval?.canDeny == true)
+        assertNull(viewModel.state.value.decisionInFlight)
+        // The approval is re-read from the Host; wait until that sync closes
+        // the write gate. A click while the restored screen is still read-only
+        // would be ignored and would leave the single active slot occupied.
+        waitFor("restored approval actionable", timeoutMs = 30_000) {
+            viewModel.state.value.screen.name == "Approval" &&
+                viewModel.state.value.writable &&
+                viewModel.state.value.approval?.canDeny == true
+        }
+        compose.onNodeWithTag(Tag.DENY).performClick()
+        waitFor("run terminal after deny", timeoutMs = 45_000) {
+            viewModel.state.value.activeRun == null &&
+                approval.runId?.let { terminalFor(it) } != null
+        }
+    }
+
+    @Test
+    fun q_decision_receipt_loss_is_recovered_without_resubmit() {
+        startWithRoutes()
+        openSession("devsess1")
+        startRun("please change a file [file-change]")
+        val approval = openFirstApproval()
+        val hostId = viewModel.state.value.hostId
+        val lostRequest = "dec-lost-" + System.currentTimeMillis()
+        session.recordOperation(
+            hostId, lostRequest, "approval", approval.approvalId)
+        val before = cache.operations(hostId).count {
+            it.kind == "approval" && it.resourceId == approval.approvalId
+        }
+
+        restoreAfterProcessLoss()
+        waitFor("receipt-loss recovery", timeoutMs = 30_000) {
+            viewModel.state.value.screen.name == "Approval" &&
+                viewModel.state.value.decisionNotice?.contains("待确认") == true
+        }
+        assertEquals(
+            "the submitted decision must not be sent again",
+            before,
+            cache.operations(hostId).count {
+                it.kind == "approval" && it.resourceId == approval.approvalId
+            })
+        assertTrue(viewModel.state.value.decisionUnresolved)
+        assertNotNull(viewModel.state.value.decisionInFlight)
+        compose.onNodeWithTag(Tag.ALLOW).assertIsNotEnabled()
+        compose.onNodeWithTag(Tag.DENY).assertIsNotEnabled()
+        viewModel.decide("deny")
+        Thread.sleep(500)
+        assertEquals(
+            "a repeated tap must not create a second operation",
+            before,
+            cache.operations(hostId).count {
+                it.kind == "approval" && it.resourceId == approval.approvalId
+            })
+
+        // Cleanup only: submit a separate, real decision so the Host's single
+        // active-run slot is free for the next scenario. This is not product
+        // behaviour and is not retried.
+        val current = viewModel.state.value.approval!!
+        session.api().decide(
+            current.approvalId, "dec-cleanup-" + System.currentTimeMillis(),
+            current.version, "deny")
+        waitFor("cleanup deny terminal", timeoutMs = 45_000) {
+            viewModel.state.value.activeRun == null
+        }
+    }
+
+    @Test
+    fun w_missing_approval_is_stale_and_not_actionable() {
+        startWithRoutes()
+        openSession("devsess1")
+        viewModel.openApproval("approval_missing_acceptance")
+        waitFor("stale approval", timeoutMs = 30_000) {
+            viewModel.state.value.screen.name == "Approval" &&
+                viewModel.state.value.approvalStale
+        }
+        compose.onNodeWithTag(Tag.APPROVAL_STALE).assertIsDisplayed()
+        compose.onNodeWithTag(Tag.ALLOW).assertDoesNotExist()
+        compose.onNodeWithTag(Tag.DENY).assertDoesNotExist()
+        assertNull(viewModel.state.value.approval)
+        viewModel.closeApproval()
+        waitFor("timeline after stale approval") {
+            viewModel.state.value.screen.name == "Timeline"
+        }
+    }
+
+    @Test
+    fun x_artifact_switch_ignores_stale_chunk() {
+        startWithStoredCredential()
+        openSession("devsess1")
+        startRun("please change a file [file-change-complete]")
+        openFirstApproval()
+        compose.onNodeWithTag(Tag.ALLOW).performClick()
+        waitFor("run terminal", timeoutMs = terminalTimeoutMs) {
+            viewModel.state.value.activeRun == null
+        }
+        openResults()
+        waitFor("two readable artifacts", timeoutMs = 30_000) {
+            viewModel.state.value.artifacts.count {
+                it.contentAvailable && it.sizeBytes > 0
+            } >= 2
+        }
+        val readable = viewModel.state.value.artifacts.filter {
+            it.contentAvailable && it.sizeBytes > 0
+        }
+        val first = readable[0]
+        val second = readable[1]
+        val expectedSecond = session.api()
+            .artifactContent(second.artifactId, 0).data.toString(Charsets.UTF_8)
+
+        viewModel.openArtifact(first)
+        viewModel.openArtifact(second)
+        waitFor("second artifact", timeoutMs = 30_000) {
+            viewModel.state.value.screen.name == "Artifact" &&
+                viewModel.state.value.artifact?.artifactId == second.artifactId &&
+                !viewModel.state.value.artifactLoading
+        }
+        assertEquals("the old request must not overwrite the new artifact",
+            expectedSecond, viewModel.state.value.artifactText)
+
+        viewModel.openArtifact(first)
+        viewModel.closeArtifact()
+        viewModel.openArtifact(second)
+        waitFor("second artifact after reopen", timeoutMs = 30_000) {
+            viewModel.state.value.screen.name == "Artifact" &&
+                viewModel.state.value.artifact?.artifactId == second.artifactId &&
+                !viewModel.state.value.artifactLoading
+        }
+        assertEquals("a closed request must not append to the reopened one",
+            expectedSecond, viewModel.state.value.artifactText)
+    }
+
+    @Test
+    fun u_process_loss_setup_leaves_approval_and_lost_receipt() {
+        check(!realMode) { "u is an internal synthetic setup" }
+        startWithRoutes()
+        openSession("devsess1")
+        startRun("please change a file [file-change]")
+        val approval = openFirstApproval()
+        // Record a submitted decision whose receipt was never received. The
+        // Host has no such operation; the app must query, not resend.
+        session.recordOperation(viewModel.state.value.hostId,
+            "dec-lost-process-" + System.currentTimeMillis(),
+            "approval", approval.approvalId)
+        assertEquals("Approval", viewModel.state.value.screen.name)
+        assertNotNull(viewModel.state.value.approval)
+        viewModel.pause()
+        Thread.sleep(500)
+    }
+
+    @Test
+    fun s2_stale_approval_after_host_restart() {
+        check(!realMode) { "s2 is a synthetic restart scenario" }
+        val approvalId = requiredArg("stale_approval_id")
+        startWithStoredCredential()
+        openSession("devsess0")
+        viewModel.openApproval(approvalId)
+        waitFor("stale approval after restart", timeoutMs = 30_000) {
+            viewModel.state.value.screen.name == "Approval" &&
+                (viewModel.state.value.approvalStale ||
+                    viewModel.state.value.approval != null)
+        }
+        val view = viewModel.state.value.approval
+        if (view == null) {
+            assertTrue(viewModel.state.value.approvalStale)
+            compose.onNodeWithTag(Tag.APPROVAL_STALE).assertIsDisplayed()
+            compose.onNodeWithTag(Tag.ALLOW).assertDoesNotExist()
+            compose.onNodeWithTag(Tag.DENY).assertDoesNotExist()
+        } else {
+            assertTrue("an approval from the old epoch must not stay actionable",
+                view.status in setOf("expired", "unknown", "resolved"))
+            assertFalse(view.canAllow)
+            assertFalse(view.canDeny)
+            compose.onNodeWithTag(Tag.ALLOW).assertIsNotEnabled()
+            compose.onNodeWithTag(Tag.DENY).assertIsNotEnabled()
+        }
+        val refused = runCatching {
+            session.api().decide(approvalId,
+                "stale-attempt-" + System.currentTimeMillis(),
+                view?.version ?: 1, "allow_once")
+        }
+        assertTrue("the Host must refuse a decision from the old epoch",
+            refused.isFailure)
+    }
+
+    @Test
+    fun off_offline_shows_cached_sessions_and_timeline_read_only() {
+        check(!realMode) { "off is a synthetic offline scenario" }
+        assertNotNull("this scenario needs a prior pairing", store.load())
+        // The orchestrator stopped the Host before starting this scenario.
+        startViewModel(resetCredential = false)
+        waitFor("offline connection", timeoutMs = 30_000) {
+            viewModel.state.value.connection.contains("离线")
+        }
+        assertTrue("cached sessions must survive without the Host",
+            viewModel.state.value.sessions.any { it.sessionId == "devsess0" })
+        compose.onNodeWithTag(Tag.sessionRow("devsess0")).assertIsDisplayed()
+
+        val hostId = viewModel.state.value.hostId
+        val operationsBefore = cache.operations(hostId).size
+        viewModel.openSession("devsess0")
+        waitFor("cached timeline", timeoutMs = 30_000) {
+            viewModel.state.value.screen.name == "Timeline" &&
+                viewModel.state.value.timeline.isNotEmpty()
+        }
+        assertFalse("an offline timeline is read-only",
+            viewModel.state.value.writable)
+        compose.onNodeWithTag(Tag.TIMELINE).assertIsDisplayed()
+        compose.onNodeWithTag(Tag.SEND_RUN).assertDoesNotExist()
+
+        // A write entry that bypasses the hidden composer still refuses to
+        // leave the cache and never creates a run operation.
+        viewModel.updateComposer("offline attempt")
+        viewModel.startRun("offline attempt")
+        Thread.sleep(500)
+        assertFalse(viewModel.state.value.startInFlight)
+        assertTrue(viewModel.state.value.error.orEmpty().contains("离线"))
+        assertEquals(
+            "offline must not record a new operation",
+            operationsBefore, cache.operations(hostId).size)
+    }
+
+    @Test
+    fun rec_recovery_resyncs_from_cursor_without_duplicates() {
+        check(!realMode) { "rec is a synthetic recovery scenario" }
+        startWithStoredCredential()
+        waitFor("sessions after recovery", timeoutMs = 30_000) {
+            viewModel.state.value.sessions.any { it.sessionId == "devsess0" }
+        }
+        openSession("devsess0")
+        val hostId = viewModel.state.value.hostId
+        val before = cache.events(hostId, "devsess0", limit = 100_000)
+        assertTrue("expected cached history before recovery", before.isNotEmpty())
+
+        // Re-read twice through the product sync path: the cursor must not
+        // duplicate events and the terminal history must remain.
+        val first = session.syncSession("devsess0")
+        val second = session.syncSession("devsess0")
+        for (sync in listOf(first, second)) {
+            val seqs = sync.events.map { it.seq }
+            assertEquals("no duplicate seq after recovery",
+                seqs.size, seqs.toSet().size)
+            assertEquals("the recovered sequence is contiguous",
+                (1..seqs.size).map { it.toLong() }, seqs)
+            assertFalse("recovery must not leave a gap", sync.hasGap)
+            assertTrue("the terminal run must survive recovery",
+                sync.events.any {
+                    it.type == "run.completed" || it.type == "run.interrupted"
+                })
+        }
+        assertEquals("recovery must not duplicate stored operations",
+            cache.operations(hostId).size,
+            cache.operations(hostId).distinctBy { it.requestId }.size)
+    }
+
+    @Test
+    fun fs_font_scale_200_key_pages_remain_operable() {
+        check(!realMode) { "fs is a synthetic font-scale scenario" }
+        val fontScale = InstrumentationRegistry.getInstrumentation()
+            .targetContext.resources.configuration.fontScale
+        assertTrue("orchestrator must set 200% font scale, got $fontScale",
+            fontScale >= 1.9f)
+        startWithStoredCredential()
+        waitFor("sessions at 200% font", timeoutMs = 30_000) {
+            viewModel.state.value.sessions.any { it.sessionId == "devsess1" }
+        }
+        compose.onNodeWithTag(Tag.sessionRow("devsess1")).assertIsDisplayed()
+
+        openSession("devsess1")
+        // `openSession` starts an asynchronous sync. Wait for the projected
+        // history and its session version before writing; otherwise a write
+        // can carry the previous screen's version and be refused.
+        waitFor("devsess1 synced at 200% font", timeoutMs = 30_000) {
+            viewModel.state.value.screen.name == "Timeline" &&
+                !viewModel.state.value.loading &&
+                viewModel.state.value.timeline.isNotEmpty() &&
+                viewModel.state.value.sessionVersion > 0
+        }
+        compose.onNodeWithTag(Tag.TIMELINE).assertIsDisplayed()
+        startRun("please change a file [file-change]")
+        openFirstApproval()
+        // This synthetic request is a file-change review, so there is no
+        // command tag; the status and the actionable button are the key
+        // controls that must remain reachable at 200%.
+        compose.onNodeWithTag(Tag.APPROVAL_STATUS).assertExists()
+        compose.onNodeWithTag(Tag.INSUFFICIENT).assertExists()
+        compose.onNodeWithTag(Tag.DENY)
+            .performScrollTo().assertIsDisplayed().performClick()
+        waitFor("terminal at 200% font", timeoutMs = 45_000) {
+            viewModel.state.value.activeRun == null
+        }
     }
 
     @Test

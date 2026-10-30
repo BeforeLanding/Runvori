@@ -93,6 +93,49 @@ FILE_CHANGE_APPROVAL_KEYS = frozenset({
     "threadId", "turnId", "itemId", "startedAtMs", "reason", "grantRoot",
 })
 FILE_CHANGE_BYTES = b"RUNVORI_PROBE_OK\n"
+FILE_APPROVAL_NAME = "approval-target.txt"
+FILE_APPROVAL_BEFORE = b"RUNVORI_APPROVAL_BEFORE\n"
+FILE_APPROVAL_ALLOWED = b"RUNVORI_APPROVAL_AFTER\n"
+FILE_APPROVAL_DENIED = b"RUNVORI_APPROVAL_DENIED\n"
+REAL_FILE_APPROVAL_ALLOW_PROMPT = (
+    "This is a disposable Runvori protocol probe. Use only the apply_patch "
+    "tool to change approval-target.txt so its single line is exactly "
+    "RUNVORI_APPROVAL_AFTER followed by a newline, replacing "
+    "RUNVORI_APPROVAL_BEFORE. Make exactly one patch attempt; if approval is "
+    "required, request it. Do not use shell commands, other tools, other "
+    "paths, or the network."
+)
+REAL_FILE_APPROVAL_DENY_PROMPT = (
+    "This is a disposable Runvori protocol probe. Use only the apply_patch "
+    "tool to change approval-target.txt so its single line is exactly "
+    "RUNVORI_APPROVAL_DENIED followed by a newline, replacing "
+    "RUNVORI_APPROVAL_BEFORE. Make exactly one patch attempt; if approval is "
+    "required, request it. Do not retry, do not use shell commands, other "
+    "tools, other paths, or the network."
+)
+REAL_VERIFY_PROMPT = (
+    "This is a disposable Runvori protocol probe. In this workspace, run only "
+    "the exact command python --version once and report its result. Wait for "
+    "approval if it is requested. Do not use other commands, other tools, "
+    "access paths outside this workspace, or use the network."
+)
+# The phone-driven interrupt scenarios use their own prompts. The execution
+# prompt emits a real output marker and caps the run at 60 seconds, so the test
+# can trigger only after the command actually started. The approval prompt
+# makes exactly one approval request and never decides it; the turn is ended
+# through the product interrupt entry instead.
+REAL_EXECUTION_INTERRUPT_PROMPT = (
+    "This is a disposable Runvori protocol probe. In this workspace, run only "
+    f"the exact PowerShell command {INTERRUPT_COMMAND} and wait for it to "
+    "finish. Wait for approval if it is requested. Do not use other commands, "
+    "other tools, access paths outside this workspace, or use the network."
+)
+REAL_PENDING_INTERRUPT_PROMPT = (
+    "This is a disposable Runvori protocol probe. In this workspace, run only "
+    f"the exact command {SAFE_COMMAND} once. If approval is requested, wait "
+    "for the decision without retrying. Do not use other commands, other "
+    "tools, access paths outside this workspace, or use the network."
+)
 MOVE_SOURCE_BYTES = b"RUNVORI_MOVE_OLD\n"
 MOVE_DESTINATION_BYTES = b"RUNVORI_MOVE_NEW\n"
 MOVE_PROMPT = (
@@ -369,6 +412,39 @@ def validate_move_fixture(root: Path, fixture: Path) -> Path:
             or (target / "move-source.txt").read_bytes() != MOVE_SOURCE_BYTES
             or _git_status_entries(target)):
         raise TransportError("invalid_move_fixture")
+    return target
+
+
+def prepare_file_approval_fixture(root: Path, fixture: Path) -> Path:
+    """A committed one-line file whose replacement needs review."""
+    target = prepare_fixture(root, fixture)
+    (target / FILE_APPROVAL_NAME).write_bytes(FILE_APPROVAL_BEFORE)
+    for command in (
+        ["git", "add", "--", MARKER, FILE_APPROVAL_NAME],
+        ["git", "-c", "user.name=RunvoriProbe",
+         "-c", "user.email=probe@invalid.local", "-c", "commit.gpgsign=false",
+         "commit", "--quiet", "-m", "approval baseline"],
+    ):
+        result = subprocess.run(command, cwd=target, capture_output=True,
+                                timeout=15, check=False)
+        if result.returncode:
+            raise TransportError("fixture_git_baseline_failed")
+    return validate_file_approval_fixture(root, target)
+
+
+def validate_file_approval_fixture(root: Path, fixture: Path) -> Path:
+    target = fixture_path(root, fixture)
+    expected = {MARKER, ".git", FILE_APPROVAL_NAME}
+    if (not target.is_dir() or {path.name for path in target.iterdir()} != expected
+            or any((target / name).is_symlink() or
+                   (hasattr(target / name, "is_junction") and
+                    (target / name).is_junction()) for name in expected)
+            or not (target / ".git").is_dir()
+            or (target / MARKER).read_text(encoding="utf-8") !=
+            "Runvori disposable execution probe\n"
+            or (target / FILE_APPROVAL_NAME).read_bytes() != FILE_APPROVAL_BEFORE
+            or _git_status_entries(target)):
+        raise TransportError("invalid_file_approval_fixture")
     return target
 
 

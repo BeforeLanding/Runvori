@@ -1444,11 +1444,14 @@ class EventJournal:
 
     def append_timeline_bound(self, session_id: str | None, *, thread_id: str,
                               turn_id: str, kind: str, payload: dict,
-                              text: str | None, recorded_at: str) -> dict:
+                              text: str | None, recorded_at: str,
+                              epoch: int | None = None) -> dict:
         """Append a timeline event located by its upstream thread/turn pair.
 
         ``session_id=None`` means the binding alone decides the owner, which is
-        the only safe way to accept an upstream-identified event.
+        the only safe way to accept an upstream-identified event. When
+        ``epoch`` is supplied, a turn id from an older Host epoch cannot be
+        mistaken for the current one.
         """
         self._require_write_ready()
         if (kind not in TIMELINE_KINDS
@@ -1457,7 +1460,8 @@ class EventJournal:
                 or not isinstance(thread_id, str) or not thread_id
                 or not isinstance(turn_id, str) or not turn_id
                 or not isinstance(payload, dict)
-                or not isinstance(recorded_at, str) or not recorded_at):
+                or not isinstance(recorded_at, str) or not recorded_at
+                or (epoch is not None and (type(epoch) is not int or epoch < 1))):
             raise EventJournalError("invalid_timeline_event")
         if text is not None and kind not in TIMELINE_TEXT_KINDS:
             raise EventJournalError("invalid_timeline_event")
@@ -1468,10 +1472,15 @@ class EventJournal:
             raise EventJournalError("timeline_chunk_too_large")
         self.connection.execute("BEGIN IMMEDIATE")
         try:
-            binding = self.connection.execute(
+            query = (
                 "SELECT u.run_id, r.session_id, r.status FROM upstream_turns AS u "
                 "JOIN runs AS r ON r.run_id=u.run_id "
-                "WHERE u.thread_id=? AND u.turn_id=?", (thread_id, turn_id)).fetchone()
+                "WHERE u.thread_id=? AND u.turn_id=?")
+            values: tuple[Any, ...] = (thread_id, turn_id)
+            if epoch is not None:
+                query += " AND u.process_epoch=?"
+                values = (*values, epoch)
+            binding = self.connection.execute(query, values).fetchone()
             if binding is None:
                 raise EventJournalError("upstream_turn_not_found")
             if session_id is not None and binding["session_id"] != session_id:
@@ -1492,24 +1501,30 @@ class EventJournal:
             raise
 
     def item_has_text(self, *, thread_id: str, turn_id: str,
-                      item_id: str) -> bool:
+                      item_id: str, epoch: int | None = None) -> bool:
         """True when streamed text for this item was already persisted."""
         if (not isinstance(thread_id, str) or not thread_id
                 or not isinstance(turn_id, str) or not turn_id
-                or not isinstance(item_id, str) or not item_id):
+                or not isinstance(item_id, str) or not item_id
+                or (epoch is not None and (type(epoch) is not int or epoch < 1))):
             return False
         try:
             encoded = json.dumps(item_id, ensure_ascii=False)
         except (TypeError, ValueError):
             return False
-        row = self.connection.execute(
+        query = (
             "SELECT 1 FROM events WHERE session_id = ("
             "  SELECT r.session_id FROM upstream_turns AS u "
             "  JOIN runs AS r ON r.run_id=u.run_id "
-            "  WHERE u.thread_id=? AND u.turn_id=?) "
-            "AND event_json LIKE ? AND event_json LIKE '%\"text\"%' LIMIT 1",
-            (thread_id, turn_id,
-             '%"item_id":' + encoded + '%')).fetchone()
+            "  WHERE u.thread_id=? AND u.turn_id=?")
+        values: tuple[Any, ...] = (thread_id, turn_id)
+        if epoch is not None:
+            query += " AND u.process_epoch=?"
+            values = (*values, epoch)
+        query += (
+            ") AND event_json LIKE ? AND event_json LIKE '%\"text\"%' LIMIT 1")
+        row = self.connection.execute(
+            query, (*values, '%"item_id":' + encoded + '%')).fetchone()
         return row is not None
 
     def _append_timeline_in_tx(self, session_id: str, run_id: str, *,

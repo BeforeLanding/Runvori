@@ -56,6 +56,7 @@ sealed interface TimelineItem {
         val kind: String,
         val status: String,
         val detailsStatus: String?,
+        val version: Long? = null,
     ) : TimelineItem
 
     data class RunEvent(

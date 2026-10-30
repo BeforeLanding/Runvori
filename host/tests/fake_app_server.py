@@ -138,6 +138,18 @@ for raw in sys.stdin:
                     "threadId": thread_id,
                     "turn": {"id": turn_id, "status": "completed"}}})
                 continue
+            decision = (request.get("result", {}).get("decision")
+                        if isinstance(request.get("result"), dict) else None)
+            if decision != "accept":
+                # A denied command is not executed: never invent output or an
+                # exit code for it. Only the request closing and the turn
+                # terminal are observed.
+                send({"method": "serverRequest/resolved", "params": {
+                    "threadId": thread_id, "requestId": request["id"]}})
+                send({"method": "turn/completed", "params": {
+                    "threadId": thread_id,
+                    "turn": {"id": turn_id, "status": "completed"}}})
+                continue
             send({"method": "serverRequest/resolved", "params": {
                 "threadId": thread_id, "requestId": request["id"]}})
             # The approved command "ran": emit its output and result, then a
@@ -329,7 +341,13 @@ for raw in sys.stdin:
             else f"thread_demo_{thread_starts}"
         send({"id": request_id, "result": {"thread": {"id": thread_id}}})
     elif mode in API_MODES and request["method"] == "thread/resume":
-        send({"id": request_id, "result": {"thread": {"id": "thread_demo"}}})
+        # After a Host restart the new peer must confirm the *bound* thread,
+        # not always the first one. Returning thread_demo for a session bound
+        # to thread_demo_2 makes the Host correctly recover the connection.
+        requested = request.get("params", {}).get("threadId")
+        thread_id = requested if isinstance(requested, str) and requested \
+            else "thread_demo"
+        send({"id": request_id, "result": {"thread": {"id": thread_id}}})
     elif mode == "host_api_no_approval" and request["method"] == "turn/start":
         send({"id": request_id, "result": {"turn": {"id": "turn_demo"}}})
         send({"method": "turn/completed", "params": {
@@ -341,9 +359,12 @@ for raw in sys.stdin:
         thread_id = request.get("params", {}).get("threadId", "thread_demo")
         fake_turns.append(None)
         index = len(fake_turns)
-        turn_id = f"turn_device_{index}"
-        approval_id = f"approval_device_{index}"
-        item_id = f"item_device_{index}"
+        # A Host restart starts a new peer process. The process tag keeps the
+        # new epoch's ids from colliding with the previous epoch's bindings.
+        tag = os.getpid()
+        turn_id = f"turn_device_{tag}_{index}"
+        approval_id = f"approval_device_{tag}_{index}"
+        item_id = f"item_device_{tag}_{index}"
         failed = "[verify-fail]" in prompt
         command = "exit 7" if failed else "python --version"
         command_result = {
@@ -358,7 +379,8 @@ for raw in sys.stdin:
         turn_threads[turn_id] = thread_id
         send({"id": request_id, "result": {"turn": {"id": turn_id}}})
         file_prompt = any(marker in prompt for marker in (
-            "[file-change]", "[file-change-complete]", "[file-change-deny]"))
+            "[file-change]", "[file-change-complete]", "[file-change-deny]",
+            "[file-change-absolute-first]"))
         if not file_prompt:
             send({"method": "item/started", "params": {
                 "threadId": thread_id, "turnId": turn_id,
@@ -399,6 +421,35 @@ for raw in sys.stdin:
             send({"method": "turn/completed", "params": {
                 "threadId": thread_id,
                 "turn": {"id": turn_id, "status": "completed"}}})
+            continue
+        if "[file-change-absolute-first]" in prompt:
+            # Real Codex names files absolutely and can deliver the review
+            # only on item/updated. Send the request first, let the phone open
+            # the insufficient review, then deliver an empty started item and
+            # the actual absolute-path update.
+            changes = [{
+                "path": (str(Path(workspace) / "probe-artifact.txt")
+                         if workspace else "probe-artifact.txt"),
+                "kind": {"type": "add"},
+                "diff": "+RUNVORI_ARTIFACT_OK\n"}]
+            pending_file_changes[item_id] = changes
+            send({"id": approval_id,
+                  "method": "item/fileChange/requestApproval",
+                  "params": file_approval_params(
+                      turn_id=turn_id, item_id=item_id,
+                      thread_id=thread_id)})
+            pending_approvals[approval_id] = turn_id
+            pending_items[turn_id] = item_id
+            pending_scenarios[approval_id] = ("file_allow", "")
+            time.sleep(10)
+            send({"method": "item/started", "params": {
+                "threadId": thread_id, "turnId": turn_id,
+                "item": {"id": item_id, "type": "fileChange",
+                         "status": "inProgress", "changes": []}}})
+            send({"method": "item/updated", "params": {
+                "threadId": thread_id, "turnId": turn_id,
+                "item": {"id": item_id, "type": "fileChange",
+                         "status": "inProgress", "changes": changes}}})
             continue
         if "[file-change]" in prompt:
             # A file change carries no command and no diff in this request, so
@@ -455,9 +506,10 @@ for raw in sys.stdin:
         # Acknowledge the RPC, then report the turn terminal separately: the
         # RPC response alone is not proof the turn stopped.
         send({"id": request_id, "result": {}})
-        # Each device-mode turn is `turn_device_<index>`; interrupting answers
-        # for the most recent one, which is the only possible active turn.
-        turn_id = f"turn_device_{len(fake_turns)}"
+        # Each device-mode turn is `turn_device_<pid>_<index>`; interrupting
+        # answers for the most recent one, which is the only possible active
+        # turn.
+        turn_id = f"turn_device_{os.getpid()}_{len(fake_turns)}"
         send({"method": "turn/completed", "params": {
             "threadId": turn_threads.get(turn_id, "thread_demo"),
             "turn": {"id": turn_id, "status": "interrupted"}}})

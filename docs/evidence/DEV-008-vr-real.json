@@ -1,0 +1,125 @@
+{
+  "approval_scopes": {
+    "b": "allow_once:python --version",
+    "l": "allow_once:file_change",
+    "m": "deny:file_change",
+    "v": "allow_once:python --version"
+  },
+  "codex_version": "codex-cli 0.164.0-alpha.11.1",
+  "command_match_asserted": true,
+  "command_samples": {
+    "present": true,
+    "requirements": [
+      {
+        "command_count": 1,
+        "commands": [
+          {
+            "index": 0,
+            "inner_exact": true,
+            "kind": "system_powershell_wrapper",
+            "length": 92
+          }
+        ],
+        "inner_exact": true,
+        "key": "python",
+        "kind": "system_powershell_wrapper",
+        "length": 92
+      }
+    ]
+  },
+  "device": {
+    "serial": "emulator-5554"
+  },
+  "expected_model_turns": 1,
+  "model_turn_scenarios": [
+    "v"
+  ],
+  "not_run": [
+    "s",
+    "a",
+    "b",
+    "c",
+    "d",
+    "f",
+    "h",
+    "g",
+    "o",
+    "q",
+    "w",
+    "x",
+    "i",
+    "l",
+    "m",
+    "j",
+    "k",
+    "n",
+    "y",
+    "z",
+    "s2",
+    "t",
+    "e"
+  ],
+  "observed_runs": 1,
+  "pairing_bootstrap": true,
+  "real": true,
+  "restart_target": {
+    "active_run_id": null,
+    "artifact_id": "art_c51503f1bb1025fd96a9539fce30031b",
+    "artifact_sha256": "6a5d9f6462ca5dfc6788cfd216ba579fffd7875776ab9d9b35659be78858f73a",
+    "artifact_size": 16,
+    "command_item_id": "exec-38406477-e397-4d7a-8344-6b8be5c683be",
+    "command_sha256": "445adfcd5510a6760da59d2753459bc7229529b3c9c70aa64e9067e7648080ce",
+    "pending_approvals": 0,
+    "run_id": "UwuRt9rTtUclQAEzMGclVogbR2KowE84",
+    "session": "devsess0"
+  },
+  "scenarios": [
+    "v",
+    "r"
+  ],
+  "status": "passed",
+  "steps": [
+    {
+      "port": 54129,
+      "sessions": 2,
+      "step": "host_running"
+    },
+    {
+      "endpoint": "10.0.2.2",
+      "host_bind": "loopback",
+      "status": "ok",
+      "step": "transport"
+    },
+    {
+      "scenario": "p",
+      "status": "passed"
+    },
+    {
+      "count": 1,
+      "status": "ok",
+      "step": "verification_config_v"
+    },
+    {
+      "scenario": "v",
+      "status": "passed"
+    },
+    {
+      "epoch_advanced": true,
+      "port_same": true,
+      "status": "ok",
+      "step": "restart"
+    },
+    {
+      "scenario": "r",
+      "status": "passed"
+    },
+    {
+      "artifact_same": true,
+      "command_same": true,
+      "run_same": true,
+      "status": "ok",
+      "step": "restart_state"
+    }
+  ],
+  "upstream": "real_codex"
+}

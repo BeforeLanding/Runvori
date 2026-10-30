@@ -1,0 +1,53 @@
+{
+  "device": {
+    "serial": "emulator-5554"
+  },
+  "expected_model_turns": 0,
+  "model_turn_scenarios": [],
+  "not_run": [
+    "s",
+    "a",
+    "b",
+    "c",
+    "d",
+    "f",
+    "h",
+    "g",
+    "i",
+    "l",
+    "m",
+    "v",
+    "r",
+    "j",
+    "k",
+    "e"
+  ],
+  "pairing_bootstrap": true,
+  "real": false,
+  "scenarios": [
+    "n"
+  ],
+  "status": "passed",
+  "steps": [
+    {
+      "port": 50465,
+      "sessions": 2,
+      "step": "host_running"
+    },
+    {
+      "endpoint": "10.0.2.2",
+      "host_bind": "loopback",
+      "status": "ok",
+      "step": "transport"
+    },
+    {
+      "scenario": "p",
+      "status": "passed"
+    },
+    {
+      "scenario": "n",
+      "status": "passed"
+    }
+  ],
+  "upstream": "synthetic_app_server"
+}

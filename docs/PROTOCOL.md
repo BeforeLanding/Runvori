@@ -104,7 +104,7 @@
 
 审批资源包含 `approval_id / run_id / kind / turn_id / item_id / version / status / requested_at / expires_at / operation_id / operation_status / operation_outcome / workspace_name`，以及结构化的 `command / command_truncated / command_kind / cwd / cwd_inside_workspace / reason / changes[] / review_truncated / details_status / missing_details / allowed_decisions / effective_decision / can_allow / can_deny`。`expires_at` 无可靠上游期限时为 null，不人为以手机时间判定过期；回合终止/请求被清理也会使审批失效。
 
-`details_status` 为 `complete` 表示展示内容足以判断该请求；`insufficient` 表示缺少命令、文件路径、差异或 cwd 无法证明在工作区内。**`insufficient` 与任何 `review_truncated` 的审批都不提供 `allow_once`**，`allowed_decisions` 只含 `deny`，提交允许返回 `409 approval_details_insufficient`。文件审批的路径与差异来自同 `turnId/itemId` 的 `item/started`、`item/completed` 文件项；item 晚到时详情补齐并递增审批 `version`，客户端需重新读取。
+`details_status` 为 `complete` 表示展示内容足以判断该请求；`insufficient` 表示缺少命令、文件路径、差异或 cwd 无法证明在工作区内。**`insufficient` 与任何 `review_truncated` 的审批都不提供 `allow_once`**，`allowed_decisions` 只含 `deny`，提交允许返回 `409 approval_details_insufficient`。文件审批的路径与差异来自同 `turnId/itemId` 的 `item/started`、`item/updated`、`item/completed` 文件项；item 晚到时详情补齐并递增审批 `version`，客户端需重新读取。真实上游的绝对文件路径只在解析后位于该 run 的登记工作区内时转换为相对 POSIX 路径；工作区外、UNC/设备路径、转义或无法解析的路径保持不安全，不能允许。没有可显示差异的文件审批同样不能允许。
 
 Host 校验当前 epoch、请求仍待处理、回合未终止且版本匹配。一个审批只接受一个不可变决定；同请求标识返回原操作，不同标识对同一决定返回已有操作，对相反决定返回 `409 decision_conflict`。版本冲突返回 `409 resource_changed` 并要求刷新，已失效返回 `410 approval_expired`。
 
@@ -271,7 +271,7 @@ stateDiagram-v2
 
 - 详情为有界 JSON：整体 ≤32 KiB、单条 diff ≤16 KiB、命令 ≤8 KiB、reason ≤2 KiB、路径 ≤1 KiB、变更条目 ≤64；超出部分截断并置 `review_truncated`，被截断的审批不提供允许。
 - 命令审批的 `cwd` 必须解析后位于登记工作区内，否则丢弃该值并记录 `cwd_unverified`；`kind` 不是 `command` 时记录 `unsupported_command_kind`。
-- 文件审批请求本身不含路径；详情在 `item/started`、`item/completed` 到达时补齐。item 先到时先存 `approval_items`，审批后到时直接合并。
+- 文件审批请求本身不含路径；详情在 `item/started`、`item/updated`、`item/completed` 到达时补齐。item 先到时先存 `approval_items`，审批后到时直接合并；晚到的 item 通过审批 `version` 递增驱动客户端刷新。`approval_items` 的 summary 带内部 `process_epoch`，新 epoch 不继承旧 item。
 - v13 及更早的审批没有详情记录，升级时一律标为 `insufficient`，不人工回填；这些请求只能拒绝。
 - 详情补齐只递增审批 `version` 并写 `approval.updated`，不改变 `session_version`。
 
@@ -390,7 +390,7 @@ Host 恢复入口在持有单实例锁后，先按权威库中该 epoch 记录�
 
 回合 completed 与验证 failed 可以同时成立，UI 必须显示两者。退出码 null 不能转为 0。命令列表包括非验证命令，不要求所有命令零退出才算必需验证通过。
 
-DEV-008 复用 `verification.py` 的保守判定，但产品匹配范围是**精确命令文本 + 解析后的 cwd**。命令文本被截断、缺失、同一 item 充当多个要求、重复开始/完成或时间倒置都不会算通过。Windows Codex 可能把命令包在 PowerShell 启动器里；本轮没有把包装规范化为等价命令，因此这类证据会保守地落到 `unknown`/`not_run`，而不是猜测通过。必需命令由受信本地 `register-workspace` 声明，手机端不能修改。结果读取时重放持久证据，不依赖内存中的验证器，因此 Host 重启后仍可查询。
+DEV-008 复用 `verification.py` 的保守判定，但产品匹配范围是**精确命令文本或已观察的完整 shell 包装 + 解析后的 cwd**。包装接受五类完整形状：`"<绝对路径 …/dependencies/native/powershell/pwsh.exe>" -Command '<exact>'`、同上的 `-NoProfile -Command '<exact>'`、`-Command "<按已观察方式转义后的 exact>"`、系统 PowerShell 的 `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -Command <exact>`，以及 ERR-038 取得的 app-server 序列化 `"C:\\windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command '<exact>'`（双引号内路径反斜杠成对转义，Windows 折叠重复分隔符）。Codex 随附 pwsh 必须位于 `.cache/codex-runtimes/<单段>/…/powershell`；系统 PowerShell 只接受该完整绝对路径、仅 `-Command`、内层与要求完全一致（未加引号形态仅限无 shell 元字符的简单命令）。附加参数、`-File`/`-EncodedCommand`、其他 shell、`..`/其他盘符或可执行文件、`;`/`&`/`|`/换行、双引号内的 `$`/反引号、单引号内未实现的转义和不认识的形状一律不匹配。命令文本被截断、缺失、同一 item 充当多个要求、重复开始/完成或时间倒置都不会算通过；不认识的包装保守地落到 `unknown`/`not_run`，而不是猜测通过。必需命令由受信本地 `register-workspace` 声明，手机端不能修改。结果读取时重放持久证据，不依赖内存中的验证器，因此 Host 重启后仍可查询。真实 `v` 已按该序列化形状通过，真实 `r` 在同端口重启后读回一致；见 [ERR-038](ERRORS.md) 与 [真实 v/r 证据](evidence/DEV-008-vr-real.json)。
 
 ## 7. 错误模型与重连
 

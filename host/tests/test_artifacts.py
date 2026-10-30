@@ -3,6 +3,7 @@
 import hashlib
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from contextlib import contextmanager
@@ -10,6 +11,7 @@ from pathlib import Path
 
 from runvori.application import run_results
 from runvori.codex.event_handoff import route_observed_event
+from runvori.host import HostConfig, HostRuntime
 from runvori.infrastructure.locked_journal import LockedHostJournals
 
 
@@ -281,3 +283,40 @@ class ArtifactTests(unittest.TestCase):
                     run_results.artifact_content(
                         startup.events.connection, artifact["artifact_id"],
                         offset=artifact["size_bytes"] + 1)
+
+    def test_host_runtime_restart_keeps_artifact_bytes_and_hashes(self):
+        output = "restart evidence\n"
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            with self._opened(temp) as startup:
+                epoch = startup.approvals.current_epoch()
+                self._command(startup, epoch, output=output)
+                self._finish(startup, epoch)
+                before = self._artifact(
+                    startup, "command_output", "command_execution")
+                before_data, _ = self._read_all(
+                    startup, before["artifact_id"], 4096)
+            fake = Path(__file__).with_name("fake_app_server.py").resolve()
+            runtime = HostRuntime(HostConfig(
+                data_dir=root,
+                upstream_command=[sys.executable, str(fake),
+                                  "host_api_no_approval"],
+                upstream_cwd=root,
+                upstream_env={"RUNVORI_FAKE_WORKSPACE": str(root)},
+                poll_timeout=0.02))
+            runtime.start()
+            try:
+                page = run_results.run_artifacts(
+                    runtime.journals.events.connection, "run")
+                after = next(
+                    item for item in page["items"]
+                    if item["kind"] == "command_output")
+                self.assertEqual(before["artifact_id"], after["artifact_id"])
+                self.assertEqual(before["sha256"], after["sha256"])
+                self.assertEqual(before["size_bytes"], after["size_bytes"])
+                data, _ = self._read_all(
+                    runtime.journals, after["artifact_id"], 4096)
+                self.assertEqual(before_data, data)
+                self.assertEqual(output.encode(), data)
+            finally:
+                runtime.stop()

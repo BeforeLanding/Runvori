@@ -84,11 +84,11 @@ ANDROID_HOME=<Android SDK> python scripts/accept_device.py \
 
 ## 未完成与限制
 
-- **真实 Codex 文件审批 `complete` 路径未跑**：本轮 `j/k` 使用合成上游；真实文件审批、真实重命名/二进制/大差异仍需单独授权验收。
+- **真实 Codex 文件审批已由第三切片补验**：本节 `j/k` 使用合成上游；[第三切片](DEV-008-real-approval-slice.md) 修复真实绝对路径被误判为不安全、`item/updated` 未折叠与审批页不刷新的问题后，真实 `l`（允许）与 `m`（拒绝）通过，`v/r` 也通过；真实重命名/二进制/大差异仍需单独授权验收。
 - **Git 快照不是回合前基线**：首次读取时生成，可能包含已有改动，固定 `attribution=unknown`；未跟踪文件没有正文，最多 16 个条目。
 - **文件改动仍没有时间线事件**：差异只从结果页产物进入；`artifact.created` / `artifact.unavailable` 事件未实现。
 - **命令输出上限为 2 MiB**：与单回合时间线预算一致；更长的上游输出继续记为截断。
-- **Windows 命令包装未规范化**：验证匹配仍按精确命令文本 + cwd，真实 Codex 可能落到 `unknown/not_run`。
+- **Windows 命令包装只做有限匹配**：[第三切片](DEV-008-real-approval-slice.md) 新增裸命令、三种已观察 pwsh 完整形状与系统 Windows PowerShell 两种已观察形态的等价匹配；真实 `v` 的 92 字节 app-server 序列化样本已采集并匹配通过，未观察的包装仍落到 `unknown/not_run`。
 - **快速返回/重开产物没有自动化用例**：旧分块竞态由代码审查发现并以代际校验修复（[ERR-034](../ERRORS.md)），设备验收只覆盖顺序打开产物；旋转、杀进程等恢复路径仍待专项验收。
 - 未覆盖真机产物下载、并发分块、旋转/杀进程/大字体/TalkBack、结果页长列表性能。
 
@@ -100,3 +100,5 @@ ANDROID_HOME=<Android SDK> python scripts/accept_device.py \
 - [测试计划](../TEST_PLAN.md)
 - [ERR-033](../ERRORS.md)
 - [ERR-034](../ERRORS.md)
+- [第三切片：真实文件审批与验证匹配](DEV-008-real-approval-slice.md)
+- [ERR-035](../ERRORS.md)、[ERR-036](../ERRORS.md)、[ERR-037](../ERRORS.md)

@@ -391,7 +391,9 @@ private fun TimelineRow(item: TimelineItem, onApproval: (String) -> Unit) {
         }
         is TimelineItem.Approval -> Card(
             onClick = { onApproval(item.approvalId) },
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().testTag(
+                if (item.status == "pending") Tag.pendingApproval(item.approvalId)
+                else Tag.approvalItem(item.approvalId)),
             colors = CardDefaults.cardColors(
                 containerColor = MaterialTheme.colorScheme.tertiaryContainer),
         ) {
@@ -441,16 +443,29 @@ private fun ApprovalScreen(state: AppState, actions: Actions) {
                 style = MaterialTheme.typography.labelSmall)
         }
         if (approval == null) {
-            Text("正在读取审批…", modifier = Modifier.testTag(Tag.LOADING))
+            if (state.approvalStale) {
+                Text(state.approvalStaleReason ?: "审批已失效，不能再提交决定。",
+                    modifier = Modifier.testTag(Tag.APPROVAL_STALE),
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodyMedium)
+            } else {
+                Text("正在读取审批…", modifier = Modifier.testTag(Tag.LOADING))
+            }
             return@Column
         }
         ApprovalBody(approval)
         val status = approval.status
         val actionable = state.writable && status == "pending" &&
-            state.decisionInFlight == null
+            state.decisionInFlight == null && !state.approvalStale
         Text("审批状态：" + approvalStatusText(status),
             modifier = Modifier.testTag(Tag.APPROVAL_STATUS),
             style = MaterialTheme.typography.bodyMedium)
+        if (state.approvalStale) {
+            Text(state.approvalStaleReason ?: "审批已失效，不能再提交决定。",
+                modifier = Modifier.testTag(Tag.APPROVAL_STALE),
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodyMedium)
+        }
         state.decisionNotice?.let {
             Text(it, modifier = Modifier.testTag(Tag.DECISION_NOTICE),
                 style = MaterialTheme.typography.bodyMedium,
@@ -487,6 +502,18 @@ private fun ApprovalScreen(state: AppState, actions: Actions) {
         if (!state.writable) {
             Text("离线或状态未同步完成时不能提交决定。",
                 style = MaterialTheme.typography.bodySmall)
+        }
+        // A user who cannot or will not decide still needs a way out of the
+        // waiting turn without leaving the approval page. The confirmation
+        // dialog is shared with the timeline action.
+        if (state.activeRun != null) {
+            OutlinedButton(
+                onClick = actions.interrupt,
+                enabled = state.writable && !state.interruptInFlight,
+                modifier = Modifier.fillMaxWidth().testTag(Tag.INTERRUPT),
+            ) {
+                Text(if (state.interruptInFlight) "正在中断…" else "中断当前回合")
+            }
         }
     }
 }
@@ -536,6 +563,10 @@ private fun ApprovalBody(approval: ApprovalView) {
                         fontFamily = FontFamily.Monospace,
                         style = MaterialTheme.typography.bodySmall,
                     )
+                    change.movePath?.let {
+                        Text("移动到 " + it, fontFamily = FontFamily.Monospace,
+                            style = MaterialTheme.typography.bodySmall)
+                    }
                     change.diff?.let { diff ->
                         SelectionContainer {
                             Text(diff, fontFamily = FontFamily.Monospace,
@@ -1063,7 +1094,9 @@ object Tag {
     const val SEND_RUN = "send_run"
     const val ACTIVE_NOTICE = "active_notice"
     const val APPROVAL_BACK = "approval_back"
+    const val PENDING_APPROVAL = "pending_approval_"
     const val APPROVAL_STATUS = "approval_status"
+    const val APPROVAL_STALE = "approval_stale"
     const val APPROVAL_COMMAND = "approval_command"
     const val APPROVAL_CWD = "approval_cwd"
     const val DECISION_NOTICE = "decision_notice"
@@ -1090,6 +1123,10 @@ object Tag {
     const val ARTIFACT_UNAVAILABLE = "artifact_unavailable"
     const val ARTIFACT_TRUNCATED = "artifact_truncated"
     const val LOAD_MORE_ARTIFACT_CONTENT = "load_more_artifact_content"
+
+    fun approvalItem(approvalId: String) = "approval_item_$approvalId"
+
+    fun pendingApproval(approvalId: String) = "$PENDING_APPROVAL$approvalId"
 
     fun sessionRow(sessionId: String) = "session_row_$sessionId"
 

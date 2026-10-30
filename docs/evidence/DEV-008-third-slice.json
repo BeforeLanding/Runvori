@@ -1,0 +1,134 @@
+{
+  "device": {
+    "serial": "emulator-5554"
+  },
+  "expected_model_turns": 0,
+  "model_turn_scenarios": [],
+  "not_run": [
+    "l",
+    "m",
+    "v"
+  ],
+  "pairing_bootstrap": false,
+  "real": false,
+  "restart_target": {
+    "active_run_id": null,
+    "artifact_id": "art_ec35baaa846bfbbf8e6dc98cf770ef76",
+    "artifact_sha256": "93ec7e6bb64d42c07dc67df1366ba9e497de17ebf4185495e2080ca6dddc4a52",
+    "artifact_size": 7,
+    "command_item_id": "item_device_66492_6",
+    "command_sha256": "9c56e8c42a9af6de518120b69aac591acee69fd36859619fd38542a6a795cfed",
+    "pending_approvals": 0,
+    "run_id": "riBvPqN04Ex6uQbAtpSzsjnZqnn8Uagv",
+    "session": "devsess0"
+  },
+  "scenarios": [
+    "s",
+    "a",
+    "b",
+    "c",
+    "d",
+    "f",
+    "h",
+    "g",
+    "i",
+    "r",
+    "j",
+    "k",
+    "n",
+    "e"
+  ],
+  "status": "passed",
+  "steps": [
+    {
+      "port": 57687,
+      "sessions": 2,
+      "step": "host_running"
+    },
+    {
+      "endpoint": "10.0.2.2",
+      "host_bind": "loopback",
+      "status": "ok",
+      "step": "transport"
+    },
+    {
+      "scenario": "s",
+      "status": "passed"
+    },
+    {
+      "scenario": "a",
+      "status": "passed"
+    },
+    {
+      "scenario": "b",
+      "status": "passed"
+    },
+    {
+      "scenario": "c",
+      "status": "passed"
+    },
+    {
+      "scenario": "d",
+      "status": "passed"
+    },
+    {
+      "scenario": "f",
+      "status": "passed"
+    },
+    {
+      "scenario": "h",
+      "status": "passed"
+    },
+    {
+      "scenario": "g",
+      "status": "passed"
+    },
+    {
+      "count": 1,
+      "status": "ok",
+      "step": "verification_config"
+    },
+    {
+      "scenario": "i",
+      "status": "passed"
+    },
+    {
+      "epoch_advanced": true,
+      "port_same": true,
+      "status": "ok",
+      "step": "restart"
+    },
+    {
+      "scenario": "r",
+      "status": "passed"
+    },
+    {
+      "artifact_same": true,
+      "command_same": true,
+      "run_same": true,
+      "status": "ok",
+      "step": "restart_state"
+    },
+    {
+      "scenario": "j",
+      "status": "passed"
+    },
+    {
+      "scenario": "k",
+      "status": "passed"
+    },
+    {
+      "scenario": "n",
+      "status": "passed"
+    },
+    {
+      "status": "revoked",
+      "step": "revoke"
+    },
+    {
+      "scenario": "e",
+      "status": "passed"
+    }
+  ],
+  "upstream": "synthetic_app_server"
+}

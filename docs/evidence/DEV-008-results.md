@@ -32,7 +32,7 @@
 - 命令文本被截断：不能匹配任何要求；即使审批已允许，也只是 `unknown`，不会误报通过。
 - 同一 item 充当多个要求、重复开始/完成、时间倒置或身份不匹配：`unknown`。
 
-产品适配的适用范围：现有验证器按**精确命令文本 + 解析后的 cwd** 匹配。Windows Codex 可能把命令包在 PowerShell 启动器里；本轮没有把这种包装规范化为“等价命令”。因此真实 Windows 运行若出现包装，会保守地落到 `unknown`/`not_run`，而不是误判通过。这是首切片的有意限制，不是已完成的能力。
+产品适配的适用范围：现有验证器按**精确命令文本 + 解析后的 cwd** 匹配。[第三切片](DEV-008-real-approval-slice.md) 增加了有限包装等价：裸命令，或 Codex 随附 `pwsh.exe` 的 `-Command '<exact>'`、`-NoProfile -Command '<exact>'`、按已观察方式转义的 `-Command "<exact>"` 三种完整形状。附加参数、其他 shell、危险展开和未知包装仍保守地落到 `unknown`/`not_run`，不是猜测通过。真实 Windows 包装样本仍待 0.164 环境采集；本轮没有发起真实模型回合。
 
 ## 合成设备验收
 
@@ -74,7 +74,7 @@ ANDROID_HOME=<Android SDK> python scripts/accept_device.py \
 - **第一切片时产物/差异未实现**：`/artifacts` 与产物字节端点已由 [第二切片](DEV-008-artifacts.md) 补齐；文件改动时间线事件仍未实现。
 - **验证配置只有本地入口**：没有手机端或远端修改必需命令的接口；这是有意的信任边界。
 - **未发 `verification.updated` 事件**：结果在读取时按持久命令证据计算；时间线仍只显示命令与回合事件。
-- **未跑真实 Codex**：本轮只验证合成上游与真实 APK；真实 Windows 命令包装、真实退出码与真实验证配置需要另一次显式授权。
+- **真实 Codex 已由第三切片补验**：本轮只验证合成上游与真实 APK；[第三切片](DEV-008-real-approval-slice.md) 随后在锁定 0.164 上按授权跑通真实 `l/m/v`，并以 1 个授权回合复验 `v,r`，真实退出码与验证配置得到确认（[真实 v/r 证据](DEV-008-vr-real.json)）。
 - **结果页未覆盖**：旋转/杀进程/大字体/TalkBack、长命令列表性能、产物子页。
 - 结果页读取命令第一页后按需分页；尚未做“从时间线锚点跳转到某条命令”的联动。
 
@@ -85,4 +85,5 @@ ANDROID_HOME=<Android SDK> python scripts/accept_device.py \
 - [测试计划](../TEST_PLAN.md)
 - [DEV-007 真实设备验收](DEV-007-device-acceptance-real.md)
 - [DEV-008 第二切片：受控产物与差异](DEV-008-artifacts.md)
+- [DEV-008 第三切片：真实文件审批与验证匹配](DEV-008-real-approval-slice.md)
 - [ERR-032](../ERRORS.md)：合成验收把成功的验证配置步骤误标为失败（已修复）

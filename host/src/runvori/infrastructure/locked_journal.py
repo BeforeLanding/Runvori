@@ -753,7 +753,10 @@ class LockedHostJournals:
                             summary = json.loads(item_row["details_json"])
                         except (TypeError, ValueError):
                             summary = None
-                        if isinstance(summary, dict):
+                        if (isinstance(summary, dict)
+                                and summary.get("process_epoch") == epoch):
+                            summary = approval_details.normalize_item_paths(
+                                summary, root)
                             review = approval_details.merge_item(review, summary)
             db.execute(
                 "INSERT INTO approvals(approval_id, epoch, upstream_request_id, "
@@ -1682,30 +1685,54 @@ class LockedHostJournals:
             upstream_request_id=upstream_request_id,
             recorded_at=recorded_at)
 
+    def _workspace_root_for_binding(self, db, thread_id: str, turn_id: str,
+                                    epoch: int) -> str | None:
+        row = db.execute(
+            "SELECT w.root FROM upstream_turns AS u "
+            "JOIN runs AS r ON r.run_id=u.run_id "
+            "JOIN session_workspaces AS sw ON sw.session_id=r.session_id "
+            "JOIN workspaces AS w ON w.workspace_id=sw.workspace_id "
+            "WHERE u.thread_id=? AND u.turn_id=? AND u.process_epoch=?",
+            (thread_id, turn_id, epoch)).fetchone()
+        return None if row is None else row["root"]
+
     def record_approval_item(
             self, *, thread_id: str, turn_id: str, item_id: str,
-            summary: dict, recorded_at: str) -> dict:
+            summary: dict, recorded_at: str, epoch: int | None = None) -> dict:
         """Store one fileChange item and fold it into a matching open approval.
 
         The item may arrive before or after the approval request. Either order
         ends with the same stored review; a review that gains complete content
         bumps only the approval version, because tool output is not a control
         state change for the session.
+
+        Upstream paths are absolute. They are converted against the run's
+        registered workspace before storage so a review or artifact never
+        inherits a machine-specific path.
         """
         self._require_recovered()
+        if epoch is None:
+            epoch = self.approvals.current_epoch()
         if (not isinstance(thread_id, str) or not thread_id
                 or not isinstance(turn_id, str) or not turn_id
                 or not isinstance(item_id, str) or not item_id
                 or not isinstance(summary, dict)
-                or not isinstance(recorded_at, str) or not recorded_at):
+                or not isinstance(recorded_at, str) or not recorded_at
+                or type(epoch) is not int or epoch < 1):
             raise EventJournalError("invalid_approval_item")
-        try:
-            summary_json = approval_details.encode(summary)
-        except (TypeError, ValueError) as error:
-            raise EventJournalError("invalid_approval_item") from error
         db = self.events.connection
         db.execute("BEGIN IMMEDIATE")
         try:
+            root = self._workspace_root_for_binding(
+                db, thread_id, turn_id, epoch)
+            summary = approval_details.normalize_item_paths(summary, root)
+            if epoch != self.approvals.current_epoch():
+                raise EventJournalError("stale_epoch")
+            try:
+                summary_json = approval_details.encode(
+                    {**summary, "process_epoch": epoch})
+            except (TypeError, ValueError) as error:
+                raise EventJournalError("invalid_approval_item") from error
             db.execute(
                 "INSERT INTO approval_items(thread_id, turn_id, item_id, "
                 "details_json, updated_at) VALUES (?, ?, ?, ?, ?) "
@@ -1713,8 +1740,9 @@ class LockedHostJournals:
                 "details_json=excluded.details_json, updated_at=excluded.updated_at",
                 (thread_id, turn_id, item_id, summary_json, recorded_at))
             item_binding = db.execute(
-                "SELECT run_id FROM upstream_turns WHERE thread_id=? AND turn_id=?",
-                (thread_id, turn_id)).fetchone()
+                "SELECT run_id FROM upstream_turns WHERE thread_id=? "
+                "AND turn_id=? AND process_epoch=?",
+                (thread_id, turn_id, epoch)).fetchone()
             if item_binding is not None:
                 self._sync_file_artifacts_in_tx(
                     run_id=item_binding["run_id"], source="upstream_report",
@@ -1729,10 +1757,12 @@ class LockedHostJournals:
                 "a.details_json, r.session_id, s.session_version, s.snapshot_json "
                 "FROM approvals AS a JOIN runs AS r ON r.run_id=a.run_id "
                 "JOIN sessions AS s ON s.session_id=r.session_id "
+                "JOIN upstream_turns AS u ON u.run_id=a.run_id "
                 "WHERE a.item_id=? AND a.kind='file_change' "
-                "AND a.status='pending' AND a.turn_id=? "
+                "AND a.status='pending' AND a.turn_id=? AND a.epoch=? "
+                "AND u.process_epoch=? AND u.thread_id=? "
                 "ORDER BY a.approval_id DESC LIMIT 1",
-                (item_id, turn_id)).fetchone()
+                (item_id, turn_id, epoch, epoch, thread_id)).fetchone()
             if row is None or row["run_id"] is None:
                 db.execute("COMMIT")
                 return {"kind": "item_recorded"}

@@ -2,6 +2,52 @@
 
 采用开发批次记录；正式发布前不把开发批次称为已发布版本。
 
+## Unreleased · DEV-010 真机地址配置与零模型基线 · 2026-10-30
+
+- `scripts/accept_device.py` 将设备 serial 与 Host 端点分开：新增 `--host-address`（LAN/VPN IP 或 DNS 名）、`--listen-address`（显式本地绑定）和 `--host-port`（可选固定端口）；模拟器保留 `10.0.2.2` + 回环路径，物理设备必须显式给出可达地址。证书按端点写 IP/DNS SAN，客户端证书链、主机名和 SPKI 固定指纹校验均保持启用，没有关闭或降级分支。
+- 新增 `--profile device-baseline` 零模型入口：合成上游 14 场景，`expected_model_turns=0`，并在运行前安装/核对 App APK 与 instrumentation APK 的 SHA-256、大小和版本，要求测试包已安装。物理设备报告只写 serial 摘要、设备型号/API/ABI 与端点 digest，不写原始地址。
+- Android 离线缓存改为真实只读投影：Host 不可达时显示缓存会话与时间线，隐藏发送区，`startRun` 编程入口也拒绝写入；刷新/轮询持续重连，恢复后从缓存游标补拉。`openSession`、审批和结果入口在离线时不再以 `ConnectionNotReady` 逃出协程。
+- 新增设备场景 `off`（离线缓存只读）、`rec`（Host 同端口同数据目录重启后游标恢复）、`fs`（系统字体 200% 下关键页面可滚动/可操作）；编排器在启动/驱动回合的场景前检查活动槽为空，并记录 Host 侧 `runs`/`approval_operations` 是否变化。
+- 模拟器基线最终 `status=passed`：14 场景全绿、`expected_model_turns=0`、离线期间 run/决定计数不变、Host 重启 epoch 前进且端口相同、字体设置 2.0 后恢复。中间三次失败均为验收器/场景时序问题（`SelectionContainer` 滚动、文件审批无 command、进程恢复后过早点击），修复后重跑；失败报告保留在本机 `.dev`，未改写。
+- **实际手机基线未执行**：本轮 `adb devices` 只有模拟器，因此没有真机证据；LAN/VPN/DNS 路由、防火墙、真实断网和 TalkBack 仍待验收。见 [DEV-010 证据](docs/evidence/DEV-010-device-baseline.md) 与 [脱敏报告](docs/evidence/DEV-010-device-baseline.json)。
+
+## Unreleased · DEV-009 ra 复跑通过 · 2026-10-30
+
+- 按单独授权复跑 `ra`，实际 1 个模型回合（`observed_runs=1`），未重试。总体 `status=passed`：手机场景通过，同一 run `interrupted`、中断操作 `confirmed/run_interrupted`、活动槽释放；审批 `expired`、允许/拒绝不可用、旧 `allow_once` 被 `approval_expired` 拒绝、`pending_approvals=0`、`approval_operations=0`。
+- 修复后的分类器从事件历史确认回合终止失效（`approval_turn_terminal_observed=true`），并允许真实 Codex 随后关闭请求、把当前 `resolution_kind` 改写为 `request_closed`（`approval_late_closure_observed=true`）；最终审批仍为 `expired`，失效原因不因当前行被覆盖而丢失。
+- 脱敏报告晋升为 [DEV-009-ra-rerun.json](docs/evidence/DEV-009-ra-rerun.json)；首次运行报告保留为 [DEV-009-first-run.json](docs/evidence/DEV-009-first-run.json)（总体 `failed`，不改写）；汇总见 [DEV-009 验收结果](docs/evidence/DEV-009-interrupt-approval-real.md)。原始数据库与保留目录仅留本机 `.dev`（`.dev/device-acceptance-g7y72qhq`）。
+- 至此真实 `ri`（运行中中断）与 `ra`（等待审批时回合终止导致失效）均通过；下一项转向真机 HTTPS 连接与离席使用验收。仍不视为 AT-07 全部边界完成。
+
+## Unreleased · DEV-009 首次真实 ri/ra 运行与证据分类修复 · 2026-10-30
+
+- 按显式授权执行真实 `ri/ra`，实际使用 2 个模型回合（`ri` 1、`ra` 1），未重试、未追加。`ri` 通过：真实输出开始标记后中断，同一 run 为 `interrupted`，中断操作 `confirmed/run_interrupted`，活动槽释放，手机场景通过。
+- `ra` 手机侧通过：旧审批 `expired`、允许/拒绝不可用、绕过 UI 的 `allow_once` 被 `approval_expired` 拒绝、缓存审批操作 0；Host 侧 run `interrupted`、中断操作 `confirmed/run_interrupted`、活动槽释放、`approval_operations=0`。真实 Codex 在回合终止使审批失效后又关闭上游请求，把当前 `resolution_kind` 从 `turn_terminal` 改写为 `request_closed`；首次分类器只接受最终 `turn_terminal`，因此判 `approval_not_invalidated` 并以 `real_scenario_failed:ra` 停止。
+- 失败现场保留：报告 `.dev/dev009-interrupt-approval-real.json`（保持首次 `failed`，不追溯改写），晋升副本 [DEV-009-first-run.json](docs/evidence/DEV-009-first-run.json)，保留目录 `.dev/device-acceptance-ovkli1wr`；原始数据库与会话内容仅留本机。未自动重试。
+- 修复证据分类：`interrupt_evidence` 同时读取审批当前行和事件历史，新增 `approval_turn_terminal_observed` / `approval_late_closure_observed`；`classify_approval_interrupt` 要求存在回合终止导致的 `expired` 事件，允许其后的 `request_closed` 覆盖当前原因，仍要求最终 `expired`、无待处理审批、`approval_operations=0`。回读保留现场，`ri/ra` 均得到 `passed`；这只用于定位，不替代复跑。
+- 新增 2 项测试覆盖“回合终止后上游补发关闭”的合成顺序与分类；离线专项 19 项、全量 430 项测试（427 通过、3 项环境跳过）、16 份契约通过。`ra` 已按另行授权复跑通过，见上一条。见 [DEV-009 运行方案与首次运行记录](docs/evidence/DEV-009-interrupt-approval-plan.md)。
+
+## Unreleased · DEV-009 真实中断与审批失效验收准备 · 2026-10-30
+
+- 设备验收新增两个真实专用场景，各 1 个模型回合：`ri` 在执行中的真实命令输出 `RUNVORI_SLEEP_STARTED` 后由手机请求中断（命令上限 60 秒，开始信号超时 180 秒、终态超时 240 秒）；`ra` 保持审批页打开，通过产品中断入口结束回合并验证旧审批失效。本节记录运行前准备；首次真实运行结果见上一条。
+- `ri` 的成功只认同一 `run_id` 的 `run.interrupted`、中断操作 `confirmed/run_interrupted` 与活动槽释放；自然完成记 `terminal_race_natural_completion`，RPC 返回或 HTTP 202 单独不算成功。`ra` 要求回合终止导致的审批 `expired` 可证实、绕过 UI 的决定被 `approval_expired` 拒绝、`approval_operations` 为 0；不以等待时长判定过期。首次真实运行暴露最终 `resolution_kind` 可能被上游关闭覆盖，分类已按事件历史修正。
+- 审批页新增产品级“中断当前回合”入口（与时间线共用二次确认），补齐 UX 要求的“无法决定时仍可结束回合”。新增合成伴侣 `s3`（0 回合）在真实 APK + 合成上游上验证审批页中断、审批失效与旧决定拒绝；`h`、`d` 同时回归通过。
+- 编排新增 Host 侧证据读取与分类：终态、中断操作 outcome、活动槽、审批状态/失效原因、审批操作计数、真实开始输出标记；失败即停止，不自动重试。`--dry-run --only ri,ra` 输出 `expected_model_turns=2`。
+- 离线新增 17 项测试，覆盖触发超时、终态超时、终态竞争、未确认中断、活动槽未释放、审批仍待处理/失效原因错误/已记录决定、旧决定拒绝与回合计数。全量 428 项测试（425 通过、3 项环境跳过）、16 份契约、Android JVM 19 项通过；Android 仪器测试与 APK 构建通过。
+- 运行方案：`.dev/dev009-interrupt-approval-real.json`（`--keep`，失败保留不重试）。见 [DEV-009 运行方案](docs/evidence/DEV-009-interrupt-approval-plan.md)。`ERR-038` 与真实 `v/r` 已从阻塞项移除。
+
+## Unreleased · DEV-008 真实文件审批与验证匹配 · 2026-10-28
+
+- 修复真实 Codex 文件 item 的绝对路径被无条件判为不安全：`approval_details.normalize_item_paths` 只把解析后位于该 run 登记工作区内的 path/move_path 转为相对 POSIX 路径；工作区外、UNC/设备前缀、`..`、根目录和无法解析的路径保持 `unsafe_change_path`；缺失 diff 记 `diff_missing`，两者都禁止 `allow_once`。不做旧审批回填。
+- 文件 `item/updated` 与 `item/started`/`item/completed` 同等折叠；command/agent 的 updated 不当作完成。`record_approval_item`、`append_timeline_bound`、`item_has_text` 按 `process_epoch` 限定绑定，`approval_items` summary 带 `process_epoch`，防止 Host 重启后同号 thread/turn 命中旧 run。
+- Android `TimelineItem.Approval` 保存 `approval_version`；审批页在 item 后到时按 version/status/detailsStatus 受控刷新，带在途/去重保护；审批页显示相对 `move_path`。
+- 新增 `codex/command_match.py`：验证匹配只接受裸命令、ERR-007/ERR-016 观察到的三种完整 pwsh 包装，以及系统 Windows PowerShell 的完整形状；附加参数、其他 shell、危险展开和未知形状保持非通过。`run_results` 的验证与已批准命令映射共用该匹配。
+- 设备验收新增 `l/m/v`（真实文件允许/拒绝/验证，独立提示词与只读 fixture）、`n`（合成审批先到 + 绝对路径 + `item/updated`）、`r`（Host 同端口/同数据目录/同证书重启，手机按捕获 run 与摘要读回）、`p`（一次性配对引导）。第三切片场景通过；加上生命周期专项后合成场景合计 22 个。`r` 只向设备传 run ID/摘要/大小，不传正文。
+- 新增 Host 重启后产物字节/哈希一致性、绝对路径归一化、跨 epoch 隔离、`item/updated` 与包装正反例测试。411 项测试（408 通过、3 跳过）、Android JVM 19 项、16 份契约通过。
+- 锁定 `0.164.0-alpha.11.1` 从 npm 恢复到隔离目录 `.dev/codex-0.164`，版本门与 `CODEX_HOME` 通过；按授权的 3 个真实回合执行 `l/m/v`。`l` 文件允许与 `m` 文件拒绝通过，Host 文件字节分别等于 AFTER/BEFORE；`v` 回合完成、命令退出 0，但验证结论因 Host 保存的包装串未识别而不是 `passed`（[ERR-038](docs/ERRORS.md)）。失败后停止，未重试；真实 `r` 未运行。
+- 2026-10-30 修复 ERR-038：用隔离 `CODEX_HOME` 的 app-server `thread/read` 取回真实 `v` thread 的 item 原文（无模型回合），确认为 92 字节的 `"C:\\windows\\…\\powershell.exe" -Command 'python --version'`（双引号路径、反斜杠成对转义、单引号内层）；`command_match` 增加该精确形状，`..`、其他盘符/可执行文件、附加参数与未知形状仍拒绝。`--keep` 在 stderr 打印保留目录，新增仅限 `.dev` 的 `scripts/inspect_kept_commands.py` 核对 Host 原文。随后按再次授权的 1 个真实回合执行 `v,r`：`status=passed`、`observed_runs=1`、`command_match_asserted=true`，真实 `v` 结论为 `passed`，`r` 在同端口重启后 Host 与手机的 run/命令/产物摘要一致。报告见 [DEV-008-vr-real.json](docs/evidence/DEV-008-vr-real.json)，未重试。
+- Android 生命周期恢复：`ViewModelProvider` 保留旋转状态；`NavigationRouteStore` 只持久化位置；打开审批时从 `operations` 缓存找回已提交请求，回执丢失只查询不重发；Host 重启/审批缺失时显示 stale 并移除决定按钮（[ERR-039](docs/ERRORS.md)）。
+- 合成设备新增 `o/q/w/x/t/y/z/s2`：切后台、Activity 旋转、进程重建、回执丢失、Host 重启旧审批失效、系统 `am kill` 与 `force-stop` 分别记录、产物快速切换；全部通过，杀进程后 Host `runs`/`approval_operations` 计数不变。合成场景合计 22 个。见 [生命周期证据](docs/evidence/DEV-008-lifecycle-recovery.md)。
+
 ## Unreleased · DEV-008 受控产物与差异 · 2026-10-27
 
 - 事件库 v17：新增 `run_artifacts` 与 `artifact_chunks`。命令输出在时间线同一事务内复制已持久化字节；时间线预算丢弃的字节只记 `dropped_bytes`，不从未保存内容补回。文件差异同时保存审批提案与上游报告完成两个来源，首次读取时另做 Git 工作区快照并固定 `attribution=unknown`。

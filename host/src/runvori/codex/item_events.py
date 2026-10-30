@@ -17,7 +17,7 @@ from runvori.infrastructure.event_journal import (
 )
 
 
-ITEM_METHODS = frozenset({"item/started", "item/completed"})
+ITEM_METHODS = frozenset({"item/started", "item/updated", "item/completed"})
 DELTA_METHODS = {
     "item/agentMessage/delta": "message.delta",
     "item/commandExecution/outputDelta": "command.output",
@@ -84,7 +84,8 @@ def _identity(params: dict) -> tuple[str, str]:
     return thread_id, turn_id
 
 
-def record_delta(journals: Any, message: dict, *, recorded_at: str) -> dict:
+def record_delta(journals: Any, message: dict, *, epoch: int,
+                 recorded_at: str) -> dict:
     """Store one streamed text delta as its own bounded timeline event."""
     if (not isinstance(message, dict)
             or message.get("method") not in DELTA_METHODS
@@ -99,7 +100,7 @@ def record_delta(journals: Any, message: dict, *, recorded_at: str) -> dict:
         raise ItemEventError("invalid_delta_notification")
     try:
         event = journals.events.append_timeline_bound(
-            None, thread_id=thread_id, turn_id=turn_id,
+            None, thread_id=thread_id, turn_id=turn_id, epoch=epoch,
             kind=DELTA_METHODS[message["method"]],
             payload={"item_id": item_id}, text=delta, recorded_at=recorded_at)
     except EventJournalError as error:
@@ -111,13 +112,14 @@ def record_delta(journals: Any, message: dict, *, recorded_at: str) -> dict:
     return {"kind": "timeline_ignored", "reason": "unbound"}
 
 
-def record_item_event(journals: Any, message: dict, *,
+def record_item_event(journals: Any, message: dict, *, epoch: int,
                       recorded_at: str) -> dict:
     """Store one item summary, fold file approvals and project the timeline."""
     if (not isinstance(message, dict)
             or message.get("method") not in ITEM_METHODS
             or "id" in message
-            or not isinstance(message.get("params"), dict)):
+            or not isinstance(message.get("params"), dict)
+            or type(epoch) is not int or epoch < 1):
         raise ItemEventError("invalid_item_notification")
     params = message["params"]
     item = params.get("item")
@@ -126,33 +128,42 @@ def record_item_event(journals: Any, message: dict, *,
     if item["type"] not in {"fileChange", "commandExecution", "agentMessage"}:
         # Other item kinds carry nothing this slice displays.
         return {"kind": "ignored_notification"}
+    method = message["method"]
     thread_id, turn_id = _identity(params)
-    started = message["method"] == "item/started"
     if item["type"] == "fileChange":
+        # A real file change can deliver its reviewable paths and diff on
+        # started or on a later update. Both are review evidence; the fold is
+        # idempotent and only bumps the approval when the content changes.
         try:
             summary = approval_details.item_changes(item)
         except approval_details.ApprovalDetailError as error:
             raise ItemEventError(str(error)) from error
         return journals.record_approval_item(
             thread_id=thread_id, turn_id=turn_id, item_id=summary["item_id"],
-            summary=summary, recorded_at=recorded_at)
+            summary=summary, recorded_at=recorded_at, epoch=epoch)
+    if method == "item/updated":
+        # Command/agent updates are not completion evidence in this slice.
+        return {"kind": "ignored_notification",
+                "reason": "item_updated_not_projected"}
+    started = method == "item/started"
     item_id = _identifier(item.get("id"))
     if item_id is None:
         raise ItemEventError("invalid_item_notification")
     if item["type"] == "commandExecution":
         return _command_item(journals, thread_id, turn_id, item_id, item,
-                             started=started, params=params,
+                             started=started, params=params, epoch=epoch,
                              recorded_at=recorded_at)
     return _message_item(journals, thread_id, turn_id, item_id, item,
-                         started=started, recorded_at=recorded_at)
+                         started=started, epoch=epoch, recorded_at=recorded_at)
 
 
-def _append(journals: Any, thread_id: str, turn_id: str, *, kind: str,
-            payload: dict, text: str | None, recorded_at: str) -> dict | None:
+def _append(journals: Any, thread_id: str, turn_id: str, *, epoch: int,
+            kind: str, payload: dict, text: str | None,
+            recorded_at: str) -> dict | None:
     """Append one timeline event; a tolerated refusal returns None."""
     try:
         event = journals.events.append_timeline_bound(
-            None, thread_id=thread_id, turn_id=turn_id, kind=kind,
+            None, thread_id=thread_id, turn_id=turn_id, epoch=epoch, kind=kind,
             payload=payload, text=text, recorded_at=recorded_at)
     except EventJournalError as error:
         if str(error) in TOLERATED:
@@ -162,7 +173,7 @@ def _append(journals: Any, thread_id: str, turn_id: str, *, kind: str,
 
 
 def _command_item(journals: Any, thread_id: str, turn_id: str, item_id: str,
-                  item: dict, *, started: bool, params: dict,
+                  item: dict, *, started: bool, params: dict, epoch: int,
                   recorded_at: str) -> dict:
     started_at_ms = params.get("startedAtMs")
     if type(started_at_ms) is not int or started_at_ms < 0:
@@ -172,7 +183,8 @@ def _command_item(journals: Any, thread_id: str, turn_id: str, item_id: str,
                                            MAX_COMMAND_TEXT_BYTES)
         cwd = item.get("cwd") if isinstance(item.get("cwd"), str) else None
         status = item.get("status")
-        event = _append(journals, thread_id, turn_id, kind="command.started",
+        event = _append(journals, thread_id, turn_id, epoch=epoch,
+                        kind="command.started",
                         payload={"item_id": item_id, "command": command,
                                  "command_truncated": truncated, "cwd": cwd,
                                  "status": status if isinstance(status, str)
@@ -190,14 +202,15 @@ def _command_item(journals: Any, thread_id: str, turn_id: str, item_id: str,
                                        MAX_COMMAND_TEXT_BYTES)
     cwd = item.get("cwd") if isinstance(item.get("cwd"), str) else None
     streamed = journals.events.item_has_text(
-        thread_id=thread_id, turn_id=turn_id, item_id=item_id)
+        thread_id=thread_id, turn_id=turn_id, item_id=item_id, epoch=epoch)
     output = item.get("aggregatedOutput")
     written = 0
     # Write aggregated output before the completion event so the command
     # evidence row can decide "complete/truncated/empty" in one transaction.
     if not streamed and isinstance(output, str) and output:
         for chunk in chunk_text(output):
-            if _append(journals, thread_id, turn_id, kind="command.output",
+            if _append(journals, thread_id, turn_id, epoch=epoch,
+                       kind="command.output",
                        payload={"item_id": item_id}, text=chunk,
                        recorded_at=recorded_at) is not None:
                 written += len(chunk.encode("utf-8"))
@@ -213,28 +226,33 @@ def _command_item(journals: Any, thread_id: str, turn_id: str, item_id: str,
         "completed_at_ms": completed_at_ms,
         "output_omitted": not streamed and not isinstance(output, str),
     }
-    event = _append(journals, thread_id, turn_id, kind="command.completed",
+    event = _append(journals, thread_id, turn_id, epoch=epoch,
+                    kind="command.completed",
                     payload=payload, text=None, recorded_at=recorded_at)
     return {**_recorded(event), "output_bytes": written}
 
 
 def _message_item(journals: Any, thread_id: str, turn_id: str, item_id: str,
-                  item: dict, *, started: bool, recorded_at: str) -> dict:
+                  item: dict, *, started: bool, epoch: int,
+                  recorded_at: str) -> dict:
     if started:
-        event = _append(journals, thread_id, turn_id, kind="message.started",
+        event = _append(journals, thread_id, turn_id, epoch=epoch,
+                        kind="message.started",
                         payload={"item_id": item_id}, text=None,
                         recorded_at=recorded_at)
         return _recorded(event)
     streamed = journals.events.item_has_text(
-        thread_id=thread_id, turn_id=turn_id, item_id=item_id)
-    event = _append(journals, thread_id, turn_id, kind="message.completed",
+        thread_id=thread_id, turn_id=turn_id, item_id=item_id, epoch=epoch)
+    event = _append(journals, thread_id, turn_id, epoch=epoch,
+                    kind="message.completed",
                     payload={"item_id": item_id, "text_omitted": not streamed},
                     text=None, recorded_at=recorded_at)
     text = item.get("text")
     written = 0
     if not streamed and isinstance(text, str) and text:
         for chunk in chunk_text(text):
-            if _append(journals, thread_id, turn_id, kind="message.delta",
+            if _append(journals, thread_id, turn_id, epoch=epoch,
+                       kind="message.delta",
                        payload={"item_id": item_id}, text=chunk,
                        recorded_at=recorded_at) is not None:
                 written += len(chunk.encode("utf-8"))
