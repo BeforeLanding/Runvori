@@ -152,7 +152,9 @@ internal fun TimelineScreen(state: AppState, actions: Actions) {
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 items(state.timeline, key = { it.key }) { item ->
-                    TimelineRow(item, onApproval = actions.openApproval)
+                    Box(Modifier.testTag(Tag.timelineItem(item.key))) {
+                        TimelineRow(item, onApproval = actions.openApproval)
+                    }
                 }
             }
             if (!reading.following) {

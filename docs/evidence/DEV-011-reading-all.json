@@ -1,0 +1,257 @@
+{
+  "device": {
+    "abi": "x86_64",
+    "android_release": "17",
+    "api": "37",
+    "avd": "Medium_Phone",
+    "manufacturer": "Google",
+    "model": "sdk_gphone16k_x86_64",
+    "serial": "emulator-5554"
+  },
+  "expected_model_turns": 0,
+  "model_turn_scenarios": [],
+  "not_run": [
+    "l",
+    "m",
+    "v",
+    "ri",
+    "ra",
+    "fs",
+    "off",
+    "rec"
+  ],
+  "pairing_bootstrap": false,
+  "preflight": {
+    "apk": {
+      "sha256": "3e78e7f87ad75d124946e425ea06a72a92cc638e22efdd07fdbb9ce96171250b",
+      "size_bytes": 10741994,
+      "version_code": 2,
+      "version_name": "0.0.2"
+    },
+    "package": {
+      "installed": true,
+      "version_code": 2,
+      "version_name": "0.0.2"
+    },
+    "status": "ok",
+    "test_apk": {
+      "sha256": "73a51f4a63227ede92c3733a74a9a6767663589e6730f7ac7c6de1305517166f",
+      "size_bytes": 1118546,
+      "version_code": 0,
+      "version_name": ""
+    },
+    "test_package_installed": true
+  },
+  "profile": "all",
+  "real": false,
+  "restart_target": {
+    "active_run_id": null,
+    "artifact_id": "art_9777ae34f9a0f8dee361335b65cb95b7",
+    "artifact_sha256": "93ec7e6bb64d42c07dc67df1366ba9e497de17ebf4185495e2080ca6dddc4a52",
+    "artifact_size": 7,
+    "command_item_id": "item_device_62612_10",
+    "command_sha256": "9c56e8c42a9af6de518120b69aac591acee69fd36859619fd38542a6a795cfed",
+    "pending_approvals": 0,
+    "run_id": "FOIkC7eAIK3agDvBdYJ25521YZlvLSnv",
+    "session": "devsess0"
+  },
+  "scenarios": [
+    "s",
+    "a",
+    "b",
+    "c",
+    "d",
+    "f",
+    "h",
+    "g",
+    "o",
+    "q",
+    "w",
+    "x",
+    "i",
+    "r",
+    "j",
+    "k",
+    "n",
+    "rd",
+    "y",
+    "z",
+    "s2",
+    "s3",
+    "t",
+    "e"
+  ],
+  "status": "passed",
+  "steps": [
+    {
+      "port": 52379,
+      "sessions": 2,
+      "step": "host_running"
+    },
+    {
+      "bind": "loopback",
+      "endpoint": "10.0.2.2",
+      "hostname_san": "ip",
+      "kind": "emulator_nat",
+      "status": "ok",
+      "step": "transport",
+      "tls": {
+        "chain": "required",
+        "hostname": "required",
+        "spki_pin": "required"
+      }
+    },
+    {
+      "scenario": "s",
+      "status": "passed"
+    },
+    {
+      "scenario": "a",
+      "status": "passed"
+    },
+    {
+      "scenario": "b",
+      "status": "passed"
+    },
+    {
+      "scenario": "c",
+      "status": "passed"
+    },
+    {
+      "scenario": "d",
+      "status": "passed"
+    },
+    {
+      "scenario": "f",
+      "status": "passed"
+    },
+    {
+      "scenario": "h",
+      "status": "passed"
+    },
+    {
+      "scenario": "g",
+      "status": "passed"
+    },
+    {
+      "scenario": "o",
+      "status": "passed"
+    },
+    {
+      "scenario": "q",
+      "status": "passed"
+    },
+    {
+      "scenario": "w",
+      "status": "passed"
+    },
+    {
+      "scenario": "x",
+      "status": "passed"
+    },
+    {
+      "scenario": "s3",
+      "status": "passed"
+    },
+    {
+      "count": 1,
+      "status": "ok",
+      "step": "verification_config"
+    },
+    {
+      "scenario": "i",
+      "status": "passed"
+    },
+    {
+      "epoch_advanced": true,
+      "port_same": true,
+      "status": "ok",
+      "step": "restart"
+    },
+    {
+      "scenario": "r",
+      "status": "passed"
+    },
+    {
+      "artifact_same": true,
+      "command_same": true,
+      "run_same": true,
+      "status": "ok",
+      "step": "restart_state"
+    },
+    {
+      "scenario": "j",
+      "status": "passed"
+    },
+    {
+      "scenario": "k",
+      "status": "passed"
+    },
+    {
+      "scenario": "n",
+      "status": "passed"
+    },
+    {
+      "scenario": "rd",
+      "status": "passed"
+    },
+    {
+      "scenario": "u",
+      "status": "passed"
+    },
+    {
+      "approval_restored": true,
+      "decisions_unchanged": true,
+      "method": "system_kill",
+      "process_gone": true,
+      "runs_unchanged": true,
+      "status": "ok",
+      "step": "lifecycle_kill"
+    },
+    {
+      "approval_restored": true,
+      "decisions_unchanged": true,
+      "method": "force-stop",
+      "process_gone": true,
+      "runs_unchanged": true,
+      "status": "ok",
+      "step": "lifecycle_kill"
+    },
+    {
+      "epoch_advanced": true,
+      "pending_after": false,
+      "pending_before": true,
+      "port_same": true,
+      "status": "ok",
+      "step": "stale_restart"
+    },
+    {
+      "scenario": "s2",
+      "status": "passed"
+    },
+    {
+      "scenario": "t",
+      "status": "passed"
+    },
+    {
+      "status": "revoked",
+      "step": "revoke"
+    },
+    {
+      "scenario": "e",
+      "status": "passed"
+    }
+  ],
+  "transport": {
+    "bind": "loopback",
+    "endpoint": "10.0.2.2",
+    "hostname_san": "ip",
+    "kind": "emulator_nat",
+    "tls": {
+      "chain": "required",
+      "hostname": "required",
+      "spki_pin": "required"
+    }
+  },
+  "upstream": "synthetic_app_server"
+}
