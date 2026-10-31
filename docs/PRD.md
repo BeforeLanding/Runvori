@@ -19,7 +19,7 @@ Runvori 让开发者离开电脑后，在 Android 手机上查看自己启动的
 固定范围：
 
 - Kotlin＋Jetpack Compose Android 客户端。
-- Python＋FastAPI＋SQLite Host，通过 stdio 连接 Codex app-server。
+- Python 标准库＋SQLite Host（未采用 FastAPI，见 ADR-009），通过 stdio 连接 Codex app-server。
 - 一台 Host、一台配对手机、全局最多一个非终态回合；不建立任务队列。
 - Host 本地登记工作区并启动首个会话；手机可对该会话发起后续回合。
 - HTTPS、可信局域网或已有 VPN、设备配对；模型认证与凭据留在电脑。

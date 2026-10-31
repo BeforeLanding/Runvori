@@ -1,6 +1,6 @@
 # 开发错误与修复记录
 
-此处保存已发生的错误。规则唯一来源为 [AGENTS.md](../AGENTS.md)，进度见 [progress.md](../progress.md)。禁止粘贴未脱敏栈、个人目录、令牌或真实会话。
+此处保存已发生的错误。规则唯一来源为 [AGENTS.md](../AGENTS.md) 与 [ENGINEERING_RULES.md](ENGINEERING_RULES.md)（2026-10-31 起，条目里写“已提炼到 AGENTS.md”的规则多数已原样下沉到后者），进度见 [progress.md](../progress.md)。禁止粘贴未脱敏栈、个人目录、令牌或真实会话。
 
 ## ERR-037：审批 item 后到时已打开的审批页不刷新（代码审查发现，已修复）
 

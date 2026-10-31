@@ -47,7 +47,7 @@ python scripts/probe_artifacts.py inspect --fixture .dev/artifact-fixture
 
 ### DEV-001 已验证命令
 
-当前实测 Windows、Python 3.12.10、SQLite 3.49.1，Codex CLI 锁定 `0.164.0-alpha.11.1`；0.163 的历史证据保留原版本标注。使用系统标准库运行，不要求安装 pytest/ruff/FastAPI。仓库根目录执行：
+当前实测 Windows、Python 3.12.10、SQLite 3.49.1，Codex CLI 锁定 `0.164.0-alpha.11.1`；0.163 的历史证据保留原版本标注。使用系统标准库运行，不要求安装 pytest/ruff，Host 未采用 FastAPI 等第三方框架。仓库根目录执行：
 
 ```powershell
 python scripts/check.py
@@ -319,7 +319,7 @@ schema 已提交，通常不需要重新导出。`python scripts/runvori.py expo
 ### M0 必须建立的可复现环境
 
 - 选择首发 Host 操作系统和受支持架构，实测进程启动、stdio、子进程终止及路径处理。
-- 锁定 Python 精确版本/约束、包管理方式、FastAPI/SQLite 驱动与测试工具；提交依赖清单及锁文件。禁止只记录“最新版”。
+- 锁定 Python 精确版本/约束、包管理方式、SQLite 版本与测试工具；当前零第三方运行依赖（未采用 FastAPI），引入任何依赖时提交依赖清单及锁文件。禁止只记录“最新版”。
 - 锁定 Android 最低版本、compile/target SDK、JDK、Kotlin、Compose、AGP 与 Gradle 组合，提交 wrapper 和构建说明。
 - 锁定 Codex CLI 精确版本、安装来源和校验方式，保留 `codex --version`、本机帮助和导出的 schema 证据。
 - 验证用户在电脑本地已经具备可用模型访问。真实模型凭据不用于普通 PR CI。
