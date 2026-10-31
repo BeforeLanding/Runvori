@@ -1,0 +1,216 @@
+{
+  "device": {
+    "abi": "x86_64",
+    "android_release": "17",
+    "api": "37",
+    "avd": "Medium_Phone",
+    "manufacturer": "Google",
+    "model": "sdk_gphone16k_x86_64",
+    "serial": "emulator-5554"
+  },
+  "expected_model_turns": 0,
+  "model_turn_scenarios": [],
+  "not_run": [
+    "d",
+    "f",
+    "h",
+    "g",
+    "q",
+    "w",
+    "x",
+    "l",
+    "m",
+    "v",
+    "ri",
+    "ra",
+    "r",
+    "n",
+    "s2",
+    "s3",
+    "t"
+  ],
+  "pairing_bootstrap": false,
+  "preflight": {
+    "apk": {
+      "sha256": "13988965866a6ae9e4a31aaab183f3b062625d1cf8e36e6af03a9d34766ddcab",
+      "size_bytes": 10741994,
+      "version_code": 2,
+      "version_name": "0.0.2"
+    },
+    "package": {
+      "installed": true,
+      "version_code": 2,
+      "version_name": "0.0.2"
+    },
+    "status": "ok",
+    "test_apk": {
+      "sha256": "36dbbc01949d216f860cb2fb1a980d4bc9e29d26f503be04a7c71924d0ee219e",
+      "size_bytes": 1118546,
+      "version_code": 0,
+      "version_name": ""
+    },
+    "test_package_installed": true
+  },
+  "profile": "device-baseline",
+  "real": false,
+  "scenarios": [
+    "s",
+    "a",
+    "b",
+    "c",
+    "o",
+    "y",
+    "z",
+    "i",
+    "j",
+    "k",
+    "rd",
+    "rk",
+    "fs",
+    "off",
+    "rec",
+    "e"
+  ],
+  "status": "passed",
+  "steps": [
+    {
+      "port": 59240,
+      "sessions": 2,
+      "step": "host_running"
+    },
+    {
+      "bind": "loopback",
+      "endpoint": "10.0.2.2",
+      "hostname_san": "ip",
+      "kind": "emulator_nat",
+      "status": "ok",
+      "step": "transport",
+      "tls": {
+        "chain": "required",
+        "hostname": "required",
+        "spki_pin": "required"
+      }
+    },
+    {
+      "scenario": "s",
+      "status": "passed"
+    },
+    {
+      "scenario": "a",
+      "status": "passed"
+    },
+    {
+      "scenario": "b",
+      "status": "passed"
+    },
+    {
+      "scenario": "c",
+      "status": "passed"
+    },
+    {
+      "scenario": "o",
+      "status": "passed"
+    },
+    {
+      "count": 1,
+      "status": "ok",
+      "step": "verification_config"
+    },
+    {
+      "scenario": "i",
+      "status": "passed"
+    },
+    {
+      "scenario": "j",
+      "status": "passed"
+    },
+    {
+      "scenario": "k",
+      "status": "passed"
+    },
+    {
+      "scenario": "rd",
+      "status": "passed"
+    },
+    {
+      "scenario": "rk",
+      "status": "passed"
+    },
+    {
+      "status": "ok",
+      "step": "offline_host_stopped"
+    },
+    {
+      "scenario": "off",
+      "status": "passed"
+    },
+    {
+      "epoch_advanced": true,
+      "port_same": true,
+      "status": "ok",
+      "step": "offline_restart"
+    },
+    {
+      "scenario": "rec",
+      "status": "passed"
+    },
+    {
+      "decisions_unchanged": true,
+      "runs_unchanged": true,
+      "status": "ok",
+      "step": "offline_state"
+    },
+    {
+      "scenario": "fs",
+      "status": "passed"
+    },
+    {
+      "observed": "2.0",
+      "requested": "2.0",
+      "status": "ok",
+      "step": "font_scale"
+    },
+    {
+      "scenario": "u",
+      "status": "passed"
+    },
+    {
+      "approval_restored": true,
+      "decisions_unchanged": true,
+      "method": "system_kill",
+      "process_gone": true,
+      "runs_unchanged": true,
+      "status": "ok",
+      "step": "lifecycle_kill"
+    },
+    {
+      "approval_restored": true,
+      "decisions_unchanged": true,
+      "method": "force-stop",
+      "process_gone": true,
+      "runs_unchanged": true,
+      "status": "ok",
+      "step": "lifecycle_kill"
+    },
+    {
+      "status": "revoked",
+      "step": "revoke"
+    },
+    {
+      "scenario": "e",
+      "status": "passed"
+    }
+  ],
+  "transport": {
+    "bind": "loopback",
+    "endpoint": "10.0.2.2",
+    "hostname_san": "ip",
+    "kind": "emulator_nat",
+    "tls": {
+      "chain": "required",
+      "hostname": "required",
+      "spki_pin": "required"
+    }
+  },
+  "upstream": "synthetic_app_server"
+}

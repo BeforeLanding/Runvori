@@ -5,6 +5,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -158,6 +159,9 @@ class DeviceAcceptanceTest {
         return HostSession(store, cache, "acceptance-device")
     }
 
+    /** The view model a restored composition picks up (see [renderOnce]). */
+    private var restoredViewModel: RunvoriViewModel? = null
+
     /** The view model the rendered UI follows; swapped to simulate process loss. */
     private val rendered = androidx.compose.runtime.mutableStateOf<RunvoriViewModel?>(null)
 
@@ -185,14 +189,33 @@ class DeviceAcceptanceTest {
         compose.waitForIdle()
     }
 
-    /** Render the product UI against the product view model. */
-    private fun renderOnce() {
+    /**
+     * Render the product UI against the product view model. With a
+     * [restorer], the content can later be torn down and recomposed from its
+     * saved instance state, as Android does after a process restore.
+     */
+    private fun renderOnce(restorer: StateRestorationTester? = null) {
         rendered.value = viewModel
-        compose.setContent {
-            val current = rendered.value ?: return@setContent
-            val state by current.state.collectAsState()
-            RunvoriApp(state, actionsFor(current))
+        val content: @androidx.compose.runtime.Composable () -> Unit = {
+            val current = rendered.value
+            if (current != null) {
+                val state by current.state.collectAsState()
+                RunvoriApp(state, actionsFor(current))
+            }
         }
+        if (restorer != null) {
+            // The view model is read once per composition, not observed: a
+            // process restore saves the old UI first and only the rebuilt
+            // composition sees the new process's view model.
+            restoredViewModel = viewModel
+            restorer.setContent {
+                val current = androidx.compose.runtime.remember { restoredViewModel!! }
+                val state by current.state.collectAsState()
+                RunvoriApp(state, actionsFor(current))
+            }
+            return
+        }
+        compose.setContent(content)
     }
 
     private fun actionsFor(vm: RunvoriViewModel) = Actions(
@@ -334,14 +357,14 @@ class DeviceAcceptanceTest {
     private lateinit var routes: NavigationRouteStore
 
     /** Start with a durable route store, as the production Activity does. */
-    private fun startWithRoutes() {
+    private fun startWithRoutes(restorer: StateRestorationTester? = null) {
         assertNotNull("this scenario needs a prior pairing", store.load())
         routes = NavigationRouteStore(
             InstrumentationRegistry.getInstrumentation().targetContext)
         routes.clear()
         session = freshSession(resetCredential = false)
         viewModel = RunvoriViewModel(session, routes)
-        renderOnce()
+        renderOnce(restorer)
         viewModel.start()
         waitFor("connected with routes", timeoutMs = 30_000) {
             viewModel.state.value.connection == "已连接"
@@ -1275,9 +1298,9 @@ class DeviceAcceptanceTest {
             streamKeys().size >= before + 3
         }
         compose.waitForIdle()
-        val anchorNow = boundsOf(anchorTag)
+        val anchorNow = if (onScreen(anchorTag)) topInList(anchorTag) else null
         assertNotNull("the row being read left the screen", anchorNow)
-        val moved = kotlin.math.abs(anchorNow!!.top - anchorTop)
+        val moved = kotlin.math.abs(anchorNow!! - anchorTop)
         val tolerance = with(compose.density) { 8.dp.toPx() }
         assertTrue("the row being read moved by ${moved}px (limit ${tolerance}px)",
             moved <= tolerance)
@@ -1295,6 +1318,69 @@ class DeviceAcceptanceTest {
             streamKeys().lastOrNull()?.let { onScreen(Tag.timelineItem(it)) } == true
         }
         compose.onNodeWithTag(Tag.JUMP_LATEST).assertDoesNotExist()
+    }
+
+    /**
+     * The reading anchor survives a process restore (FR-06, AT-11). A process
+     * restore is two things at once: the view model is gone (a new one starts
+     * from the route store and the cache) and the composition is rebuilt from
+     * saved instance state. The rebuilt timeline must return to the item the
+     * user was reading, by key, and stay in browsing mode.
+     */
+    @Test
+    fun rk_reading_anchor_survives_process_restore() {
+        check(!realMode) { "rk uses the synthetic streaming upstream" }
+        val restorer = StateRestorationTester(compose)
+        startWithRoutes(restorer)
+        openSession("devsess0")
+        // Make sure the timeline is long enough to read away from its end.
+        val existing = viewModel.state.value.timeline.map { it.key }.toSet()
+        startRun("please stream output [stream]")
+        waitFor("stream finished", timeoutMs = 60_000) {
+            viewModel.state.value.timeline.count {
+                it.key.startsWith("message:msg_stream_") && it.key !in existing
+            } == STREAM_ITEMS && viewModel.state.value.activeRun == null
+        }
+        compose.waitForIdle()
+
+        // Browse well away from the end.
+        repeat(2) {
+            compose.onNodeWithTag(Tag.TIMELINE).performTouchInput { swipeDown() }
+            compose.waitForIdle()
+        }
+        compose.waitUntil(5_000) { exists(Tag.JUMP_LATEST) }
+        val anchor = fullyVisibleRows().firstOrNull()
+        assertNotNull("a timeline row must be fully on screen", anchor)
+        val (anchorTag, anchorTop) = anchor!!
+
+        // Process restore: a new view model from the cache plus a composition
+        // rebuilt from saved state.
+        viewModel.close()
+        session = freshSession(resetCredential = false)
+        viewModel = RunvoriViewModel(session, routes)
+        restoredViewModel = viewModel
+        restorer.emulateSavedInstanceStateRestore()
+        viewModel.start()
+        waitFor("restored timeline", timeoutMs = 30_000) {
+            viewModel.state.value.screen.name == "Timeline" &&
+                viewModel.state.value.connection == "已连接" &&
+                viewModel.state.value.timeline.isNotEmpty()
+        }
+        compose.waitForIdle()
+        try {
+            compose.waitUntil(10_000) { onScreen(anchorTag) }
+        } catch (error: androidx.compose.ui.test.ComposeTimeoutException) {
+            throw AssertionError("the anchor $anchorTag is not on screen after restore; " +
+                "jump=" + exists(Tag.JUMP_LATEST) + " first=" +
+                fullyVisibleRows().firstOrNull()?.first)
+        }
+
+        compose.onNodeWithTag(Tag.JUMP_LATEST).assertExists(
+            "a restored reader must still be browsing")
+        val moved = kotlin.math.abs(topInList(anchorTag)!! - anchorTop)
+        val tolerance = with(compose.density) { 8.dp.toPx() }
+        assertTrue("the restored anchor moved by ${moved}px (limit ${tolerance}px)",
+            moved <= tolerance)
     }
 
     private companion object {
@@ -1319,7 +1405,17 @@ class DeviceAcceptanceTest {
         return node.bottom > list.top && node.top < list.bottom
     }
 
-    /** Timeline rows wholly inside the viewport, top to bottom, with their top. */
+    /**
+     * A row's top measured from the top of the timeline viewport. Reading
+     * position is relative to the list: a banner appearing above it moves the
+     * whole list, which is a layout change, not a reading jump.
+     */
+    private fun topInList(tag: String): Float? {
+        val list = boundsOf(Tag.TIMELINE) ?: return null
+        return boundsOf(tag)?.let { it.top - list.top }
+    }
+
+    /** Timeline rows wholly inside the viewport, top to bottom, with their top in the list. */
     private fun fullyVisibleRows(): List<Pair<String, Float>> {
         val list = boundsOf(Tag.TIMELINE) ?: return emptyList()
         return compose.onAllNodes(SemanticsMatcher("timeline row") {
@@ -1330,7 +1426,7 @@ class DeviceAcceptanceTest {
                 ?: return@mapNotNull null
             val bounds = node.boundsInRoot
             if (bounds.top >= list.top && bounds.bottom <= list.bottom)
-                tag to bounds.top else null
+                tag to (bounds.top - list.top) else null
         }.sortedBy { it.second }
     }
 
