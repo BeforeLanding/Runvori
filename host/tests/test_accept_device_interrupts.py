@@ -467,20 +467,24 @@ class TransportTests(unittest.TestCase):
             self.assertIn(letter, accept_device.ALL_SCENARIOS)
             self.assertNotIn(letter, default)
 
-    def test_reading_scenario_is_synthetic_and_in_both_suites(self):
-        # `rd` needs the synthetic streaming upstream: it must never reach a
-        # model, and it belongs to both the default set and the baseline.
-        self.assertIn("rd", accept_device.SYNTHETIC_ONLY)
-        self.assertNotIn("rd", accept_device.REAL_ONLY)
-        self.assertNotIn("rd", accept_device.TURN_SCENARIOS)
-        self.assertIn("rd", accept_device.DEVICE_BASELINE)
-        self.assertIn("rd", accept_device.CREDENTIAL_SCENARIOS)
+    def test_reading_scenarios_are_synthetic_and_in_both_suites(self):
+        # `rd`/`rk` need the synthetic streaming upstream: they must never
+        # reach a model, and they belong to both the default set and the
+        # baseline.
         default = (set(accept_device.ALL_SCENARIOS)
                    - accept_device.REAL_ONLY
                    - accept_device.BASELINE_ONLY)
-        self.assertIn("rd", default)
-        self.assertEqual(0, accept_device.planned_model_turns(False, {"rd"}))
-
+        for letter in ("rd", "rk"):
+            with self.subTest(letter=letter):
+                self.assertIn(letter, accept_device.METHODS)
+                self.assertIn(letter, accept_device.SYNTHETIC_ONLY)
+                self.assertNotIn(letter, accept_device.REAL_ONLY)
+                self.assertNotIn(letter, accept_device.TURN_SCENARIOS)
+                self.assertIn(letter, accept_device.DEVICE_BASELINE)
+                self.assertIn(letter, accept_device.CREDENTIAL_SCENARIOS)
+                self.assertIn(letter, default)
+                self.assertEqual(
+                    0, accept_device.planned_model_turns(False, {letter}))
 
 if __name__ == "__main__":
     unittest.main()

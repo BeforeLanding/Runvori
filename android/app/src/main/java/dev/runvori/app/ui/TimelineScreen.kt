@@ -81,10 +81,12 @@ internal fun TimelineScreen(state: AppState, actions: Actions) {
             }
         }
     }
-    // The gesture is judged when the scroll (drag plus any fling) settles.
+    // Judge the position whenever a scroll settles after a gesture, and on
+    // every settle while browsing: a fling can keep moving after the drag
+    // itself has settled, and what was seen is where the list came to rest.
     LaunchedEffect(listState) {
         snapshotFlow { listState.isScrollInProgress }.collect { scrolling ->
-            if (scrolling || !userGesture) return@collect
+            if (scrolling || (!userGesture && reading.following)) return@collect
             userGesture = false
             val info = listState.layoutInfo
             val last = info.visibleItemsInfo.lastOrNull()
