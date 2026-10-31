@@ -58,6 +58,10 @@ object Tag {
 
     fun approvalItem(approvalId: String) = "approval_item_$approvalId"
 
+    const val TIMELINE_ITEM = "timeline_item_"
+
+    fun timelineItem(key: String) = "$TIMELINE_ITEM$key"
+
     fun pendingApproval(approvalId: String) = "$PENDING_APPROVAL$approvalId"
 
     fun sessionRow(sessionId: String) = "session_row_$sessionId"

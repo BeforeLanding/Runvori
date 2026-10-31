@@ -467,6 +467,20 @@ class TransportTests(unittest.TestCase):
             self.assertIn(letter, accept_device.ALL_SCENARIOS)
             self.assertNotIn(letter, default)
 
+    def test_reading_scenario_is_synthetic_and_in_both_suites(self):
+        # `rd` needs the synthetic streaming upstream: it must never reach a
+        # model, and it belongs to both the default set and the baseline.
+        self.assertIn("rd", accept_device.SYNTHETIC_ONLY)
+        self.assertNotIn("rd", accept_device.REAL_ONLY)
+        self.assertNotIn("rd", accept_device.TURN_SCENARIOS)
+        self.assertIn("rd", accept_device.DEVICE_BASELINE)
+        self.assertIn("rd", accept_device.CREDENTIAL_SCENARIOS)
+        default = (set(accept_device.ALL_SCENARIOS)
+                   - accept_device.REAL_ONLY
+                   - accept_device.BASELINE_ONLY)
+        self.assertIn("rd", default)
+        self.assertEqual(0, accept_device.planned_model_turns(False, {"rd"}))
+
 
 if __name__ == "__main__":
     unittest.main()

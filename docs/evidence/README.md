@@ -103,6 +103,10 @@
 
 - [DEV-010 真机地址配置与零模型验收入口](DEV-010-device-baseline.md)
 
+## DEV-011
+
+- [DEV-011 时间线阅读模型与浏览模式设备验收](DEV-011-reading.md)
+
 ## M0-Q04
 
 - [M0/Q-04：Windows 单实例锁验证切片](M0-Q04-instance-lock.md)
@@ -151,3 +155,6 @@
 - [DEV-009-first-run.json](DEV-009-first-run.json)
 - [DEV-009-ra-rerun.json](DEV-009-ra-rerun.json)
 - [DEV-010-device-baseline.json](DEV-010-device-baseline.json)
+- [DEV-011-reading-all.json](DEV-011-reading-all.json)
+- [DEV-011-reading-baseline.json](DEV-011-reading-baseline.json)
+- [DEV-011-reading-mutation.json](DEV-011-reading-mutation.json)
