@@ -2,6 +2,13 @@
 
 采用开发批次记录；正式发布前不把开发批次称为已发布版本。
 
+## Unreleased · CI 与 Android UI 拆分 · 2026-10-31
+
+- 新增 GitHub Actions [CI](.github/workflows/ci.yml)：Windows runner 执行 `python scripts/check.py`（契约＋Host 离线测试＋文档一致性），Ubuntu runner 执行 `:app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest`，失败时上传单测报告。不启动模拟器、不调用 Codex。
+- `ui/RunvoriApp.kt`（1183 行）按屏幕拆为 `RunvoriApp.kt`（外壳、横幅、中断确认）、`PairingScreen.kt`、`SessionsScreen.kt`、`TimelineScreen.kt`、`ApprovalScreen.kt`、`ResultsScreen.kt`、`ArtifactScreen.kt`、`StatusText.kt`、`Tag.kt`、`Actions.kt`；只把跨文件调用的 `private` 改为 `internal`，用脚本逐行核对原文件 54–1184 行的非空代码行在新文件中一一对应、无遗漏无新增。
+- `ui/RunvoriViewModel.kt`（1502 → 1308 行）只做删除：`AppState`/`Screen` 等状态类型移到 `AppState.kt`，不读写状态的错误码文案函数移到 `ViewModelText.kt`；同步逻辑未改动。时间线状态容器留到阅读模型一起设计，本轮不改 `AppState` 结构。
+- 验证：Android JVM 单测 19 项通过，Debug 与 AndroidTest 构建通过；合成设备验收 两次全套运行均为 22 通过、`t` 失败；以拆分前 `main` 构建对照复现同一失败，单独运行 `s,t` 通过，判定为既有问题并记为 ERR-041（开放），不是本次引入；`python scripts/check.py` 16 份契约、446 项测试运行（443 通过、3 跳过）。
+
 ## Unreleased · 文档结算与一致性护栏 · 2026-10-31
 
 - **M0 结算**：新增 [ADR-017](docs/DECISIONS.md)，以已有证据关闭 M0；首版只承诺 Windows 11 x64 Host、Python 3.12 标准库与 `codex-cli 0.164.0-alpha.11.1`。待决策清单改为状态表：Q-01/02/03/04/05/07 已决定（剩余边界列为已知限制或移入 M4），Q-06 性能基线移入 M3，Q-08 仍开放。

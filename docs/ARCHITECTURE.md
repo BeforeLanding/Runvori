@@ -77,7 +77,7 @@ API 层不得自己改表或直接写 app-server stdin。每个外部副作用�
 
 `android/` 是单应用 Compose 工程。DEV-004 建立了可构建的占位版本，DEV-007 把它接成最小业务客户端；下面列的包划分现在都已存在，但每个包只覆盖最小闭环所需的部分。
 
-- Compose 订阅不可变 UI 状态；ViewModel 组合状态并响应动作。`ui/RunvoriApp.kt` 有五个屏幕（配对、会话列表、时间线、审批、回合结果），`ui/RunvoriViewModel.kt` 持有 `AppState` 并所有网络副作用。
+- Compose 订阅不可变 UI 状态；ViewModel 组合状态并响应动作。`ui/RunvoriApp.kt` 只放外壳（顶栏、横幅、中断确认），六个屏幕各占一个文件（`PairingScreen.kt`、`SessionsScreen.kt`、`TimelineScreen.kt`、`ApprovalScreen.kt`、`ResultsScreen.kt`、`ArtifactScreen.kt`），状态文案在 `StatusText.kt`，测试标签与动作在 `Tag.kt`、`Actions.kt`；`ui/RunvoriViewModel.kt` 持有 `AppState`（定义在 `AppState.kt`，错误码文案在 `ViewModelText.kt`）并所有网络副作用。
 - 领域逻辑负责游标、事件归并、审批显示与阅读模式，不依赖 UI 框架。`domain/TimelineProjector.kt` 把 `SessionEvent` 折成 `TimelineItem`（消息按 `item_id` 合并、命令累积输出、审批按 `approval_id` 更新），`domain/Pairing.kt` 解析并校验配对载荷，`domain/HostnameMatch.kt` 做 SAN/CN 匹配，`domain/JsonValue.kt` 是最小严格 JSON 读写。
 - 数据层提供 Host API、SQLite 缓存和凭据存储适配；网络细节不进入 Composable。`data/HostEndpoint.kt` 是手工 HTTP/1.1 over `SSLSocket`（无第三方 HTTP 客户端，无内部重试），`data/PinnedTrust.kt` 实现链/主机名之外的 SPKI 核对，`data/HostSession.kt` 固定重连顺序（认证 → 身份 → 快照 → 补事件 → 刷新审批与未确认操作），`data/RunvoriCache.kt` 是 `SQLiteOpenHelper`，`data/CredentialStore.kt` 是 Keystore 信封。
 - 屏幕状态保存会话 ID、回合 ID 和“跟随最新”标志，完整历史放数据库。当前 `AppState` 保存 `selectedSessionId`、`continuousSeq`、`latestSeq`、`syncGap`，结果页另存 `resultsRunId/results/commands/commandsCursor`；阅读锚点与 SavedStateHandle 恢复仍未实现。
