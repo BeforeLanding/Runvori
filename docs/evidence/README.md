@@ -107,6 +107,10 @@
 
 - [DEV-011 时间线阅读模型与浏览模式设备验收](DEV-011-reading.md)
 
+## DEV-012
+
+- [DEV-012 进程恢复后的阅读位置](DEV-012-reading-restore.md)
+
 ## M0-Q04
 
 - [M0/Q-04：Windows 单实例锁验证切片](M0-Q04-instance-lock.md)
@@ -158,3 +162,6 @@
 - [DEV-011-reading-all.json](DEV-011-reading-all.json)
 - [DEV-011-reading-baseline.json](DEV-011-reading-baseline.json)
 - [DEV-011-reading-mutation.json](DEV-011-reading-mutation.json)
+- [DEV-012-restore-all.json](DEV-012-restore-all.json)
+- [DEV-012-restore-baseline.json](DEV-012-restore-baseline.json)
+- [DEV-012-restore-mutation.json](DEV-012-restore-mutation.json)

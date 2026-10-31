@@ -55,7 +55,7 @@ EXPECTED_REAL_VERSION = "codex-cli 0.164.0-alpha.11.1"
 REAL_SCENARIOS = ("s", "a", "b", "c", "g", "r", "e")
 SYNTHETIC_ONLY = frozenset({
     "d", "f", "h", "i", "j", "k", "n", "o", "q", "w", "x", "t", "y", "z",
-    "s2", "s3", "fs", "off", "rec", "rd"})
+    "s2", "s3", "fs", "off", "rec", "rd", "rk"})
 # `ri`/`ra` are the two real interrupt specials: one interrupts a running
 # command after its output proves execution started, the other ends a turn
 # while an approval is still pending.
@@ -64,20 +64,20 @@ REAL_ONLY = frozenset({"l", "m", "v", "ri", "ra"})
 # synthetic set so an existing emulator invocation keeps its cost and scope.
 BASELINE_ONLY = frozenset({"fs", "off", "rec"})
 ALL_SCENARIOS = ("s", "a", "b", "c", "d", "f", "h", "g", "o", "q", "w", "x",
-                 "i", "l", "m", "v", "ri", "ra", "r", "j", "k", "n", "rd", "y",
+                 "i", "l", "m", "v", "ri", "ra", "r", "j", "k", "n", "rd", "rk", "y",
                  "z", "s2", "s3", "t", "fs", "off", "rec", "e")
 # Zero-model real-device baseline. Every scenario uses the synthetic upstream,
 # so the budget is structurally zero; `b` and `fs` may create local synthetic
 # runs, but neither reaches a model.
 DEVICE_BASELINE = ("s", "a", "b", "c", "o", "y", "z", "i", "j", "k",
-                   "rd", "fs", "off", "rec", "e")
+                   "rd", "rk", "fs", "off", "rec", "e")
 TURN_SCENARIOS = frozenset({"b", "l", "m", "v", "ri", "ra"})
 # Scenarios that reuse a credential and therefore need the pairing bootstrap
 # when `b` (which pairs itself) is not selected.
 CREDENTIAL_SCENARIOS = frozenset({
     "c", "d", "f", "h", "g", "i", "j", "k", "l", "m", "v", "r", "n",
     "o", "q", "w", "x", "t", "y", "z", "s2", "s3", "ri", "ra",
-    "fs", "off", "rec", "rd",
+    "fs", "off", "rec", "rd", "rk",
 })
 METHODS = {
     "s": "s_credential_store_round_trips_and_needs_the_keystore",
@@ -104,6 +104,7 @@ METHODS = {
     "off": "off_offline_shows_cached_sessions_and_timeline_read_only",
     "rec": "rec_recovery_resyncs_from_cursor_without_duplicates",
     "rd": "rd_browsing_keeps_position_while_output_streams",
+    "rk": "rk_reading_anchor_survives_process_restore",
     "l": "l_real_file_approval_allow_shows_diff_and_report",
     "m": "m_real_file_approval_denied_keeps_proposal_visible",
     "v": "v_real_verification_result_is_passed",
@@ -1525,8 +1526,9 @@ def main() -> int:
                 run_letter(letter)
         # Stable reading under continuous synthetic output; the run ends on
         # its own, so the active slot is free again for what follows.
-        if "rd" in wanted:
-            run_letter("rd")
+        for letter in ("rd", "rk"):
+            if letter in wanted:
+                run_letter(letter)
         if wanted & {"off", "rec"}:
             # Offline is simulated by stopping the Host: the app sees the same
             # unreachable endpoint it would see after a network loss. The
