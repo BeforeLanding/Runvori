@@ -2,13 +2,20 @@ package dev.runvori.app
 
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.getOrNull
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.swipeDown
+import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import dev.runvori.app.data.HostSession
@@ -1226,6 +1233,105 @@ class DeviceAcceptanceTest {
     fun ra_turn_termination_expires_waiting_approval() {
         check(realMode) { "ra is a real-mode scenario" }
         approvalPageInterruptExpiresApproval("devsess1", realPrompt("ra"))
+    }
+
+    /**
+     * Stable reading while output streams (FR-03, AT-11). The timeline follows
+     * the newest item; once the user scrolls back, new items must not move the
+     * item being read, and they are counted on "jump to latest" instead of
+     * being hidden. Positions are read from on-screen bounds, so an item that
+     * is composed but scrolled out of view does not count as visible.
+     */
+    @Test
+    fun rd_browsing_keeps_position_while_output_streams() {
+        check(!realMode) { "rd uses the synthetic streaming upstream" }
+        startWithStoredCredential()
+        openSession("devsess0")
+        // Stream items are recognised by key, not by run id: the run may be
+        // accepted before `activeRun` is synchronised.
+        val existing = viewModel.state.value.timeline.map { it.key }.toSet()
+        startRun("please stream output [stream]")
+        fun streamKeys() = viewModel.state.value.timeline
+            .filter { it is TimelineItem.AgentMessage &&
+                it.key.startsWith("message:msg_stream_") && it.key !in existing }
+            .map { it.key }
+        waitFor("first streamed items", timeoutMs = 30_000) { streamKeys().size >= 6 }
+
+        // Following: the newest item stays on screen without a jump button.
+        compose.waitUntil(10_000) {
+            streamKeys().lastOrNull()?.let { onScreen(Tag.timelineItem(it)) } == true
+        }
+        compose.onNodeWithTag(Tag.JUMP_LATEST).assertDoesNotExist()
+
+        // Browsing: a user gesture away from the end.
+        compose.onNodeWithTag(Tag.TIMELINE).performTouchInput { swipeDown() }
+        compose.waitForIdle()
+        compose.waitUntil(5_000) { exists(Tag.JUMP_LATEST) }
+        val anchor = fullyVisibleRows().firstOrNull()
+        assertNotNull("a timeline row must be fully on screen", anchor)
+        val (anchorTag, anchorTop) = anchor!!
+        val before = streamKeys().size
+        waitFor("output arriving while browsing", timeoutMs = 15_000) {
+            streamKeys().size >= before + 3
+        }
+        compose.waitForIdle()
+        val anchorNow = boundsOf(anchorTag)
+        assertNotNull("the row being read left the screen", anchorNow)
+        val moved = kotlin.math.abs(anchorNow!!.top - anchorTop)
+        val tolerance = with(compose.density) { 8.dp.toPx() }
+        assertTrue("the row being read moved by ${moved}px (limit ${tolerance}px)",
+            moved <= tolerance)
+        val jumpText = textOf(Tag.JUMP_LATEST)
+        assertTrue("new items must be counted: $jumpText",
+            jumpText?.contains("条新内容") == true)
+
+        // Jump to latest resumes following, through the end of the run.
+        compose.onNodeWithTag(Tag.JUMP_LATEST).performClick()
+        compose.waitUntil(5_000) { !exists(Tag.JUMP_LATEST) }
+        waitFor("streaming run terminal", timeoutMs = 30_000) {
+            streamKeys().size == STREAM_ITEMS && viewModel.state.value.activeRun == null
+        }
+        compose.waitUntil(10_000) {
+            streamKeys().lastOrNull()?.let { onScreen(Tag.timelineItem(it)) } == true
+        }
+        compose.onNodeWithTag(Tag.JUMP_LATEST).assertDoesNotExist()
+    }
+
+    private companion object {
+        /** Matches `STREAM_ITEMS` in the synthetic upstream. */
+        const val STREAM_ITEMS = 30
+    }
+
+    private fun exists(tag: String): Boolean =
+        compose.onAllNodesWithTag(tag).fetchSemanticsNodes().isNotEmpty()
+
+    private fun boundsOf(tag: String) =
+        compose.onAllNodesWithTag(tag).fetchSemanticsNodes().firstOrNull()?.boundsInRoot
+
+    private fun textOf(tag: String): String? =
+        compose.onAllNodesWithTag(tag).fetchSemanticsNodes().firstOrNull()
+            ?.config?.getOrNull(SemanticsProperties.Text)?.joinToString("") { it.text }
+
+    /** Some part of the node lies inside the visible timeline viewport. */
+    private fun onScreen(tag: String): Boolean {
+        val list = boundsOf(Tag.TIMELINE) ?: return false
+        val node = boundsOf(tag) ?: return false
+        return node.bottom > list.top && node.top < list.bottom
+    }
+
+    /** Timeline rows wholly inside the viewport, top to bottom, with their top. */
+    private fun fullyVisibleRows(): List<Pair<String, Float>> {
+        val list = boundsOf(Tag.TIMELINE) ?: return emptyList()
+        return compose.onAllNodes(SemanticsMatcher("timeline row") {
+            it.config.getOrNull(SemanticsProperties.TestTag)
+                ?.startsWith(Tag.TIMELINE_ITEM) == true
+        }).fetchSemanticsNodes().mapNotNull { node ->
+            val tag = node.config.getOrNull(SemanticsProperties.TestTag)
+                ?: return@mapNotNull null
+            val bounds = node.boundsInRoot
+            if (bounds.top >= list.top && bounds.bottom <= list.bottom)
+                tag to bounds.top else null
+        }.sortedBy { it.second }
     }
 
     @Test
