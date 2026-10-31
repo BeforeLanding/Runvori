@@ -60,10 +60,16 @@ class LifecycleRotationAcceptanceTest {
         // The previous scenario may have left a durable route on a deeper
         // screen. Return to the session list first; the rotation below is the
         // state transition under test.
-        waitAnyTag(Tag.sessionRow("devsess0"), Tag.BACK,
-            Tag.APPROVAL_BACK, Tag.RESULTS_BACK, Tag.PAIRING_PARSE)
-        if (exists(Tag.PAIRING_PARSE)) {
-            throw AssertionError("this scenario needs a prior pairing")
+        // The first frame is the pairing screen (AppState's default) until the
+        // stored credential has connected and the route is restored, so the
+        // pairing form alone does not mean "unpaired". Wait for a paired
+        // screen and only report the connection state if none appears.
+        try {
+            waitAnyTag(Tag.sessionRow("devsess0"), Tag.BACK,
+                Tag.APPROVAL_BACK, Tag.RESULTS_BACK)
+        } catch (error: androidx.compose.ui.test.ComposeTimeoutException) {
+            throw AssertionError("no paired screen; connection=" +
+                textOf(Tag.CONNECTION) + " pairing=" + exists(Tag.PAIRING_PARSE))
         }
         if (exists(Tag.APPROVAL_BACK)) {
             compose.onNodeWithTag(Tag.APPROVAL_BACK).performClick()

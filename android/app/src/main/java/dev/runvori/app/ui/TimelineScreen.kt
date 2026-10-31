@@ -1,6 +1,9 @@
 package dev.runvori.app.ui
 
+import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -9,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.Button
@@ -19,16 +23,82 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.listSaver
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import dev.runvori.app.domain.ReadingModel
+import dev.runvori.app.domain.ReadingState
 import dev.runvori.app.domain.TimelineItem
+import kotlinx.coroutines.launch
 
 @Composable
 internal fun TimelineScreen(state: AppState, actions: Actions) {
+    val keys = remember(state.timeline) { state.timeline.map { it.key } }
+    val currentKeys by rememberUpdatedState(keys)
+    // Both the list position and the reading mode belong to one session and
+    // survive rotation; only positions are saved, never item content.
+    val listState = rememberSaveable(state.selectedSessionId,
+        saver = LazyListState.Saver) { LazyListState() }
+    var reading by rememberSaveable(state.selectedSessionId,
+        stateSaver = ReadingStateSaver) { mutableStateOf(ReadingState()) }
+    var revealTop by remember(state.selectedSessionId) { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
+    // Every projection change: count what arrived below the reader, and keep
+    // the newest item in view while following (an item growing in place
+    // changes the list too, so streaming output stays in view).
+    LaunchedEffect(state.timeline) {
+        reading = ReadingModel.onItems(reading, keys)
+        if (revealTop) {
+            revealTop = false
+            listState.scrollToItem(0)
+        } else if (reading.following) {
+            listState.scrollToEnd(keys.size)
+        }
+    }
+    // Only a user gesture leaves or resumes following; programmatic scrolls
+    // above never do. Following stops as soon as a drag starts so incoming
+    // output cannot pull the list out from under the finger.
+    var userGesture by remember(listState) { mutableStateOf(false) }
+    LaunchedEffect(listState) {
+        listState.interactionSource.interactions.collect { interaction ->
+            if (interaction is DragInteraction.Start) {
+                userGesture = true
+                reading = reading.copy(following = false)
+            }
+        }
+    }
+    // The gesture is judged when the scroll (drag plus any fling) settles.
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.isScrollInProgress }.collect { scrolling ->
+            if (scrolling || !userGesture) return@collect
+            userGesture = false
+            val info = listState.layoutInfo
+            val last = info.visibleItemsInfo.lastOrNull()
+            reading = ReadingModel.onUserScrolled(
+                reading, currentKeys,
+                lastVisibleKey = last?.key as? String,
+                atEnd = ReadingModel.isAtEnd(
+                    lastVisibleIndex = last?.index ?: -1,
+                    totalItems = info.totalItemsCount,
+                    lastVisibleEndPx = (last?.offset ?: 0) + (last?.size ?: 0),
+                    viewportEndPx = info.viewportEndOffset))
+        }
+    }
+
     Column(Modifier.fillMaxSize().padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -49,7 +119,13 @@ internal fun TimelineScreen(state: AppState, actions: Actions) {
                 isError = true) { actions.dismissError() }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = actions.loadEarlier,
+            OutlinedButton(onClick = {
+                    // Asking for older items is a decision to read history:
+                    // stop following and show the new top once it arrives.
+                    reading = reading.copy(following = false)
+                    revealTop = true
+                    actions.loadEarlier()
+                },
                 modifier = Modifier.testTag(Tag.LOAD_EARLIER)) {
                 Text("加载更早")
             }
@@ -69,12 +145,28 @@ internal fun TimelineScreen(state: AppState, actions: Actions) {
                 }
             }
         }
-        LazyColumn(
-            Modifier.weight(1f).fillMaxWidth().testTag(Tag.TIMELINE),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            items(state.timeline, key = { it.key }) { item ->
-                TimelineRow(item, onApproval = actions.openApproval)
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            LazyColumn(
+                Modifier.fillMaxSize().testTag(Tag.TIMELINE),
+                state = listState,
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                items(state.timeline, key = { it.key }) { item ->
+                    TimelineRow(item, onApproval = actions.openApproval)
+                }
+            }
+            if (!reading.following) {
+                Button(
+                    onClick = {
+                        reading = ReadingModel.jumpToLatest(keys)
+                        scope.launch { listState.scrollToEnd(keys.size) }
+                    },
+                    modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp)
+                        .testTag(Tag.JUMP_LATEST),
+                ) {
+                    Text(if (reading.unseen > 0) "回到最新 · ${reading.unseen} 条新内容"
+                    else "回到最新")
+                }
             }
         }
         if (state.activeRun == null && state.writable) {
@@ -97,6 +189,22 @@ internal fun TimelineScreen(state: AppState, actions: Actions) {
         }
     }
 }
+
+
+/** Bring the end of the last item into view, however tall it has grown. */
+private suspend fun LazyListState.scrollToEnd(count: Int) {
+    if (count == 0) return
+    scrollToItem(count - 1)
+    scrollBy(Float.MAX_VALUE)
+}
+
+private val ReadingStateSaver = listSaver<ReadingState, Any?>(
+    save = { listOf(it.following, it.lastSeenKey, it.unseen) },
+    restore = {
+        ReadingState(following = it[0] as Boolean, lastSeenKey = it[1] as String?,
+            unseen = it[2] as Int)
+    },
+)
 
 @Composable
 private fun TimelineRow(item: TimelineItem, onApproval: (String) -> Unit) {
