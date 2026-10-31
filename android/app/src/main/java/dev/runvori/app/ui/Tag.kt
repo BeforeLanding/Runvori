@@ -19,6 +19,7 @@ object Tag {
     const val RUN_STATUS = "run_status"
     const val TIMELINE = "timeline"
     const val LOAD_EARLIER = "load_earlier"
+    const val JUMP_LATEST = "jump_latest"
     const val INTERRUPT = "interrupt"
     const val CONFIRM_INTERRUPT = "confirm_interrupt"
     const val COMPOSER = "composer"
