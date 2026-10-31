@@ -21,7 +21,7 @@ M0 已于 2026-10-31 按 [ADR-017](docs/DECISIONS.md#adr-017m0-结算接受已�
 
 - **Host**：单实例锁 → 恢复 → 写门禁 → 唯一上游的 `HostRuntime`；标准库 HTTPS（配对、会话、快照、时间线、回合、审批、中断、结果、命令与产物）；Windows 命名管道本地管理入口。事件库 v17。
 - **Android**：配对、会话列表、时间线、审批详情与决定、新回合与中断、回合结果（回合状态、验证结论、命令输出、文件差异分开呈现）、离线只读缓存。
-- **设备验收**：真实 APK → 固定指纹 HTTPS → 真实 `HostRuntime` → 合成 app-server，共 23 个场景；零模型真机基线入口 `--profile device-baseline`（14 个场景，模拟器通过）。
+- **设备验收**：真实 APK → 固定指纹 HTTPS → 真实 `HostRuntime` → 合成 app-server，共 23 个场景（2026-10-31 全套运行 22 通过，`t` 既有失败见 ERR-041）；零模型真机基线入口 `--profile device-baseline`（14 个场景，模拟器通过）。
 - **真实 Codex 证据**（均未自动重试）：核心闭环 `s/a/b/c/g/e`、文件允许/拒绝 `l/m`、验证通过 `v`、重启读回 `r`、执行中中断 `ri`、等待审批时中断 `ra`（首次因验收分类器误判，修复后复跑通过）。证据索引见 [docs/evidence/README.md](docs/evidence/README.md)。
 
 ## 验证基线
@@ -29,14 +29,15 @@ M0 已于 2026-10-31 按 [ADR-017](docs/DECISIONS.md#adr-017m0-结算接受已�
 2026-10-31 在本机（Windows 11、Python 3.12.10）执行：
 
 - `python scripts/check.py`：16 份契约校验通过；446 项测试运行（443 通过、3 项环境跳过：2 项宿主符号链接创建受限、1 项真实 Codex 测试未启用），含 8 项文档一致性测试。
-- Android JVM 单元测试 19 项通过（最近一次为 2026-10-30，本次未改 Android 代码）。
+- Android：JVM 单元测试 19 项通过，`assembleDebug` 与 `assembleDebugAndroidTest` 通过（UI 拆分后复跑）。
+- 合成设备验收（`Medium_Phone` API 37 模拟器，0 个模型回合）：22 个通过，`t` 失败；同一失败在拆分前的 `main` 构建上同样复现，单独运行 `s,t` 通过，记为 [ERR-041](docs/ERRORS.md)（开放）。
+- CI：`.github/workflows/ci.yml` 已加入，首次远端运行结果待推送后确认。
 
 ## 下一步（按顺序）
 
-1. **稳定阅读与性能测量（M3 核心）**：先按屏幕拆分 `RunvoriApp.kt` 与 `RunvoriViewModel.kt`，再实现历史锚点、“回到最新”、批量刷新与同 item 长输出增长；建立 Q-06 的基准设备、固定数据集与原始记录。
+1. **稳定阅读与性能测量（M3 核心）**：UI 已按屏幕拆分（2026-10-31）；下一步在领域层实现纯 Kotlin 阅读模型（跟随最新/浏览历史、稳定 key＋偏移锚点、未读计数、批量刷新、同 item 长输出增长），配 JVM 单测后接入 `LazyListState` 并加设备场景；最后建立 Q-06 的基准设备、固定数据集与原始记录。
 2. **真机零模型基线（M2 收尾）**：连接实际手机，用 `--profile device-baseline` 跑同一套 14 个场景并验证 LAN/VPN 可达性与真实断网。
 3. **展示材料**：README 加截图/录屏、架构图，以及与官方 Codex Remote 的对比（先核实官方现有能力）。
-4. **CI**：GitHub Actions 运行 `scripts/check.py` 与 Android JVM 单测、Debug 构建。
 
 ## 已知限制
 
