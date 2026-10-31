@@ -80,7 +80,7 @@ API 层不得自己改表或直接写 app-server stdin。每个外部副作用�
 - Compose 订阅不可变 UI 状态；ViewModel 组合状态并响应动作。`ui/RunvoriApp.kt` 只放外壳（顶栏、横幅、中断确认），六个屏幕各占一个文件（`PairingScreen.kt`、`SessionsScreen.kt`、`TimelineScreen.kt`、`ApprovalScreen.kt`、`ResultsScreen.kt`、`ArtifactScreen.kt`），状态文案在 `StatusText.kt`，测试标签与动作在 `Tag.kt`、`Actions.kt`；`ui/RunvoriViewModel.kt` 持有 `AppState`（定义在 `AppState.kt`，错误码文案在 `ViewModelText.kt`）并所有网络副作用。
 - 领域逻辑负责游标、事件归并、审批显示与阅读模式，不依赖 UI 框架。`domain/TimelineProjector.kt` 把 `SessionEvent` 折成 `TimelineItem`（消息按 `item_id` 合并、命令累积输出、审批按 `approval_id` 更新），`domain/Pairing.kt` 解析并校验配对载荷，`domain/HostnameMatch.kt` 做 SAN/CN 匹配，`domain/JsonValue.kt` 是最小严格 JSON 读写。
 - 数据层提供 Host API、SQLite 缓存和凭据存储适配；网络细节不进入 Composable。`data/HostEndpoint.kt` 是手工 HTTP/1.1 over `SSLSocket`（无第三方 HTTP 客户端，无内部重试），`data/PinnedTrust.kt` 实现链/主机名之外的 SPKI 核对，`data/HostSession.kt` 固定重连顺序（认证 → 身份 → 快照 → 补事件 → 刷新审批与未确认操作），`data/RunvoriCache.kt` 是 `SQLiteOpenHelper`，`data/CredentialStore.kt` 是 Keystore 信封。
-- 屏幕状态保存会话 ID、回合 ID 和“跟随最新”标志，完整历史放数据库。当前 `AppState` 保存 `selectedSessionId`、`continuousSeq`、`latestSeq`、`syncGap`，结果页另存 `resultsRunId/results/commands/commandsCursor`；阅读锚点与 SavedStateHandle 恢复仍未实现。
+- 屏幕状态保存会话 ID、回合 ID 和“跟随最新”标志，完整历史放数据库。当前 `AppState` 保存 `selectedSessionId`、`continuousSeq`、`latestSeq`、`syncGap`，结果页另存 `resultsRunId/results/commands/commandsCursor`。阅读模式由领域层 `domain/ReadingModel.kt` 计算（跟随最新/浏览历史、按条目计的未读数、回到最新），`ui/TimelineScreen.kt` 把它绑定到 `LazyListState`：只有用户手势能离开或恢复跟随，程序滚动不改变模式；模式与列表位置用 `rememberSaveable` 按会话保存，只存位置不存正文。列表位置的保存仍按下标与偏移（Compose 默认），进程重建后若缓存列表变化，尚不能按 item 键恢复。
 
 两条不变式决定缓存表结构：事件按 `(host_id, session_id, seq)` 唯一，重复页或第二个 Host 身份都无法并入前一个身份的历史；连续游标只在写入事件的同一事务里推进，崩溃不能让客户端声称它没落盘的进度，遇到缺口时游标停住不跳过。
 

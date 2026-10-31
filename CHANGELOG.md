@@ -2,6 +2,13 @@
 
 采用开发批次记录；正式发布前不把开发批次称为已发布版本。
 
+## Unreleased · 时间线阅读模型与 ERR-041 · 2026-10-31
+
+- 新增 `domain/ReadingModel.kt`（纯 Kotlin）：跟随最新与浏览历史两种模式，只按条目键计算未读数；向上加载的旧条目与同条目增长不计为新内容；锚点条目消失时回到跟随。新增 11 项 JVM 单测。
+- `ui/TimelineScreen.kt` 绑定到 `LazyListState`：打开会话停在最新；跟随时新条目与同条目增长保持末尾可见；只有用户拖动能离开跟随，滚动停止时按可见末尾判定是否恢复；浏览时显示“回到最新 · N 条新内容”（`Tag.JUMP_LATEST`）；“加载更早”转入浏览并显示新的顶部；模式与位置用 `rememberSaveable` 按会话保存。
+- 修复 ERR-041：全套设备验收中 `t` 的“等不到新审批卡片”是产品缺陷——时间线停在最旧条目，长会话里新审批落在屏幕外未被组合；Host 事件与手机游标均已核实正确。另修正 `t` 把首帧配对页误判为“未配对”的测试竞争。
+- 验证：Android JVM 30 项通过，Debug/AndroidTest 构建通过；合成设备验收全套 22 步全部通过，`device-baseline` 13 个场景全部通过（`Medium_Phone` API 37，0 个模型回合）。未做：浏览模式专项设备场景、锚点误差与帧耗时测量、TalkBack。
+
 ## Unreleased · CI 与 Android UI 拆分 · 2026-10-31
 
 - 新增 GitHub Actions [CI](.github/workflows/ci.yml)：Windows runner 执行 `python scripts/check.py`（契约＋Host 离线测试＋文档一致性），Ubuntu runner 执行 `:app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest`，失败时上传单测报告。不启动模拟器、不调用 Codex。
