@@ -358,6 +358,8 @@ codex app-server generate-json-schema --out .dev/codex-schema
 
 提交建议采用 `docs:`、`feat(host):`、`feat(android):`、`fix:`、`test:` 等清楚前缀。每个变更尽量对应一个行为；格式化和重构不要混入无关功能。
 
+推送到 `main` 和每个 PR 都会运行 [CI](.github/workflows/ci.yml)：Windows 上执行 `python scripts/check.py`，Ubuntu 上执行 Android JVM 单测与 Debug/AndroidTest 构建。CI 不启动模拟器、不调用 Codex；设备验收与真实 Codex 运行仍需在本机执行并在 PR 中写明结果。
+
 PR 描述说明具体问题、最终行为、需求编号、验证命令和结果、兼容/迁移影响及未验证事项。新行为至少有一个清楚的触发与结果例子。没有执行的检查必须标为未执行，不以计划冒充通过。
 
 ## 5. 完成定义
