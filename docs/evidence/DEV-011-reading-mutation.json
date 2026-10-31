@@ -1,0 +1,122 @@
+{
+  "device": {
+    "abi": "x86_64",
+    "android_release": "17",
+    "api": "37",
+    "avd": "Medium_Phone",
+    "manufacturer": "Google",
+    "model": "sdk_gphone16k_x86_64",
+    "serial": "emulator-5554"
+  },
+  "expected_model_turns": 0,
+  "model_turn_scenarios": [],
+  "not_run": [
+    "a",
+    "b",
+    "c",
+    "d",
+    "f",
+    "h",
+    "g",
+    "o",
+    "q",
+    "w",
+    "x",
+    "i",
+    "l",
+    "m",
+    "v",
+    "ri",
+    "ra",
+    "r",
+    "j",
+    "k",
+    "n",
+    "y",
+    "z",
+    "s2",
+    "s3",
+    "t",
+    "fs",
+    "off",
+    "rec",
+    "e"
+  ],
+  "pairing_bootstrap": true,
+  "preflight": {
+    "apk": {
+      "sha256": "705d2c78193ac8ef5f23927139b6c638572c1483ce0167cab68a259cd465acb0",
+      "size_bytes": 10741994,
+      "version_code": 2,
+      "version_name": "0.0.2"
+    },
+    "package": {
+      "installed": true,
+      "version_code": 2,
+      "version_name": "0.0.2"
+    },
+    "status": "ok",
+    "test_apk": {
+      "sha256": "c3d0feb8541236f0b91b0fdc33df2ee49132199b063195669658a2b65505c3b5",
+      "size_bytes": 1118546,
+      "version_code": 0,
+      "version_name": ""
+    },
+    "test_package_installed": true
+  },
+  "profile": "all",
+  "real": false,
+  "scenarios": [
+    "s",
+    "rd"
+  ],
+  "status": "failed",
+  "steps": [
+    {
+      "port": 58719,
+      "sessions": 2,
+      "step": "host_running"
+    },
+    {
+      "bind": "loopback",
+      "endpoint": "10.0.2.2",
+      "hostname_san": "ip",
+      "kind": "emulator_nat",
+      "status": "ok",
+      "step": "transport",
+      "tls": {
+        "chain": "required",
+        "hostname": "required",
+        "spki_pin": "required"
+      }
+    },
+    {
+      "scenario": "s",
+      "status": "passed"
+    },
+    {
+      "scenario": "p",
+      "status": "passed"
+    },
+    {
+      "assertions": [
+        "at dev.runvori.app.DeviceAcceptanceTest.rd_browsing_keeps_position_while_output_streams(DeviceAcceptanceTest.kt:1280)",
+        "java.lang.AssertionError: the row being read moved by NaNpx (limit 21.0px)"
+      ],
+      "scenario": "rd",
+      "status": "failed"
+    }
+  ],
+  "transport": {
+    "bind": "loopback",
+    "endpoint": "10.0.2.2",
+    "hostname_san": "ip",
+    "kind": "emulator_nat",
+    "tls": {
+      "chain": "required",
+      "hostname": "required",
+      "spki_pin": "required"
+    }
+  },
+  "upstream": "synthetic_app_server"
+}

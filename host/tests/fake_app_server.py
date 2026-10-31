@@ -16,6 +16,10 @@ HOST_MODES = {
 # ``host_api_flow`` chooses the approval kind from the turn input text so one
 # Host process can demonstrate both the reviewable and the insufficient case.
 API_MODES = {"host_api_flow", "host_api_no_approval", "host_api_device"}
+# `[stream]` turns: enough items to overflow one screen, slow enough that a
+# gesture lands while output is still arriving.
+STREAM_ITEMS = 30
+STREAM_INTERVAL_S = 0.3
 fake_turns: list = []
 thread_starts = 0
 pending_approvals: dict = {}
@@ -484,6 +488,29 @@ for raw in sys.stdin:
             pending_scenarios[approval_id] = (
                 "file_allow" if "[file-change-complete]" in prompt
                 else "file_deny", "")
+            continue
+        if "[stream]" in prompt:
+            # Continuous output for the reading scenario: separate agent
+            # messages arrive over several seconds, so the phone can leave the
+            # end of the timeline while new items keep landing below it.
+            for n in range(STREAM_ITEMS):
+                message_id = f"msg_stream_{tag}_{index}_{n}"
+                text = f"流式输出第 {n + 1} 条：" + "持续追加的内容。" * 6
+                send({"method": "item/started", "params": {
+                    "threadId": thread_id, "turnId": turn_id,
+                    "item": {"type": "agentMessage", "id": message_id,
+                             "text": ""}}})
+                send({"method": "item/agentMessage/delta", "params": {
+                    "threadId": thread_id, "turnId": turn_id,
+                    "itemId": message_id, "delta": text}})
+                send({"method": "item/completed", "params": {
+                    "threadId": thread_id, "turnId": turn_id,
+                    "item": {"type": "agentMessage", "id": message_id,
+                             "text": text}}})
+                time.sleep(STREAM_INTERVAL_S)
+            send({"method": "turn/completed", "params": {
+                "threadId": thread_id,
+                "turn": {"id": turn_id, "status": "completed"}}})
             continue
         if "[interrupt]" in prompt:
             send({"id": approval_id,
