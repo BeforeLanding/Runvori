@@ -1,54 +1,12 @@
 # 6–8 周开发路线图
 
-日期：2026-10-23。状态：M0 进行中，其余里程碑未开始。已交付 DEV-001 隔离握手、schema 基线与故障测试，M0 退出条件尚未满足；实际进度见 [progress.md](../progress.md)。以实际开工日计周，不虚构承诺日期。范围和发布门槛见 [PRD](PRD.md)。
+日期：2026-10-23，2026-10-31 结算 M0。本文件只放计划：交付物、依赖与退出条件。各里程碑首行的“状态：”与 [progress.md](../progress.md#里程碑状态) 的里程碑状态表保持一致（由 `host/tests/test_docs_consistency.py` 核对），进展与证据不写在这里。以实际开工日计周，不虚构承诺日期。范围和发布门槛见 [PRD](PRD.md)。2026-10-30 前随里程碑追加的进展记录见 [归档](history/2026-10-30-ROADMAP.md)。
 
 先验证上游能力，再建立可靠 Host，再完成移动端交互与恢复。六周目标为可验收候选版，第七至八周用于性能、边界修复和展示；发布只以验收证据为准。
 
 ## M0：技术验证与环境冻结（第 1 周）
 
-DEV-002 更新：Windows Job 启动门控与异常清理已通过四项真实进程测试；M0 仍等待真实执行/审批及工具链验证，见 [证据](evidence/DEV-002.md)。
-
-DEV-003 更新：真实命令审批拒绝、只读单次允许、受控命令写入与文件字节核对、运行中、待审批时及审批后立即中断终态、独立文件修改审批拒绝和固定内容单次允许、审批答复后的受控进程切断、延迟请求结束通知及历史 thread 加载已观察；确认丢失已有合成故障注入。受控切断后没有观察到文件改动或回合终态，结果保持未知；审批持久化、Host 恢复及其余竞争仍待验证，见 [记录](evidence/DEV-003.md)。
-
-DEV-003 持久边界补充：独立 SQLite 切片已验证决定持久记录、单次派发领取和新 epoch 对未知结果的保留；未接入 Host 服务与受管进程核对，M1 依赖及退出条件不变，见 [证据](evidence/DEV-003-approval-journal.md)。
-
-DEV-003 中断顺序补充：固定只读命令完成且回合 `completed` 后，真实迟到的 `turn/interrupt` 返回脱敏 RPC 错误；完成终态不可倒退。该顺序不代表真正并发竞争，见 [记录](evidence/DEV-003.md)。
-
-DEV-003 命令完成切点补充：命令 item 退出码 0 后立即或延迟 1 秒中断，回合为 `interrupted`；延迟 5 秒时中断 RPC 返回错误，随后读到 `completed`。这覆盖两种可观察结局，但没有上游精确并发时间；命令成功不得替代回合终态，见 [脱敏证据](evidence/DEV-003-command-completion-interrupt-race.json)。
-
-DEV-003 脏工作区补充：已在预先修改跟踪文件且存在未跟踪文件的可丢弃仓库中，完成精确新增文件的真实单次审批、回合终态和字节核对。普通 Git diff 未显示两个未跟踪文件，Git 前后态不得单独用于归因；大差异、二进制和多命令验证汇总仍待验证，见 [脱敏证据](evidence/DEV-003-dirty-workspace.json)。CLI 升级的契约审查见 [记录](evidence/DEV-003-schema-review.md)。
-
-DEV-003 首次验证命令补充：单条预登记固定只读命令的上游结构化开始/完成项、命令、cwd、时间和真实退出码已关联，真实结果为 `passed`；缺失及重复匹配的保守判定有合成测试。当时多项汇总尚未实现；Host 持久化及任意命令登记仍待后续实现，见 [脱敏证据](evidence/DEV-003-required-verification.json)。
-
-DEV-003 双命令补充：两条固定只读命令分别获得真实结构化执行项和退出码 0，逐项与汇总均 `passed`；重复 item 与混合状态优先级由本地行为测试验证。Host 持久化、任意命令登记及真实失败命令仍待验证，见 [脱敏证据](evidence/DEV-003-two-required-verifications.json)。
-
-DEV-003 失败命令补充：固定 `exit 7` 的真实结构化退出码为 7，上游回合为 `completed`、必需验证汇总为 `failed`。这验证了二者分离的失败路径；任意命令登记及 Host 持久化仍待验证，见 [脱敏证据](evidence/DEV-003-nonzero-verification.json)。
-
-DEV-003 Git 产物补充：本地可丢弃仓库的预先存在改动中，二进制和 128 KiB 文本文件获得大小/哈希与明确内容可用性，超过扫描上限的文件报告哈希不可用。该探针只有 Git 工作区来源，未验证 Codex 上游大差异事件或产品产物存储，见 [脱敏证据](evidence/DEV-003-artifact-boundaries.json)。
-
-DEV-003 重命名补充：本地 Git 夹具中，已暂存移动有 `R100` 证据，未暂存移动只呈现删除与未跟踪新增；相同字节不构成重命名或 Agent 归因证据。Codex 上游重命名项和 Host 存储仍待验证，见 [脱敏证据](evidence/DEV-003-rename.json)。
-
-DEV-003 上游移动拒绝补充：真实 Codex 文件改动项出现 `update` 与匹配 `move_path`，一次文件审批被明确拒绝，原文件保持、目标缺失；只覆盖拒绝路径，见 [脱敏证据](evidence/DEV-003-file-move-declined.json)。
-
-DEV-003 上游固定移动允许补充：对精确单文件补丁发送一次 `accept`，真实上游 item 完成，源文件消失、目标字节与 Git 状态均核对；通用移动和 Host 存储仍开放，见 [脱敏证据](evidence/DEV-003-file-move-accepted.json)。
-
-DEV-003 二进制命令补充：固定命令获真实一次审批、退出码 0，二进制文件字节和 Git 标记均核对；该场景没有独立文件修改审批，见 [脱敏证据](evidence/DEV-003-binary-command.json)。
-
-DEV-003 Windows 路径边界补充：一次性夹具中的真实 junction 父目录被 Git 产物读取和未知审批文件核对拒绝，目标字节未变；符号链接创建、文件检查与打开之间的并发替换仍开放，见 [复验](evidence/DEV-003-windows-junction.md)。
-
-Q-04 当前包复验：当前 Host 探针 wheel 离线构建、一次性虚拟环境安装及仓库外 CLI 入口校验通过；单实例锁集成、业务服务与独立部署仍开放，见 [证据](evidence/DEV-001-package-recheck.md)。
-
-Q-04 单实例锁前提：Windows 文件句柄锁的跨进程竞争、正常关闭与持锁进程退出后重取已实测；已接入 `HostRuntime` 启动顺序，活动槽产品行为仍由后续 Host 证据覆盖，见 [证据](evidence/M0-Q04-instance-lock.md)。
-
-Q-04 启动顺序补充：最小切片已验证先持锁再打开审批 SQLite、失败释放锁以及进程异常退出后重开不自动推进 epoch；旧 app-server 隔离与产品 Host 生命周期已由后续 `HostRuntime` 切片接入，HTTP 入口和手机控制仍开放，见 [证据](evidence/M0-Q04-locked-journal.md)。
-
-Q-05 TLS 身份前提：本机回环握手已验证信任链、主机名及本地 SPKI 指纹，换公钥时不自动接受；Android 信任实现、配对秘密及产品证书轮换仍开放，见 [证据](evidence/M0-Q05-tls-identity.md)。
-
-Q-05 配对持久边界：独立 SQLite 切片已验证短时一次性秘密、唯一有效设备、重放拒绝、并发兑换与本地撤销；HTTPS API、限流、Android 凭据和证书绑定仍开放，见 [证据](evidence/M0-Q05-pairing-journal.md)。
-
-Q-05 HTTPS 联动补充：一次性回环夹具已验证指纹错误时不发 HTTP 请求、已提交兑换但响应丢失后不重发令牌、本地撤销后重新配对；正式 Host API、限流和 Android 联调仍开放，见 [证据](evidence/M0-Q05-https-pairing.md)。
-
-DEV-004 工具链基线：已加入 Gradle 8.13 wrapper、Android 占位工程并在本机生成 Debug APK；API 37 模拟器安装和启动已核对。Q-03 的实机、产品最低版本与干净环境验证尚未关闭，见 [记录](evidence/DEV-004-toolchain.md)。
+状态：已结算（2026-10-31，[ADR-017](DECISIONS.md#adr-017m0-结算接受已实测基线剩余边界转为已知限制)）。以已有证据关闭；“冻结 60 Hz 基准设备并完成小规模性能基线”未完成，移入 M3；其余未证明的边界归入[待决策清单](DECISIONS.md#待决策清单)的已知限制。
 
 交付：
 
@@ -64,29 +22,7 @@ DEV-004 工具链基线：已加入 Gradle 8.13 wrapper、Android 占位工程�
 
 ## M1：Host 持久化与最小协议（第 2 周）
 
-DEV-005 读取边界补充：内部邮箱具备快照/分页/等待读取及停机释放，设备读取网关已接入配对令牌复核和可信本地撤销后的在途取消；停机后离线撤销 CLI 须取得 Host 单实例锁。运行中产品本地管理入口、HTTP/TLS、响应发送前鉴权及 Android 联调仍开放，见 [撤销联动](evidence/DEV-005-device-revocation.md)与[离线命令](evidence/DEV-005-offline-device-revoke.md)。M0 退出条件和 M1 验收条件不因此视为满足。
-
-DEV-005 Host 身份补充：权威数据库 v11 已保存稳定随机 `host_id`，旧库升级及损坏拒绝有行为测试；独立配对库现按该身份约束秘密与设备令牌。恢复后的内部组合层已把权威身份用于配对、读取与撤销，并拒绝关闭后的旧对象。产品 Host 启动编排、HTTPS 联调与旧备份回滚时的身份轮换仍开放，见 [身份](evidence/DEV-005-host-identity.md)、[配对绑定](evidence/DEV-005-pairing-host-binding.md)和[组合验证](evidence/DEV-005-host-device-access.md)。
-
-DEV-005 进程隔离补充：事件库 v12 在目标进程放行前记录启动器 PID＋创建时间；恢复入口改为按该记录核实，不再接受调用方声明的 `old_process_isolated`，存活或无法查询时拒绝恢复并保持写门禁关闭。跨进程崩溃用例覆盖 Job 内被杀放行与 Job 外遗留拒绝。该记录只覆盖启动器，不证明后代进程树；产品启动编排已由后续 `HostRuntime` 组合，见 [证据](evidence/DEV-005-upstream-process-identity.md)。
-
-DEV-005 Host 启动与重启补充：事件库 v13 显式记录每个 epoch 的上游身份状态，旧库无记录标为 `legacy_unknown` 并失败关闭，迁移只能归档重建。新增 `HostRuntime` 与 `python -m runvori.host`，按固定顺序组合单实例锁、对账、统一恢复、写门禁、设备访问和唯一上游；正常停止使用 `host_shutdown`，上游故障恢复后进程退出等待外部重启。真实 Host 子进程在 starting、running、等待审批和中断切点完成崩溃重启测试，并验证 launcher／上游／后代真实 PID 与 Job 隔离，见 [证据](evidence/DEV-005-host-runtime-restart.md)。
-
-DEV-005 真实 Codex 补充：锁定 `codex-cli 0.164.0-alpha.11.1`，在取得锁和打开数据库前核验绝对路径与版本；命令邮箱接入审批决定；产品 `thread/start` 创建真实 thread 后，在 starting、running、等待审批、决定派发和中断五个切点完成真实 Codex 崩溃重启。验证审批 expired/unknown、操作 unknown、不自动重跑及真实进程树隔离。首发 OS、relay 注入时序、审批详情读取和正常退出 EOF 仍开放，AT-16 未整体通过；见 [证据](evidence/DEV-005-host-runtime-restart-real-codex.md) 与 [ERR-028](ERRORS.md)。
-
-DEV-006 HTTPS 补充：真实 `HostRuntime` 已接上标准库 HTTPS 服务与 Windows 命名管道管理入口，独立 HTTPS 客户端完成配对、快照、回合、审批详情与决定、操作查询、断线补拉和撤销 401 的完整闭环；审批详情落库（事件库 v14），详情不足时禁止允许。合成上游闭环与真实 Codex 一次验收均通过；会话列表、命令/产物明细、Android 联调与 AT-16 未覆盖项当时仍开放，见 [合成证据](evidence/DEV-006-https-host.md) 与 [真实验收](evidence/DEV-006-https-host-real.md)。会话列表由 DEV-007 补齐，命令明细与产物明细由 DEV-008 补齐。M1 尚未整体验收。
-
-DEV-007 Android 最小业务闭环（2026-10-27）：`GET /v1/sessions` 与会话摘要、`GET /v1/runs/{run_id}/approvals`、上游 item 生命周期投影为时间线（事件库 v15，单回合 2 MiB 文本预算 + 显式截断标记）。Android 侧补齐配对载荷解析、Keystore 凭据、固定指纹的 HTTPS、SQLite 缓存与同步、四个屏幕与新回合/中断。设备验收用**真实 APK → 固定指纹 HTTPS → 真实 `HostRuntime` → 合成 app-server** 跑通九个场景（凭据往返、错误指纹预先拒绝、完整闭环、进程内重建重同步、过期审批不可允许、详情不足只给拒绝、中断二次确认、重复操作查询稳定、撤销后拒绝），连续三轮全绿；`python scripts/check.py` 374 项（3 跳过）、Android JVM 单测 19 项通过。**真实 Codex 设备验收已执行 1 次核心闭环**（`s/a/b/c/g/e`，1 次模型回合，`observed_runs=1`，未重试）。**DEV-007 状态：核心真实链路通过，剩余专项待验收**——`d/f/h` 与真实中断/过期仍未覆盖（真实文件审批已由 DEV-008 第三切片补验通过），见 [真实设备验收](evidence/DEV-007-device-acceptance-real.md)。顺带修正上一轮对传输层的错误判断：模拟器 `10.0.2.2` 经其自身 NAT 到达宿主机回环，不需要防火墙放行或 `adb reverse`，相关 relay/桥接代码已删除。未覆盖：真实文件审批 `complete` 路径、产物明细端点（已由 DEV-008 第二切片补齐）、旋转/杀进程/清除缓存/TalkBack/性能，见 [设备验收](evidence/DEV-007-device-acceptance.md)。M2 主路径尚未整体验收。
-
-DEV-008 命令详情与验证结果第一切片（2026-10-27）：事件库 v16 新增 `run_commands`、`run_verifications`，工作区验证配置在回合创建时快照；命令持久保存原文、cwd、上游起止时间、退出码、输出字节/丢弃字节与 `pending/complete/truncated/empty` 状态。新增 `GET /v1/runs/{run_id}`、`/results`、`/commands` 分页；读取时复用 `codex/verification.py` 的保守判定，`configured=false` 明确区分“未配置”，null 退出码不转 0。Android 新增“回合结果”屏幕，回合状态与验证结论分卡显示，命令列表可分页。合成设备验收新增 `i` 场景：`exit 7` 命令使回合 `completed`、验证 `failed`，结果页与命令列表同时显示退出码 7；`b` 同时断言验证 `passed`。离线覆盖未配置、`not_run`、退出码缺失、输出截断、命令分页与真实 `HostRuntime` 重开后的结果查询；381 项测试（3 跳过）、Android JVM 19 项通过。未覆盖：真实 Codex 的命令包装、产物/差异、`verification.updated` 事件与真机结果页，见 [DEV-008 证据](evidence/DEV-008-results.md)。
-
-DEV-008 受控产物与差异第二切片（2026-10-27）：事件库 v17 新增 `run_artifacts` / `artifact_chunks`；命令输出在时间线同一事务内复制已持久化字节，预算丢弃量保留为 `dropped_bytes`，不补回未保存内容。新增 `/v1/runs/{run_id}/artifacts` 与按 `artifact_id` 分块读取；文件差异区分审批提案、上游报告完成与首次读取时的 Git 工作区快照，Git/未跟踪内容固定标为无法归因或仅元信息。Android 结果页新增产物清单与详情子页，按 `next_offset` 推进，显示空/截断/二进制/不可用状态。离线覆盖分块无重复、重启后哈希一致、非法 ID/越界偏移、审批双来源和 Git 归因；合成设备 12 场景全绿，新增 `j`（完整文件审批允许并查看差异）与 `k`（拒绝后提案仍可查看），`b` 同时查看命令输出。388 项测试（3 跳过）、Android JVM 19 项通过；2026-10-28 在当前工作区复跑 12 场景全绿，修复产物分块代际竞态（[ERR-034](ERRORS.md)）后再次复跑仍全绿。未覆盖：真实 Codex 文件审批 `complete` 路径、真实大差异/二进制/重命名、回合前基线分离、`artifact.created` 事件与真机下载性能，见 [DEV-008 第二切片证据](evidence/DEV-008-artifacts.md)。M2 仍未整体验收。
-
-DEV-008 真实文件审批与验证匹配第三切片（2026-10-28，2026-10-30 收尾）：真实 `fileChange` item 的绝对路径按 run 的登记工作区归一化为相对路径，工作区外/UNC/转义/缺失 diff 保持不能允许；`item/updated` 折叠、审批页按持久 `approval_version` 刷新、item/timeline 绑定按 `process_epoch` 限定。新增有限 shell 包装匹配（裸命令、ERR-007/ERR-016 三种完整 pwsh 形状、系统 Windows PowerShell 的未引号与 app-server 序列化两种形态；未知形状保持非通过）与 Host 同端口/同数据目录重启读回。锁定 0.164 已从 npm 恢复到隔离目录；真实 `l`（文件允许）与 `m`（文件拒绝）通过；`v` 首次因包装未识别失败，2026-10-30 用 `thread/read` 取得 92 字节原文、修复匹配后获授权复验，真实 `v` 与 `r` 通过（`observed_runs=1`，重启后命令与产物摘要一致），[ERR-038](ERRORS.md) 已关闭。合成设备第三切片 14 场景通过，`n` 验证审批后到刷新与绝对路径相对显示，`r` 验证命令/产物 SHA-256 一致；生命周期专项再新增 8 场景，全量 22 个。411 项离线测试（3 跳过）、Android JVM 19 项、16 份契约通过。见 [第三切片证据](evidence/DEV-008-real-approval-slice.md)、[真实 v/r 证据](evidence/DEV-008-vr-real.json) 与 [生命周期证据](evidence/DEV-008-lifecycle-recovery.md)。
-
-DEV-009 真实中断与审批失效首次运行（2026-10-30，2 个模型回合、未重试）：真实专用 `ri`（执行中中断）通过——只在真实命令输出开始标记后触发，同一 run 为 `run.interrupted`、中断操作 `confirmed/run_interrupted`、活动槽释放；自然完成仍记竞争结果，RPC/202 不作证据。`ra` 从保持打开的审批页通过产品中断结束回合，手机侧通过（旧审批 `expired`、旧决定被 `approval_expired` 拒绝、`approval_operations=0`），Host 事件流先记录回合终止导致的 `expired`；真实 Codex 随后关闭上游请求并把当前 `resolution_kind` 改写为 `request_closed`，首次分类器只接受最终 `turn_terminal`，因此判失败并停止。证据读取器已改为结合事件历史确认回合终止失效并允许其后的 `request_closed`；随后按单独授权的 1 个模型回合复跑 `ra` 通过（`observed_runs=1`、`status=passed`，审批仍 `expired`、`pending_approvals=0`、`approval_operations=0`、活动槽释放）。审批页新增中断入口；合成伴侣 `s3` 在真实 APK + 合成上游上通过，`h/d` 回归通过；离线专项 19 项、全量 430 项测试（427 通过、3 跳过）、Android JVM 19 项、16 份契约通过。首次失败报告保留为 [DEV-009-first-run.json](evidence/DEV-009-first-run.json)，复跑报告见 [DEV-009-ra-rerun.json](evidence/DEV-009-ra-rerun.json)，汇总见 [DEV-009 验收结果](evidence/DEV-009-interrupt-approval-real.md)。两个场景合起来补充 AT-06/AT-07 的两条设备侧路径；不因此视为 AT-07 全部边界完成。
-
-DEV-010 真机地址配置与零模型基线（2026-10-30，0 个模型回合）：验收编排器把 `--serial` 与 `--host-address`/`--listen-address`/`--host-port` 分开，模拟器保留 `10.0.2.2` 与回环绑定，物理设备可用 LAN/VPN IP 或 DNS 名，证书按端点写 IP/DNS SAN，TLS 链、主机名和 SPKI 校验不放宽；物理设备报告不写原始地址或 serial。新增 `--profile device-baseline`，合成上游 14 场景，覆盖安装/APK 版本核对、配对、读取、错误指纹、撤销、Host 不可达时的缓存只读、同端口同数据目录重启后的游标恢复、系统 `am kill`/`force-stop` 与 200% 字体；Host 侧离线期间 `runs`/`approval_operations` 计数不变。模拟器 `Medium_Phone` API 37 最终全绿（`status=passed`、`expected_model_turns=0`）；**实际手机未连接，真机基线、LAN/VPN 路由、真实断网与性能仍未验收**。中间失败均为验收器/场景时序问题并已修复；报告与汇总见 [DEV-010 证据](evidence/DEV-010-device-baseline.md) 与 [脱敏报告](evidence/DEV-010-device-baseline.json)。
+状态：主体完成。交付物均已实现并有真实证据，尚未按退出条件做正式评审。
 
 依赖 M0。交付：
 
@@ -100,18 +36,20 @@ DEV-010 真机地址配置与零模型基线（2026-10-30，0 个模型回合）
 
 ## M2：Android 主流程（第 3–4 周）
 
+状态：进行中。主路径在模拟器与合成上游上通过，部分有真实 Codex 证据；真机联调未完成。
+
 依赖 M1 契约，可先用同版脱敏 fixture 并行实现页面，真实联调仍是退出要求。交付：
 
-- Compose 页面、ViewModel、领域状态、Room 缓存与凭据保护。
+- Compose 页面、ViewModel、领域状态、SQLite 缓存（`SQLiteOpenHelper`，未采用 Room）与凭据保护。
 - 配对/连接、会话列表、时间线、审批、中断、差异和命令结果。
 - 原会话新回合输入、错误反馈与离线禁用操作。
 - 可安装调试版本与真实 Host 联调说明。
 
 退出条件：FR-01～FR-05、FR-07、FR-08 主路径可端到端运行；AT-03、AT-04、AT-07、AT-13～AT-15 有手机侧证据，状态显示无“HTTP 202 即成功”。
 
-DEV-007 进度（2026-10-27）：FR-01（配对/凭据/撤销）、FR-02（会话列表）、FR-03（时间线读取、增量与历史分页）、FR-04（审批展示与决定）、FR-05（中断）、FR-06（重连补拉）、FR-08（原会话新回合）在**合成上游**上已有手机侧证据；FR-04 的“202 不等于成功”在 UI 与测试里都按协议表述。AT-03 只覆盖命令与消息，文件改动仍未作为时间线事件；AT-04 已覆盖合成完整文件审批允许/拒绝，但真实 Codex 文件审批未跑（第三切片已准备 `l/m/v`，因锁定版本缺失未执行）；AT-07 覆盖 running 中断；DEV-009 的合成 `s3` 已在设备侧覆盖等待审批时通过产品中断使审批失效；真实 `ri` 已通过；真实 `ra` 手机侧通过，首次 Host 分类器因上游补发 `request_closed` 误判，离线修复后经单独授权的 1 个回合复跑通过；starting 中断与真实并发竞争仍未验证。DEV-008 后 AT-13 的验证汇总、命令证据和命令输出产物已在手机结果页呈现，AT-14 的差异来源已以审批提案、上游报告和明确的 Git 快照呈现，但仍未完成回合前基线分离与真实大差异/二进制/重命名验收。M2 退出条件不因此视为满足。
-
 ## M3：恢复与稳定阅读（第 5 周）
+
+状态：进行中。生命周期恢复与离线只读缓存已提前完成；稳定阅读、TalkBack 与性能测量未开始。
 
 依赖 M2。交付：
 
@@ -124,6 +62,8 @@ DEV-007 进度（2026-10-27）：FR-01（配对/凭据/撤销）、FR-02（会�
 
 ## M4：候选版与回归（第 6 周）
 
+状态：未开始。
+
 依赖 M3。交付：
 
 - 全量 AT-01～AT-17 回归，真实成功、验证失败、中断和 Host 重启案例。
@@ -134,6 +74,8 @@ DEV-007 进度（2026-10-27）：FR-01（配对/凭据/撤销）、FR-02（会�
 退出条件：阻断缺陷清零，PRD 正确性门槛通过。尚未满足性能或安全门槛时仅交内部预览，不以日历替代验收。
 
 ## M5：性能收敛与项目展示（第 7–8 周）
+
+状态：未开始。
 
 依赖 M4。交付：
 
@@ -150,4 +92,4 @@ DEV-007 进度（2026-10-27）：FR-01（配对/凭据/撤销）、FR-02（会�
 
 可以后移：视觉细节、更多差异展示形式、诊断导出便利性和展示材料。不可后移：认证/TLS、单活动回合、审批幂等与不确定反馈、事件一致性、真实退出码和中断边界。P0 不通过就不能宣布 v0.1 完成。
 
-每周更新本文件的实际状态及证据链接；只记录已发生的进展。需求扩展需先调整 PRD 和工期，不能以“顺手实现”引入多设备、公网中继或规划器。
+里程碑状态变化时同步更新本文件首行“状态：”与 progress.md 的状态表；进展与证据写入 progress.md 和 CHANGELOG.md。需求扩展需先调整 PRD 和工期，不能以“顺手实现”引入多设备、公网中继或规划器。

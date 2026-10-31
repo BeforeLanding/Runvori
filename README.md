@@ -2,19 +2,19 @@
 
 让开发者离开电脑后，仍能在手机上查看 Codex 任务、处理审批、检查执行结果。
 
-项目目前处于 M0 技术验证阶段，首版定位为「开发者离席后的 Codex 移动接管」。已提供 Python 本地探针、隔离 Codex 握手、schema 校验、故障测试，以及可由独立 HTTPS 客户端操作的最小 Host（配对、会话列表、快照、时间线、回合、审批详情与决定、中断、操作查询、命令明细、验证结果与受控产物）。Android 客户端已能配对、列出 Host 管理的会话、读时间线、阅读并决定审批、发起新回合与中断，并在结果页分开查看回合状态、验证结论、命令输出和文件差异；设备验收用真实 APK 对真实 `HostRuntime` 跑通二十三个合成场景，并已用真实 Codex 完成 1 次核心闭环设备验收（1 次模型回合）。真实 `l/m` 文件允许/拒绝、`v` 验证结论与 `r` 重启读回均通过；真实 `ri/ra` 中断专项通过：首次 2 个模型回合中 `ri` 通过，`ra` 手机侧通过但 Host 分类器因上游补发 `request_closed` 误判；离线修复后经单独授权的 1 个回合复跑 `ra` 通过。DEV-010 新增真机地址/绑定分离与零模型基线入口，模拟器 14 场景（含离线只读缓存、恢复补拉、200% 字体）通过；**实际手机尚未接入，真机安装与可达性仍未完成**。
+首版定位为「开发者离席后的 Codex 移动接管」。当前已有：可由 HTTPS 客户端操作的 Host（配对、会话、时间线、审批、中断、回合结果与产物），以及能完成「配对 → 列会话 → 读时间线 → 审批 → 中断 → 看结果与差异」的 Android 客户端；主流程在模拟器与合成上游上通过，核心闭环、文件审批、验证结果和中断另有真实 Codex 证据。**稳定阅读与性能测量尚未开始，实际手机尚未接入。** 里程碑状态与下一步见 [progress.md](progress.md)，首版不保证的边界见 [待决策清单](docs/DECISIONS.md#待决策清单)。
 
 参见 [Runvori 定位收敛与首版方案](docs/定位与首版方案.md)，包含参考项目研究、首版范围、验收标准及 6–8 周安排。
 
 ## 首版边界
 
 - Android 原生客户端：Kotlin＋Jetpack Compose。
-- 开发电脑上的 Runvori Host：Python＋SQLite，通过 stdio 接入 Codex app-server；当前最小 HTTPS 服务用标准库实现，FastAPI 为后续可替换目标。
+- 开发电脑上的 Runvori Host：Python＋SQLite，通过 stdio 接入 Codex app-server；HTTPS 服务用标准库实现，零第三方运行依赖（未采用 FastAPI，见 ADR-009）。
 - 一台 Host、一台配对手机、全局一个活动回合；只管理 Runvori 启动的会话。
 - 通过 HTTPS 在可信局域网或已有 VPN 中访问，模型凭据留在电脑端。
 - 重点验证持续输出下的稳定阅读、审批一致性、断线恢复和可检查的执行结果。
 
-以上产品功能均为首版目标，尚未完成验收；已完成的技术验证见 [progress.md](progress.md)。
+以上为首版边界，PRD 的验收用例尚未整体通过；首版 Host 只支持 Windows 11 x64 与锁定的 Codex CLI 版本（[ADR-017](docs/DECISIONS.md)）。
 
 ## 运行本轮开发工具
 
@@ -43,7 +43,7 @@ python scripts/accept_device.py --serial <phone-serial> `
   --dry-run
 ```
 
-详情见 [贡献指南](CONTRIBUTING.md)、[本轮证据](docs/evidence/DEV-001.md)、[HTTPS 闭环证据](docs/evidence/DEV-006-https-host.md)、[合成设备验收](docs/evidence/DEV-007-device-acceptance.md)、[真实设备验收](docs/evidence/DEV-007-device-acceptance-real.md)、[DEV-008 结果页证据](docs/evidence/DEV-008-results.md)、[DEV-008 产物与差异证据](docs/evidence/DEV-008-artifacts.md) 与 [DEV-008 第三切片证据](docs/evidence/DEV-008-real-approval-slice.md)、[DEV-009 中断/审批失效运行方案](docs/evidence/DEV-009-interrupt-approval-plan.md) 与 [DEV-010 零模型设备基线](docs/evidence/DEV-010-device-baseline.md)。
+详情见 [贡献指南](CONTRIBUTING.md)；全部验证记录见 [证据索引](docs/evidence/README.md)。
 
 ## 文档入口
 
@@ -54,4 +54,4 @@ python scripts/accept_device.py --serial <phone-serial> `
 - [测试与验收](docs/TEST_PLAN.md)、[开发路线图](docs/ROADMAP.md)。
 - [贡献与环境约定](CONTRIBUTING.md)、[安全与隐私](SECURITY.md)、[设计决策](docs/DECISIONS.md)。
 
-开始开发前，先读 PRD、AGENTS.md、progress.md 和首周技术验证任务。架构文档中的业务目录仍为计划；当前实际存在的模块与命令以贡献指南为准。
+开始开发前，先读 progress.md、PRD 与 AGENTS.md；当前实际存在的模块与命令以贡献指南为准。

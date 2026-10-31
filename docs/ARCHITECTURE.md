@@ -24,7 +24,7 @@ Android 负责视图、缓存、同步、阅读位置和受限操作。Host 负�
 
 ### Host
 
-首版使用单 Host 进程、单 API worker、一个受管 app-server，以及一个 SQLite 数据库。启动时获取本机单实例锁；没有可靠获得锁就拒绝启动。不得用多个 FastAPI worker 绕过内存进程所有权和活动槽约束。
+首版使用单 Host 进程、单 API worker、一个受管 app-server，以及一个 SQLite 数据库。启动时获取本机单实例锁；没有可靠获得锁就拒绝启动。不得用多个 HTTP worker 进程绕过内存进程所有权和活动槽约束。
 
 当前有一个内部有界命令邮箱，供未来 API 线程提交固定的回合启动、中断、审批决定、thread 读取和操作查询请求；持有 SQLite 连接的连接所有者执行存储操作并唤醒已有 stdio 队列。审批决定只有返回 `accepted` 才进入一次派发队列；超时不取消可能已提交的命令，信号队列满时明确报告，保留持久操作供原请求号查询和显式重试。该切片尚不监听 HTTP，也未接入设备认证。
 
@@ -66,7 +66,7 @@ DEV-010 把 Host 不可达时的数据来源固定为本地投影：`HostSession
 
 - `host/src/runvori/api/`：HTTPS API、认证、请求校验、错误映射。DEV-006 已用标准库实现最小服务；只有 `/v1` 子集的处理器，业务逻辑仍全部经命令邮箱。
 - `host/src/runvori/application/`：启动/中断/审批/同步用例、操作幂等与结果读出；含命令邮箱、设备读取网关、本地命名管道管理入口、`run_results.py` 与首次读取时的 `git_artifacts.py` 快照。
-- `host/src/runvori/domain/`：状态机、活动槽、审批和验证规则，不依赖 FastAPI。
+- 领域规则目前没有独立的 `domain` 包：回合状态机与全局活动槽在 `host/src/runvori/infrastructure/event_journal.py` 的事务里实现，验证汇总规则在 `host/src/runvori/codex/verification.py`；二者都不依赖 HTTP 层。
 - `host/src/runvori/infrastructure/`：SQLite、文件、TLS/凭据存储和进程管理。当前有审批派发、一次性配对、事件/回合/操作、命令证据、验证快照与产物块的 SQLite 切片，Windows 单实例锁、共享连接的审批生命周期、持锁原子恢复与 v13 epoch 身份状态；`HostRuntime` 已组合启动、恢复、设备访问、可选 HTTPS 与本地入口，业务 API 与审批/结果/产物读出已接入（DEV-006～DEV-008）。
 - `host/src/runvori/codex/`：初始化、RPC 路由、schema 校验及上游事件映射。
 - `host/tests/`：领域、数据库事务、API、故障注入和适配器夹具测试。

@@ -2,6 +2,15 @@
 
 采用开发批次记录；正式发布前不把开发批次称为已发布版本。
 
+## Unreleased · 文档结算与一致性护栏 · 2026-10-31
+
+- **M0 结算**：新增 [ADR-017](docs/DECISIONS.md)，以已有证据关闭 M0；首版只承诺 Windows 11 x64 Host、Python 3.12 标准库与 `codex-cli 0.164.0-alpha.11.1`。待决策清单改为状态表：Q-01/02/03/04/05/07 已决定（剩余边界列为已知限制或移入 M4），Q-06 性能基线移入 M3，Q-08 仍开放。
+- **状态单一来源**：`progress.md` 重写为一屏快照（82 KB → 约 5 KB），新增里程碑状态表；`docs/ROADMAP.md` 删去随里程碑追加的 DEV/Q 进展段落，每个里程碑首行改为与该表一致的“状态：”；`docs/README.md` 的状态段改为指向 progress.md。新增按文件名生成的 [证据索引](docs/evidence/README.md)。旧原文冻结在 `docs/history/2026-10-30-*.md`，只修正相对链接。
+- **规则分层**：`AGENTS.md` 从 56 条压到 27 条通用不变量；单区域细则原样下沉到新增的 [ENGINEERING_RULES.md](docs/ENGINEERING_RULES.md)，按 Host 上游与进程、存储与结果、安全授权、Android、测试验收、本地环境六节组织。`agent.md`、`docs/ERRORS.md`、`docs/README.md` 的规则来源说明同步。
+- **技术漂移订正**：PRD、ARCHITECTURE、CONTRIBUTING、README 不再把 FastAPI 写成现状，TEST_PLAN、ROADMAP、AGENTS 不再把 Room 写成现状（实际为标准库 HTTPS 与 `SQLiteOpenHelper`）；ARCHITECTURE 删除不存在的 `host/src/runvori/domain/`，改写为状态机/活动槽与验证规则的实际位置。定位文档只加 2026-10-31 注记，正文不动。README 首段改为当前事实并注明稳定阅读与真机尚未开始。
+- **护栏**：新增 `host/tests/test_docs_consistency.py`（8 项），核对 ROADMAP 与 progress 的里程碑状态一致、ROADMAP 不含进展日志、progress.md ≤ 12 KB、AGENTS.md ≤ 30 条且指向细则文件、构建未依赖的组件（从 `pyproject.toml` 与 `build.gradle.kts` 推导）在活文档里只能以“未采用/替代方案”出现、文档引用的源码路径存在、相对链接可解析。先在结算前的文档上运行：`FAILED (failures=18, errors=2)`（FastAPI 现状描述 7 处、里程碑状态缺失 6 处、`domain/` 路径、progress 82706 字节、AGENTS 56 条、ROADMAP 进展日志各 1 处；2 个 error 为细则文件尚不存在）；修订后 8 项通过。链接检查另以人为改坏一个链接确认会变红。
+- 验证：`python scripts/check.py` 16 份契约、446 项测试运行（443 通过、3 跳过）。未改 Host/Android 代码，Android JVM 单测本轮未重跑。
+
 ## Unreleased · DEV-010 真机地址配置与零模型基线 · 2026-10-30
 
 - `scripts/accept_device.py` 将设备 serial 与 Host 端点分开：新增 `--host-address`（LAN/VPN IP 或 DNS 名）、`--listen-address`（显式本地绑定）和 `--host-port`（可选固定端口）；模拟器保留 `10.0.2.2` + 回环路径，物理设备必须显式给出可达地址。证书按端点写 IP/DNS SAN，客户端证书链、主机名和 SPKI 固定指纹校验均保持启用，没有关闭或降级分支。
